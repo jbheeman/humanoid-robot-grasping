@@ -1,55 +1,87 @@
 # Unitree SDK2 Notes
 
-`unitree_sdk2` is the likely integration path for future Unitree G1 robot access. Do not make it a hard dependency for the first tracking scaffold yet.
+`unitree_sdk2` is integrated through the SDK's G1 C++ loco example binary because this checkout does not include Python bindings.
 
-## Why Not Add It To Tracking Immediately
+## SDK Location
 
-The current tracking milestone is deliberately simple:
-
-> camera frame -> manually selected object box -> tracker update -> JSONL log
-
-That should work with a laptop webcam, a saved video, or a future G1 camera stream. Keeping the tracker independent of the robot SDK makes it easier to test the perception loop before debugging robot connectivity.
-
-## Where SDK2 Fits Later
-
-Use `unitree_sdk2` or the available Unitree Python bindings when we need to:
-
-- read the G1 onboard camera/depth stream directly
-- read robot joint state
-- read motor current, torque, or contact-like feedback if exposed
-- command the arm or hand
-- log synchronized observations, states, and actions
-- run non-contact arm following
-- run passive or active stopping trials
-
-## Intended Integration Shape
-
-Keep the tracking code modular:
+The wrapper defaults to:
 
 ```text
-camera source
-    -> frame
-    -> detector/tracker
-    -> bbox log
+~/Documents/unitree_sdk2
 ```
 
-Then add a Unitree camera adapter later:
+It looks for a built G1 loco binary at:
 
 ```text
-unitree_sdk2 camera/depth stream
-    -> CameraFrame
-    -> object tracker
+~/Documents/unitree_sdk2/build/bin/g1_loco_client
+~/Documents/unitree_sdk2/build/g1_loco_client
 ```
 
-And later a control adapter:
+Build it with:
+
+```bash
+cd ~/Documents/unitree_sdk2
+mkdir -p build
+cd build
+cmake ..
+make g1_loco_client
+```
+
+## Command Path
+
+Python code in `object_tracking.unitree_g1` shells out to `g1_loco_client`, which uses:
+
+```cpp
+unitree::robot::ChannelFactory::Instance()->Init(0, network_interface);
+unitree::robot::g1::LocoClient client;
+client.Init();
+```
+
+The underlying SDK service is G1 `sport`, defined by `unitree::robot::g1::LOCO_SERVICE_NAME`.
+
+## Standalone Commands
+
+```bash
+uv run g1-loco --network-interface enp3s0 get_fsm_id
+uv run g1-loco --network-interface enp3s0 start
+uv run g1-loco --network-interface enp3s0 stand_up
+uv run g1-loco --network-interface enp3s0 balance_stand
+uv run g1-loco --network-interface enp3s0 move --velocity "0.2 0 0 1.0"
+uv run g1-loco --network-interface enp3s0 stop_move
+uv run g1-loco --network-interface enp3s0 damp
+```
+
+## Tracker Integration
+
+The manual tracker remains camera-first. SDK2 robot commands are opt-in:
+
+```bash
+uv run python scripts/run_manual_tracker.py \
+  --camera 0 \
+  --output runs/object_manual_test \
+  --unitree-network-interface enp3s0 \
+  --g1-command-on-start get_fsm_id \
+  --g1-stop-on-exit
+```
+
+Available tracker startup commands:
 
 ```text
-tracked object position
-    -> safe target pose
-    -> unitree_sdk2 arm/hand command
+none, get_fsm_id, start, stand_up, balance_stand, stop_move, damp
 ```
 
-## Rule
+Optional startup velocity:
 
-Do not mix robot control into the tracker until the tracker works. First prove that the target plush object can be seen, boxed, tracked, and logged.
+```bash
+--g1-velocity-on-start "VX VY OMEGA [DURATION]"
+```
 
+Example:
+
+```bash
+--g1-velocity-on-start "0.1 0 0 1.0"
+```
+
+## Vision Status
+
+This repository still uses OpenCV camera/video sources for perception. The inspected SDK2 checkout does not contain Python files or a G1-specific vision/video client. The only video clients present there are for other Unitree models, so G1 vision should be handled through a separate G1 camera source, ROS bridge, or camera driver when available.

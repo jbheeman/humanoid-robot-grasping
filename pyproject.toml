@@ -12,6 +12,7 @@ dev = []
 
 [project.scripts]
 object-manual-tracker = "object_tracking.manual_tracker:main"
+g1-loco = "object_tracking.g1_loco_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
