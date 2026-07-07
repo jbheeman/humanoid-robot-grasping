@@ -5,21 +5,19 @@ The first tracking target is a manual bounding-box tracker. This lets us test th
 ## Install
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e .
+uv sync
 ```
 
 If OpenCV reports that CSRT/KCF tracking is unavailable, install the contrib build:
 
 ```bash
-pip install opencv-contrib-python
+uv add opencv-contrib-python
 ```
 
 ## Run With Webcam
 
 ```bash
-python scripts/run_manual_tracker.py --camera 0 --output runs/object_manual_test
+uv run python scripts/run_manual_tracker.py --camera 0 --output runs/object_manual_test
 ```
 
 Steps:

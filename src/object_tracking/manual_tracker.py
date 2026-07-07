@@ -30,9 +30,10 @@ def parse_camera(value: str) -> int | str:
         return value
 
 
-def run(camera: int | str, output_dir: Path, show: bool) -> None:
+def run(camera: int | str, output_dir: Path, show: bool, record: bool) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / "tracking.jsonl"
+    video_path = output_dir / "tracking.mp4"
 
     cap = cv2.VideoCapture(camera)
     if not cap.isOpened():
@@ -52,6 +53,18 @@ def run(camera: int | str, output_dir: Path, show: bool) -> None:
 
     frame_id = 0
     start_time = time.time()
+    video_writer = None
+    if record:
+        height, width = frame.shape[:2]
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if fps <= 0:
+            fps = 30.0
+        fourcc = cv2.VideoWriter_fourcc(*"mp4v")
+        video_writer = cv2.VideoWriter(str(video_path), fourcc, fps, (width, height))
+        if not video_writer.isOpened():
+            video_writer.release()
+            video_writer = None
+            print(f"Could not open video writer for {video_path}; continuing without video.")
 
     with JsonlLogger(log_path) as logger:
         while True:
@@ -73,39 +86,46 @@ def run(camera: int | str, output_dir: Path, show: bool) -> None:
             }
             logger.write(record)
 
-            if show:
-                if track_ok:
-                    p1 = (int(x), int(y))
-                    p2 = (int(x + w), int(y + h))
-                    cv2.rectangle(frame, p1, p2, (0, 255, 0), 2)
-                    cv2.putText(
-                        frame,
-                        "object",
-                        (int(x), max(0, int(y) - 8)),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.7,
-                        (0, 255, 0),
-                        2,
-                    )
-                else:
-                    cv2.putText(
-                        frame,
-                        "track lost",
-                        (20, 40),
-                        cv2.FONT_HERSHEY_SIMPLEX,
-                        0.8,
-                        (0, 0, 255),
-                        2,
-                    )
+            if track_ok:
+                p1 = (int(x), int(y))
+                p2 = (int(x + w), int(y + h))
+                cv2.rectangle(frame, p1, p2, (0, 255, 0), 2)
+                cv2.putText(
+                    frame,
+                    "object",
+                    (int(x), max(0, int(y) - 8)),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.7,
+                    (0, 255, 0),
+                    2,
+                )
+            else:
+                cv2.putText(
+                    frame,
+                    "track lost",
+                    (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX,
+                    0.8,
+                    (0, 0, 255),
+                    2,
+                )
 
+            if video_writer is not None:
+                video_writer.write(frame)
+
+            if show:
                 cv2.imshow("Object tracker", frame)
                 key = cv2.waitKey(1) & 0xFF
                 if key in (ord("q"), 27):
                     break
 
     cap.release()
+    if video_writer is not None:
+        video_writer.release()
     cv2.destroyAllWindows()
     print(f"Wrote tracking log to {log_path}")
+    if record and video_writer is not None:
+        print(f"Wrote annotated video to {video_path}")
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -125,14 +145,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Disable display window.",
     )
+    parser.add_argument(
+        "--no-record",
+        action="store_true",
+        help="Disable annotated MP4 recording.",
+    )
     return parser
 
 
 def main() -> None:
     args = build_parser().parse_args()
-    run(parse_camera(args.camera), Path(args.output), show=not args.no_show)
+    run(
+        parse_camera(args.camera),
+        Path(args.output),
+        show=not args.no_show,
+        record=not args.no_record,
+    )
 
 
 if __name__ == "__main__":
     main()
-
