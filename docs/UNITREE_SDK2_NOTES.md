@@ -2,7 +2,24 @@
 
 `unitree_sdk2` is integrated through the SDK's G1 C++ loco example binary because this checkout does not include Python bindings.
 
-## SDK Location
+## Normal Usage
+
+Use the robot IP. The project runs `ip route get <robot_ip>` and passes the resolved local interface into SDK2.
+
+```bash
+uv run g1-loco 192.168.123.161 get_fsm_id
+uv run g1-loco 192.168.123.161 stand_up
+uv run g1-loco 192.168.123.161 move --velocity "0.2 0 0 1.0"
+uv run g1-loco 192.168.123.161 stop_move
+```
+
+Manual override is still available:
+
+```bash
+uv run g1-loco --network-interface enP7s7 get_fsm_id
+```
+
+## SDK Helper
 
 The wrapper defaults to:
 
@@ -27,61 +44,24 @@ cmake ..
 make g1_loco_client
 ```
 
-## Command Path
+## Vision Usage
 
-Python code in `object_tracking.unitree_g1` shells out to `g1_loco_client`, which uses:
-
-```cpp
-unitree::robot::ChannelFactory::Instance()->Init(0, network_interface);
-unitree::robot::g1::LocoClient client;
-client.Init();
-```
-
-The underlying SDK service is G1 `sport`, defined by `unitree::robot::g1::LOCO_SERVICE_NAME`.
-
-## Standalone Commands
+For local webcam testing:
 
 ```bash
-uv run g1-loco --network-interface enp3s0 get_fsm_id
-uv run g1-loco --network-interface enp3s0 start
-uv run g1-loco --network-interface enp3s0 stand_up
-uv run g1-loco --network-interface enp3s0 balance_stand
-uv run g1-loco --network-interface enp3s0 move --velocity "0.2 0 0 1.0"
-uv run g1-loco --network-interface enp3s0 stop_move
-uv run g1-loco --network-interface enp3s0 damp
+uv run python scripts/run_manual_tracker.py --camera 0 --output runs/vision_test
 ```
 
-## Tracker Integration
-
-The manual tracker remains camera-first. SDK2 robot commands are opt-in:
+For G1 camera testing after the robot is reachable:
 
 ```bash
-uv run python scripts/run_manual_tracker.py \
-  --camera 0 \
-  --output runs/object_manual_test \
-  --unitree-network-interface enp3s0 \
-  --g1-command-on-start get_fsm_id \
-  --g1-stop-on-exit
+uv run g1-vision 192.168.123.161
 ```
 
-Available tracker startup commands:
-
-```text
-none, get_fsm_id, start, stand_up, balance_stand, stop_move, damp
-```
-
-Optional startup velocity:
+If the actual camera URL is known, use it directly:
 
 ```bash
---g1-velocity-on-start "VX VY OMEGA [DURATION]"
+uv run g1-vision 192.168.123.161 --camera-url "rtsp://{ip}:8554/live"
 ```
 
-Example:
-
-```bash
---g1-velocity-on-start "0.1 0 0 1.0"
-```
-
-## Vision Status
-
-This repository still uses OpenCV camera/video sources for perception. The inspected SDK2 checkout does not contain Python files or a G1-specific vision/video client. The only video clients present there are for other Unitree models, so G1 vision should be handled through a separate G1 camera source, ROS bridge, or camera driver when available.
+The SDK2 checkout inspected here does not contain a G1-specific vision/video client. `g1-vision` therefore uses OpenCV stream URLs and tries common RTSP-style conventions unless `--camera-url` or `G1_CAMERA_URL` is provided.

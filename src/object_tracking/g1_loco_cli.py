@@ -8,10 +8,15 @@ from object_tracking.unitree_g1 import G1LocoSdk2Client, UnitreeG1Error, parse_v
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Send Unitree SDK2 G1 loco commands.")
+    parser.add_argument("robot_ip", nargs="?", help="Robot IP address.")
+    parser.add_argument(
+        "--robot-ip",
+        dest="robot_ip_option",
+        help="Robot IP address. Same as positional robot_ip.",
+    )
     parser.add_argument(
         "--network-interface",
-        required=True,
-        help="Network interface connected to the G1.",
+        help="Override local interface. Usually omit this and pass robot_ip instead.",
     )
     parser.add_argument(
         "--sdk2-path",
@@ -40,9 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    robot_ip = args.robot_ip_option or args.robot_ip
+    if robot_ip is None and args.network_interface is None:
+        raise SystemExit("Pass robot_ip, --robot-ip, or --network-interface.")
+
     try:
         client = G1LocoSdk2Client(
             network_interface=args.network_interface,
+            robot_ip=robot_ip,
             sdk2_path=args.sdk2_path,
             loco_binary=args.loco_binary,
         )

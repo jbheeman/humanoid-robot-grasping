@@ -1,13 +1,22 @@
 from __future__ import annotations
 
-import shlex
 import argparse
+import os
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
 
 DEFAULT_SDK2_PATH = Path("~/Documents/unitree_sdk2").expanduser()
+DEFAULT_G1_CAMERA_TEMPLATES = (
+    "rtsp://{ip}:8554/unicast",
+    "rtsp://{ip}:8554/live",
+    "rtsp://{ip}:8554/stream",
+    "rtsp://{ip}:554/live",
+    "rtsp://{ip}:554/stream1",
+    "rtsp://{ip}:554/h264Preview_01_main",
+)
 
 
 class UnitreeG1Error(RuntimeError):
@@ -22,16 +31,57 @@ class UnitreeCommandResult:
     stderr: str
 
 
+def resolve_network_interface(robot_ip: str) -> str:
+    try:
+        completed = subprocess.run(
+            ["ip", "route", "get", robot_ip],
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=5.0,
+        )
+    except (OSError, subprocess.TimeoutExpired) as exc:
+        raise UnitreeG1Error(f"Could not resolve route to robot IP {robot_ip!r}") from exc
+
+    if completed.returncode != 0:
+        raise UnitreeG1Error(
+            f"No route to robot IP {robot_ip!r}. Connect to the robot network first.\n"
+            f"{completed.stderr.strip()}"
+        )
+
+    tokens = completed.stdout.split()
+    if "dev" not in tokens:
+        raise UnitreeG1Error(f"Could not find interface in route output: {completed.stdout.strip()}")
+    dev_index = tokens.index("dev") + 1
+    if dev_index >= len(tokens):
+        raise UnitreeG1Error(f"Malformed route output: {completed.stdout.strip()}")
+    return tokens[dev_index]
+
+
+def g1_camera_candidates(robot_ip: str, camera_url: str | None = None) -> list[str]:
+    explicit_url = camera_url or os.environ.get("G1_CAMERA_URL")
+    if explicit_url:
+        return [explicit_url.format(ip=robot_ip)]
+    return [template.format(ip=robot_ip) for template in DEFAULT_G1_CAMERA_TEMPLATES]
+
+
 class G1LocoSdk2Client:
     """Thin Python wrapper around the SDK2 G1 loco example executable."""
 
     def __init__(
         self,
-        network_interface: str,
+        network_interface: str | None = None,
+        robot_ip: str | None = None,
         sdk2_path: Path = DEFAULT_SDK2_PATH,
         loco_binary: Path | None = None,
         timeout_s: float = 15.0,
     ) -> None:
+        if network_interface is None:
+            if robot_ip is None:
+                raise UnitreeG1Error("Pass robot_ip or network_interface for G1 SDK2 commands.")
+            network_interface = resolve_network_interface(robot_ip)
+
+        self.robot_ip = robot_ip
         self.network_interface = network_interface
         self.sdk2_path = sdk2_path.expanduser()
         self.timeout_s = timeout_s

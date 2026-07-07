@@ -1,11 +1,25 @@
 # Humanoid Robot Grasping
 
-## Quick Start
+## Vision Quick Start
+
+For a local webcam or USB camera:
 
 ```bash
 git switch aarav
 uv sync
 uv run python scripts/run_manual_tracker.py --camera 0 --output runs/object_manual_test
+```
+
+For a G1 camera stream after the robot is powered on and reachable:
+
+```bash
+uv run g1-vision 192.168.123.161
+```
+
+If the G1 camera uses a known URL, pass it directly:
+
+```bash
+uv run g1-vision 192.168.123.161 --camera-url "rtsp://{ip}:8554/live"
 ```
 
 In the first video frame, drag a box around the moving plush object and press Enter. Press `q` or Escape to stop.
@@ -17,7 +31,9 @@ The run writes:
 
 ## Unitree G1 SDK2 Commands
 
-This project uses the C++ SDK2 G1 loco example through a small Python wrapper. Build the SDK helper first:
+Robot commands can be addressed by robot IP. The project resolves the local network interface automatically.
+
+Build the SDK helper once:
 
 ```bash
 cd ~/Documents/unitree_sdk2
@@ -27,22 +43,13 @@ cmake ..
 make g1_loco_client
 ```
 
-Send a one-shot G1 command, replacing `enp3s0` with the network interface connected to the robot:
+Then run commands from this project:
 
 ```bash
-uv run g1-loco --network-interface enp3s0 get_fsm_id
-uv run g1-loco --network-interface enp3s0 stand_up
-uv run g1-loco --network-interface enp3s0 move --velocity "0.2 0 0 1.0"
-uv run g1-loco --network-interface enp3s0 stop_move
+uv run g1-loco 192.168.123.161 get_fsm_id
+uv run g1-loco 192.168.123.161 stand_up
+uv run g1-loco 192.168.123.161 move --velocity "0.2 0 0 1.0"
+uv run g1-loco 192.168.123.161 stop_move
 ```
 
-The tracker can also send optional one-shot G1 commands after tracker initialization:
-
-```bash
-uv run python scripts/run_manual_tracker.py \
-  --camera 0 \
-  --output runs/object_manual_test \
-  --unitree-network-interface enp3s0 \
-  --g1-command-on-start get_fsm_id \
-  --g1-stop-on-exit
-```
+Only use `--network-interface` if automatic route detection fails.

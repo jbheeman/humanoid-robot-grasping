@@ -7,7 +7,12 @@ from pathlib import Path
 import cv2
 
 from object_tracking.logging import JsonlLogger
-from object_tracking.unitree_g1 import G1LocoSdk2Client, UnitreeG1Error, parse_velocity
+from object_tracking.unitree_g1 import (
+    G1LocoSdk2Client,
+    UnitreeG1Error,
+    g1_camera_candidates,
+    parse_velocity,
+)
 
 
 def create_tracker() -> cv2.Tracker:
@@ -31,15 +36,44 @@ def parse_camera(value: str) -> int | str:
         return value
 
 
+def open_camera(camera: int | str, robot_ip: str | None, robot_camera_url: str | None) -> tuple[cv2.VideoCapture, object, object]:
+    sources: list[int | str]
+    if camera == "g1":
+        if robot_ip is None:
+            raise RuntimeError("--camera g1 requires --robot-ip or --robot-camera-url.")
+        sources = g1_camera_candidates(robot_ip, robot_camera_url)
+    else:
+        sources = [camera]
+
+    errors: list[str] = []
+    for source in sources:
+        cap = cv2.VideoCapture(source)
+        if not cap.isOpened():
+            cap.release()
+            errors.append(f"{source}: could not open")
+            continue
+        ok, frame = cap.read()
+        if ok and frame is not None:
+            return cap, frame, source
+        cap.release()
+        errors.append(f"{source}: opened but did not return a frame")
+
+    details = "\n".join(f"  - {error}" for error in errors)
+    raise RuntimeError(f"Could not open camera source. Tried:\n{details}")
+
+
 def build_g1_client(
     network_interface: str | None,
+    robot_ip: str | None,
     sdk2_path: Path,
     loco_binary: Path | None,
+    needs_robot_commands: bool,
 ) -> G1LocoSdk2Client | None:
-    if not network_interface:
+    if not needs_robot_commands:
         return None
     return G1LocoSdk2Client(
         network_interface=network_interface,
+        robot_ip=robot_ip,
         sdk2_path=sdk2_path,
         loco_binary=loco_binary,
     )
@@ -69,18 +103,15 @@ def run(
     g1_command_on_start: str = "none",
     g1_velocity_on_start: tuple[float, float, float, float | None] | None = None,
     g1_stop_on_exit: bool = False,
+    robot_ip: str | None = None,
+    robot_camera_url: str | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / "tracking.jsonl"
     video_path = output_dir / "tracking.mp4"
 
-    cap = cv2.VideoCapture(camera)
-    if not cap.isOpened():
-        raise RuntimeError(f"Could not open camera/video source: {camera}")
-
-    ok, frame = cap.read()
-    if not ok:
-        raise RuntimeError("Could not read first frame from camera/video source")
+    cap, frame, camera_source = open_camera(camera, robot_ip, robot_camera_url)
+    print(f"Using camera source: {camera_source}")
 
     bbox = cv2.selectROI("Select plush object", frame, fromCenter=False, showCrosshair=True)
     cv2.destroyWindow("Select plush object")
@@ -191,7 +222,15 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--camera",
         default="0",
-        help="Camera index or video path. Use 0 for default webcam.",
+        help="Camera index, video path, stream URL, or 'g1' to try common G1 stream URLs.",
+    )
+    parser.add_argument(
+        "--robot-ip",
+        help="Robot IP address. Used to resolve G1 camera URLs and SDK network interface.",
+    )
+    parser.add_argument(
+        "--robot-camera-url",
+        help="Explicit camera URL. May include {ip}, for example rtsp://{ip}:8554/live.",
     )
     parser.add_argument(
         "--output",
@@ -210,7 +249,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--unitree-network-interface",
-        help="Network interface connected to the G1. Enables SDK2 G1 loco commands.",
+        help="Override the local network interface for SDK2 commands. Usually use --robot-ip instead.",
     )
     parser.add_argument(
         "--unitree-sdk2-path",
@@ -246,10 +285,17 @@ def build_parser() -> argparse.ArgumentParser:
 def main() -> None:
     args = build_parser().parse_args()
     try:
+        needs_robot_commands = (
+            args.g1_command_on_start != "none"
+            or args.g1_velocity_on_start is not None
+            or args.g1_stop_on_exit
+        )
         g1_client = build_g1_client(
             args.unitree_network_interface,
+            args.robot_ip,
             args.unitree_sdk2_path,
             args.unitree_loco_binary,
+            needs_robot_commands,
         )
         run(
             parse_camera(args.camera),
@@ -260,6 +306,8 @@ def main() -> None:
             g1_command_on_start=args.g1_command_on_start,
             g1_velocity_on_start=args.g1_velocity_on_start,
             g1_stop_on_exit=args.g1_stop_on_exit,
+            robot_ip=args.robot_ip,
+            robot_camera_url=args.robot_camera_url,
         )
     except UnitreeG1Error as exc:
         raise SystemExit(str(exc)) from exc
