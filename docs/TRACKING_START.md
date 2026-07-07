@@ -48,6 +48,7 @@ After manual tracking works, add an automatic detector for the target plush obje
 
 ## Unitree G1 Integration Note
 
-The current tracker accepts a normal OpenCV camera/video source. For the first test, that is intentional. When G1 access is available, add a camera adapter around `unitree_sdk2` or the available Unitree bindings instead of rewriting the tracker.
+The tracker accepts normal OpenCV sources. For G1, pass `--camera g1` and the
+SDK-provided camera candidates are used automatically.
 
-See `docs/UNITREE_SDK2_NOTES.md`.
+See `docs/UNITREE_SDK2_NOTES.md` for SDK/loco details.

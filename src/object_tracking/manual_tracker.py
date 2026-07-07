@@ -10,6 +10,7 @@ from object_tracking.logging import JsonlLogger
 from object_tracking.unitree_g1 import (
     G1LocoSdk2Client,
     UnitreeG1Error,
+    is_gstreamer_pipeline,
     g1_camera_candidates,
     parse_velocity,
 )
@@ -36,6 +37,16 @@ def parse_camera(value: str) -> int | str:
         return value
 
 
+def parse_bbox(value: str) -> tuple[int, int, int, int]:
+    parts = [part.strip() for part in value.replace(",", " ").split()]
+    if len(parts) != 4:
+        raise argparse.ArgumentTypeError("Expected bbox as 'x y width height'.")
+    x, y, width, height = (int(float(part)) for part in parts)
+    if width <= 0 or height <= 0:
+        raise argparse.ArgumentTypeError("Bounding box width and height must be positive.")
+    return x, y, width, height
+
+
 def open_camera(camera: int | str, robot_ip: str | None, robot_camera_url: str | None) -> tuple[cv2.VideoCapture, object, object]:
     sources: list[int | str]
     if camera == "g1":
@@ -47,7 +58,14 @@ def open_camera(camera: int | str, robot_ip: str | None, robot_camera_url: str |
 
     errors: list[str] = []
     for source in sources:
-        cap = cv2.VideoCapture(source)
+        if isinstance(source, str) and is_gstreamer_pipeline(source):
+            if not hasattr(cv2, "CAP_GSTREAMER"):
+                raise RuntimeError(
+                    "OpenCV in this environment does not expose CAP_GSTREAMER. Install a GStreamer-capable OpenCV build to use Unitree G1 camera streams."
+                )
+            cap = cv2.VideoCapture(source, cv2.CAP_GSTREAMER)
+        else:
+            cap = cv2.VideoCapture(source)
         if not cap.isOpened():
             cap.release()
             errors.append(f"{source}: could not open")
@@ -65,8 +83,6 @@ def open_camera(camera: int | str, robot_ip: str | None, robot_camera_url: str |
 def build_g1_client(
     network_interface: str | None,
     robot_ip: str | None,
-    sdk2_path: Path,
-    loco_binary: Path | None,
     needs_robot_commands: bool,
 ) -> G1LocoSdk2Client | None:
     if not needs_robot_commands:
@@ -74,8 +90,6 @@ def build_g1_client(
     return G1LocoSdk2Client(
         network_interface=network_interface,
         robot_ip=robot_ip,
-        sdk2_path=sdk2_path,
-        loco_binary=loco_binary,
     )
 
 
@@ -105,6 +119,8 @@ def run(
     g1_stop_on_exit: bool = False,
     robot_ip: str | None = None,
     robot_camera_url: str | None = None,
+    bbox: tuple[int, int, int, int] | None = None,
+    max_frames: int | None = None,
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     log_path = output_dir / "tracking.jsonl"
@@ -113,10 +129,13 @@ def run(
     cap, frame, camera_source = open_camera(camera, robot_ip, robot_camera_url)
     print(f"Using camera source: {camera_source}")
 
-    bbox = cv2.selectROI("Select plush object", frame, fromCenter=False, showCrosshair=True)
-    cv2.destroyWindow("Select plush object")
-    if bbox == (0, 0, 0, 0):
-        raise RuntimeError("No bounding box selected")
+    if bbox is None:
+        if not show:
+            raise RuntimeError("Headless tracking requires --bbox 'x y width height'.")
+        bbox = cv2.selectROI("Select plush object", frame, fromCenter=False, showCrosshair=True)
+        cv2.destroyWindow("Select plush object")
+        if bbox == (0, 0, 0, 0):
+            raise RuntimeError("No bounding box selected")
 
     tracker = create_tracker()
     tracker.init(frame, bbox)
@@ -204,6 +223,9 @@ def run(
                     key = cv2.waitKey(1) & 0xFF
                     if key in (ord("q"), 27):
                         break
+
+                if max_frames is not None and frame_id >= max_frames:
+                    break
         finally:
             if g1_client is not None and g1_stop_on_exit:
                 log_g1_result(logger, "g1_stop_on_exit", g1_client.stop_move())
@@ -230,7 +252,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--robot-camera-url",
-        help="Explicit camera URL. May include {ip}, for example rtsp://{ip}:8554/live.",
+        help="Explicit camera source. May include {ip}; examples: "
+        'udpsrc address={ip} port=5600 ...',
     )
     parser.add_argument(
         "--output",
@@ -248,23 +271,23 @@ def build_parser() -> argparse.ArgumentParser:
         help="Disable annotated MP4 recording.",
     )
     parser.add_argument(
+        "--bbox",
+        type=parse_bbox,
+        metavar='"X Y WIDTH HEIGHT"',
+        help="Initial tracking box. Required for headless tracking without ROI selection.",
+    )
+    parser.add_argument(
+        "--max-frames",
+        type=int,
+        help="Stop after this many tracked frames.",
+    )
+    parser.add_argument(
         "--unitree-network-interface",
         help="Override the local network interface for SDK2 commands. Usually use --robot-ip instead.",
     )
     parser.add_argument(
-        "--unitree-sdk2-path",
-        type=Path,
-        default=Path("~/Documents/unitree_sdk2").expanduser(),
-        help="Path to the Unitree SDK2 checkout.",
-    )
-    parser.add_argument(
-        "--unitree-loco-binary",
-        type=Path,
-        help="Path to a built g1_loco_client binary. Defaults to SDK2 build outputs.",
-    )
-    parser.add_argument(
         "--g1-command-on-start",
-        choices=("none", "get_fsm_id", "start", "stand_up", "balance_stand", "stop_move", "damp"),
+        choices=("none", "stand_up", "balance_stand", "stop_move", "damp"),
         default="none",
         help="Optional one-shot G1 loco command after tracker initialization.",
     )
@@ -293,8 +316,6 @@ def main() -> None:
         g1_client = build_g1_client(
             args.unitree_network_interface,
             args.robot_ip,
-            args.unitree_sdk2_path,
-            args.unitree_loco_binary,
             needs_robot_commands,
         )
         run(
@@ -308,6 +329,8 @@ def main() -> None:
             g1_stop_on_exit=args.g1_stop_on_exit,
             robot_ip=args.robot_ip,
             robot_camera_url=args.robot_camera_url,
+            bbox=args.bbox,
+            max_frames=args.max_frames,
         )
     except UnitreeG1Error as exc:
         raise SystemExit(str(exc)) from exc

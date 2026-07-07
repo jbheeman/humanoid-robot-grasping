@@ -7,13 +7,18 @@ dependencies = [
     "opencv-python>=4.9",
 ]
 
+[project.optional-dependencies]
+loco = [
+    "unitree-sdk2==1.0.1",
+]
+
 [dependency-groups]
 dev = []
 
 [project.scripts]
 object-manual-tracker = "object_tracking.manual_tracker:main"
-g1-loco = "object_tracking.g1_loco_cli:main"
-g1-vision = "object_tracking.g1_vision_cli:main"
+loco = "object_tracking.g1_loco_cli:main"
+vision = "object_tracking.g1_vision_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
