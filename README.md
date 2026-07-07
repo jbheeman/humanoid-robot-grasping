@@ -88,3 +88,53 @@ uv run loco 192.168.0.4 --diagnose
 ```
 
 `--network-interface` is only needed if route detection fails.
+
+## Grasping (arms and hands only)
+
+`grasp` drives *only* the G1 arm joints (indices 15-28) over the low-level
+`rt/arm_sdk` channel and the Dex3-1 hands over `rt/dex3/{left,right}/cmd`. The
+legs and waist stay under the balance controller, so the robot keeps standing
+while the arms reach out, close the hands, and hold an object steadily.
+
+Requires the loco extra:
+
+```bash
+uv sync --extra loco
+```
+
+Stand the robot up first, then run the grasp:
+
+```bash
+uv run loco 192.168.0.4 stand_up
+uv run loco 192.168.0.4 balance_stand
+uv run grasp 192.168.0.4
+```
+
+The sequence is: engage arms → move to a ready pose → reach forward → close the
+hands → hold firmly, then release the hands and return the arms home on exit.
+
+Validate safely before commanding motion:
+
+```bash
+uv run grasp 192.168.0.4 --check      # print live arm joint angles, no motion
+uv run grasp 192.168.0.4 --dry-run    # log the planned sequence, no motion
+```
+
+Commonly useful options:
+
+```bash
+uv run grasp 192.168.0.4 --hold-forever          # hold until Ctrl+C, then release
+uv run grasp 192.168.0.4 --hold-seconds 20 --lift # hold 20s and lift slightly
+uv run grasp 192.168.0.4 --hand none              # arms only (no Dex3-1 hands)
+uv run grasp 192.168.0.4 --side left              # one arm/hand
+uv run grasp 192.168.0.4 --kp 80 --kd 2.0         # firmer hold
+uv run grasp 192.168.0.4 --yes                    # skip the safety countdown
+```
+
+Events are logged to `runs/grasp/grasp.jsonl`.
+
+Notes:
+- The arm poses in `DEFAULT_POSES` and the Dex3-1 open/close vectors in
+  `src/object_tracking/g1_grasp.py` are starting points — **tune them on your
+  hardware** (joint sign conventions and reachable ranges vary per unit).
+- Keep a hand on the e-stop; a `--countdown` runs before any motion.

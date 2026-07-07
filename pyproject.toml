@@ -19,6 +19,7 @@ dev = []
 object-manual-tracker = "object_tracking.manual_tracker:main"
 loco = "object_tracking.g1_loco_cli:main"
 vision = "object_tracking.g1_vision_cli:main"
+grasp = "object_tracking.g1_grasp_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
