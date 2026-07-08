@@ -274,6 +274,21 @@ python3 scripts/robot.py sdk-example g1_arm_action "release arm"
 
 The original SDK files these map to are `example/g1/high_level/g1_loco_client_example.py`, `example/g1/high_level/g1_arm_action_example.py`, and `example/motionSwitcher/motion_switcher_example.py`. The wrapper is allowlisted because the original examples are interactive loops and several actions move the robot immediately.
 
+Copied vendor examples are also available verbatim under `scripts/unitree_examples/`. Run these on the robot, not the server:
+
+```bash
+cd ~/humanoid-robot-grasping
+git pull
+
+python3 scripts/robot.py vendor-example list
+python3 scripts/robot.py vendor-example motion_switcher
+python3 scripts/robot.py vendor-example g1_loco
+python3 scripts/robot.py vendor-example g1_arm_action
+python3 scripts/robot.py vendor-example g1_arm5
+```
+
+These are the Unitree examples unchanged. For `g1_loco`, type `list` at its prompt, then try IDs from the Unitree menu. For example, ID `3` is Unitree's `move forward` example and ID `5` is `move rotate`.
+
 `amount` is the fraction of the forward arm target. Start around `0.1` to `0.2`. Arm and velocity motion use smoothstep easing so they ease in/out instead of snapping to a linear ramp.
 
 Only use robot-local checks to isolate low-level robot networking after server-side tests are exhausted:

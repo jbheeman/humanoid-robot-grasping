@@ -48,6 +48,19 @@ def build_parser() -> argparse.ArgumentParser:
     sdk_example.add_argument("--duration", type=float, default=0.5)
     sdk_example.add_argument("--smoke", action="store_true")
 
+    vendor_example = subparsers.add_parser(
+        "vendor-example",
+        help="Run a copied Unitree SDK2 example file verbatim. Run this on the robot.",
+    )
+    vendor_example.add_argument(
+        "example",
+        nargs="?",
+        choices=("list", "g1_loco", "g1_arm_action", "g1_arm5", "g1_arm7", "g1_low_level", "motion_switcher"),
+        default="list",
+    )
+    vendor_example.add_argument("--interface", default=DEFAULT_INTERFACE)
+    vendor_example.add_argument("--no-interface-arg", action="store_true")
+
     arms = subparsers.add_parser("arms-up", help="Move arms through the HTTP bridge high-level arm command.")
     arms.add_argument("amount", nargs="?", type=float, default=0.15)
     arms.add_argument("--ramp", type=float, default=1.5)
@@ -178,6 +191,13 @@ def shoulder_pitch(args: argparse.Namespace) -> int:
     return run_script("g1_arms_forward.py", command)
 
 
+def vendor_example(args: argparse.Namespace) -> int:
+    command = [args.example, "--interface", args.interface]
+    if args.no_interface_arg:
+        command.append("--no-interface-arg")
+    return run_script("unitree_vendor_example.py", command)
+
+
 def print_response(status: int, body: str) -> int:
     print(body, end="" if body.endswith("\n") else "\n")
     return 0 if 200 <= status < 300 else 1
@@ -267,6 +287,8 @@ def main() -> int:
         return serve(args)
     if args.command == "shoulder-pitch":
         return shoulder_pitch(args)
+    if args.command == "vendor-example":
+        return vendor_example(args)
 
     if args.command == "health":
         return print_response(*send_json(bridge_url(args.host, args.port, "/health")))
