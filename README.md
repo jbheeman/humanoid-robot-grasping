@@ -292,6 +292,29 @@ uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name ai_s
 
 `check_motion_mode` is read-only. `select_ai_mode` calls `MotionSwitcherClient.SelectMode("ai")`, so only run it when the robot is physically safe and the controller/e-stop is ready.
 
+### Robot-local shoulder pitch arm test
+
+This script runs on the robot itself and uses low-level SDK2 topics. It releases high-level motion mode, reads the current full-body posture from `rt/lowstate`, holds every motor at that posture, and only offsets the selected shoulder pitch joint(s).
+
+On the robot:
+
+```bash
+cd ~/humanoid-robot-grasping
+git pull
+
+python3 scripts/g1_arms_forward.py \
+  --interface wlan0 \
+  --domain-id 0 \
+  --side both \
+  --sign 1 \
+  --delta 0.25 \
+  --ramp-seconds 3.0 \
+  --hold-seconds 5.0 \
+  --i-understand-this-moves-the-robot
+```
+
+If the shoulder pitch direction is backwards, retry with `--sign -1`. Start with a smaller `--delta 0.1` if you only want a small motion check.
+
 After a read-only probe returns `ok: true`, a tiny movement smoke test is available but guarded:
 
 ```bash
