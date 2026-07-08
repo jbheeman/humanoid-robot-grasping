@@ -167,52 +167,54 @@ uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name spor
 
 If both probes return `3102` (`Request sending error`) on read-only methods, put the robot into high-level sport/ai-sport mode with the controller and retry. At that point the failure is the robot RPC server not responding on `rt/api/<service>/request`, not DDS initialization. The next useful checks are whether the robot firmware exposes the high-level loco RPC service at all and whether motion mode is enabled on the robot side.
 
-If MotionSwitcher also returns `3102`, run the read-only RPC probes from inside the robot on the internal control interface:
+If MotionSwitcher also returns `3102`, first classify the server-to-robot path from the machine that will send commands:
+
+```bash
+PYTHONPATH=$PWD/src python3 scripts/robot_eth0_rpc_probe.py \
+  --interfaces enP7s7,wlan0 \
+  --ping-ip 192.168.0.212 \
+  --domain-id 0 \
+  --timeout 15.0
+```
+
+The probe script sets `PYTHONPATH=./src` for child commands, checks `object_tracking` imports before DDS, and reports per-interface classifications. `--ping-ip` is only a network diagnostic; Unitree DDS discovery uses `--interfaces`, `--domain-id`, and the SDK service names.
+
+Direct server-side read-only checks:
+
+```bash
+PYTHONPATH=$PWD/src python3 scripts/g1_loco.py \
+  --interface enP7s7 \
+  --domain-id 0 \
+  --timeout 15.0 \
+  --dds-config-mode no_trace \
+  diagnose \
+  --loco-service-name sport
+
+PYTHONPATH=$PWD/src python3 scripts/g1_loco.py \
+  --interface wlan0 \
+  --domain-id 0 \
+  --timeout 15.0 \
+  --dds-config-mode no_trace \
+  probe_loco \
+  --loco-service-name sport
+```
+
+Diagnosis rules:
+- Import check fails: repo packaging/import issue; DDS was not tested.
+- One interface returns SDK RPC code `0`: use that interface for Unitree DDS.
+- `3102`: request sending/network/interface issue.
+- `3103`: API not registered or wrong service name; try `sport` and `ai_sport`.
+- `3104`: timeout/discovery or service unavailable.
+- Server-side fails but robot-local succeeds: do not send Unitree DDS from the server; run a robot-side motion daemon and send HTTP/WebSocket commands over Wi-Fi.
+
+Only use robot-local checks to isolate low-level robot networking after server-side tests are exhausted:
 
 ```bash
 ssh unitree@192.168.0.212
-ip route
-ping -c 3 192.168.123.1
-ping -c 3 192.168.123.164
-python3 - <<'PY'
-try:
-    import unitree_sdk2py
-    print("unitree_sdk2py:", unitree_sdk2py.__file__)
-except Exception as e:
-    print("NO unitree_sdk2py:", repr(e))
-
-try:
-    import cyclonedds
-    print("cyclonedds:", cyclonedds.__file__)
-except Exception as e:
-    print("NO cyclonedds:", repr(e))
-PY
-```
-
-If the repo or SDK is not already on the robot, copy and install them:
-
-```bash
-rsync -az ~/unitree_sdk2_python unitree@192.168.0.212:~/
-rsync -az ~/humanoid-robot-grasping unitree@192.168.0.212:~/
-ssh unitree@192.168.0.212
 cd ~/humanoid-robot-grasping
-python3 -m venv .venv
-source .venv/bin/activate
-pip install -e ~/unitree_sdk2_python
-pip install cyclonedds==0.10.2
-pip install -e .
+git pull
+python3 scripts/robot_eth0_rpc_probe.py --interfaces eth0,wlan0 --ping-ip 192.168.123.1
 ```
-
-Then run the combined read-only robot-local probe:
-
-```bash
-cd ~/humanoid-robot-grasping
-python3 scripts/robot_eth0_rpc_probe.py --interface eth0 --robot-ip 192.168.123.164
-```
-
-The probe script sets `PYTHONPATH=./src` for its child commands, so it can run directly from a copied checkout even before `pip install -e .` succeeds.
-
-If this succeeds from `eth0`, the dev machine path cannot reach the robot SDK RPC services. If it still returns `3102`, the issue is robot-side service/motion-mode availability.
 
 If the robot does not show an obvious `ai_sport`/`loco` Linux service to start manually, use the SDK motion switcher path:
 
@@ -223,3 +225,13 @@ uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name ai_s
 ```
 
 `check_motion_mode` is read-only. `select_ai_mode` calls `MotionSwitcherClient.SelectMode("ai")`, so only run it when the robot is physically safe and the controller/e-stop is ready.
+
+After a read-only probe returns `ok: true`, a tiny movement smoke test is available but guarded:
+
+```bash
+uv run loco 192.168.0.212 smoke_move \
+  --interface enP7s7 \
+  --loco-service-name sport \
+  --dds-config-mode no_trace \
+  --i-understand-this-moves-the-robot
+```

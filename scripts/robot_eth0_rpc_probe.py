@@ -11,10 +11,22 @@ import sys
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Run read-only Unitree SDK2 RPC probes from the robot internal eth0 network."
+        description="Run read-only Unitree SDK2 RPC probes across one or more DDS interfaces."
     )
-    parser.add_argument("--robot-ip", default="192.168.123.164")
-    parser.add_argument("--interface", default="eth0")
+    parser.add_argument(
+        "--robot-ip",
+        dest="legacy_robot_ip",
+        default=None,
+        help="Deprecated alias for --ping-ip. DDS probes use interface/domain, not this IP.",
+    )
+    parser.add_argument(
+        "--ping-ip",
+        action="append",
+        default=None,
+        help="Optional diagnostic IP to ping. May be passed multiple times.",
+    )
+    parser.add_argument("--interface", default=None, help="Single DDS interface to test.")
+    parser.add_argument("--interfaces", default=None, help="Comma-separated DDS interfaces to test, e.g. eth0,wlan0.")
     parser.add_argument("--domain-id", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--control-peer", default="192.168.123.1")
@@ -39,13 +51,81 @@ def run_command(command: list[str], timeout_s: float = 20.0, env: dict[str, str]
             "command": command,
             "exception": repr(exc),
         }
-    return {
+    report: dict[str, object] = {
         "ok": completed.returncode == 0,
         "command": command,
         "returncode": completed.returncode,
         "stdout": completed.stdout,
         "stderr": completed.stderr,
     }
+    try:
+        report["stdout_json"] = json.loads(completed.stdout)
+    except Exception:
+        pass
+    return report
+
+
+def collect_codes(value: object) -> list[int]:
+    codes: list[int] = []
+    if isinstance(value, dict):
+        code = value.get("code")
+        if isinstance(code, int):
+            codes.append(code)
+        for child in value.values():
+            codes.extend(collect_codes(child))
+    elif isinstance(value, list):
+        for child in value:
+            codes.extend(collect_codes(child))
+    return codes
+
+
+def probe_rpc_ok(result: dict[str, object]) -> bool:
+    stdout_json = result.get("stdout_json")
+    return isinstance(stdout_json, dict) and bool(stdout_json.get("ok"))
+
+
+def probe_codes(result: dict[str, object]) -> list[int]:
+    return collect_codes(result.get("stdout_json"))
+
+
+def classify_interface(probes: dict[str, dict[str, object]]) -> dict[str, object]:
+    check = probes.get("check_motion_mode", {})
+    sport = probes.get("probe_loco_sport", {})
+    ai_sport = probes.get("probe_loco_ai_sport", {})
+    all_codes = [code for result in probes.values() for code in probe_codes(result)]
+    any_ok = any(probe_rpc_ok(result) for result in probes.values())
+
+    if any_ok:
+        if probe_rpc_ok(check) and not probe_rpc_ok(sport) and not probe_rpc_ok(ai_sport):
+            diagnosis = "MotionSwitcher reachable, but both loco services failed. Service name/API may be wrong."
+        else:
+            diagnosis = "At least one SDK RPC service responded on this interface."
+    elif all_codes and all(code == 3102 for code in all_codes):
+        diagnosis = "All SDK RPC calls returned 3102. This points to request sending/network/interface failure."
+    elif all_codes and 3103 in all_codes:
+        diagnosis = "One or more SDK RPC calls returned 3103. This points to API not registered or wrong service name."
+    elif all_codes and 3104 in all_codes:
+        diagnosis = "One or more SDK RPC calls returned 3104. This points to timeout/discovery/service unavailable."
+    else:
+        diagnosis = "No SDK RPC success code found. Inspect subprocess stderr/stdout for packaging or DDS errors."
+
+    return {
+        "ok": any_ok,
+        "codes": sorted(set(all_codes)),
+        "diagnosis": diagnosis,
+    }
+
+
+def repo_import_check(python: str, env: dict[str, str]) -> dict[str, object]:
+    return run_command(
+        [
+            python,
+            "-c",
+            "import object_tracking; print(object_tracking.__file__)",
+        ],
+        timeout_s=5.0,
+        env=env,
+    )
 
 
 def import_report() -> dict[str, object]:
@@ -75,52 +155,89 @@ def main() -> int:
         if not existing_pythonpath
         else f"{src_path}{os.pathsep}{existing_pythonpath}"
     )
-    base_loco = [
-        args.python,
-        str(script),
-        args.robot_ip,
-        "--interface",
-        args.interface,
-        "--domain-id",
-        str(args.domain_id),
-        "--timeout",
-        str(args.timeout),
-        "--dds-config-mode",
-        "no_trace",
-    ]
+    interfaces_raw = args.interfaces or args.interface or "eth0"
+    interfaces = [item.strip() for item in interfaces_raw.split(",") if item.strip()]
+    ping_ips = list(args.ping_ip or [])
+    if args.legacy_robot_ip:
+        ping_ips.append(args.legacy_robot_ip)
 
     report: dict[str, object] = {
-        "robot_ip": args.robot_ip,
-        "interface": args.interface,
+        "interfaces": interfaces,
+        "ping_ips": ping_ips,
         "domain_id": args.domain_id,
         "python": args.python,
         "repo_root": str(repo_root),
         "child_pythonpath": child_env["PYTHONPATH"],
         "imports": import_report(),
+        "repo_import_check": repo_import_check(args.python, child_env),
         "route": run_command(["ip", "route"], timeout_s=5.0),
-        "probes": {},
+        "addr": run_command(["ip", "-br", "addr"], timeout_s=5.0),
+        "interface_results": {},
     }
 
+    if not report["repo_import_check"]["ok"]:
+        report["diagnosis"] = "Repo packaging/import issue. DDS was not tested."
+        print(json.dumps(report, indent=2, sort_keys=True))
+        return 1
+
     if not args.skip_ping:
-        report["ping_control_peer"] = run_command(["ping", "-c", "3", args.control_peer], timeout_s=8.0)
-        report["ping_robot_ip"] = run_command(["ping", "-c", "3", args.robot_ip], timeout_s=8.0)
+        ping_targets = [args.control_peer, *ping_ips]
+        report["pings"] = {
+            target: run_command(["ping", "-c", "3", target], timeout_s=8.0)
+            for target in ping_targets
+        }
 
     probe_timeout = max(args.timeout + 10.0, 20.0)
-    report["probes"]["check_motion_mode"] = run_command(
-        [*base_loco, "check_motion_mode"],
-        timeout_s=probe_timeout,
-        env=child_env,
-    )
-    report["probes"]["probe_loco_ai_sport"] = run_command(
-        [*base_loco, "probe_loco", "--loco-service-name", "ai_sport"],
-        timeout_s=probe_timeout,
-        env=child_env,
-    )
-    report["probes"]["probe_loco_sport"] = run_command(
-        [*base_loco, "probe_loco", "--loco-service-name", "sport"],
-        timeout_s=probe_timeout,
-        env=child_env,
-    )
+    for interface in interfaces:
+        base_loco = [
+            args.python,
+            str(script),
+            "--interface",
+            interface,
+            "--domain-id",
+            str(args.domain_id),
+            "--timeout",
+            str(args.timeout),
+            "--dds-config-mode",
+            "no_trace",
+        ]
+        report["interface_results"][interface] = {
+            "neighbors": run_command(["ip", "neigh", "show", "dev", interface], timeout_s=5.0),
+            "probes": {},
+        }
+        probes = report["interface_results"][interface]["probes"]
+        probes["check_motion_mode"] = run_command(
+            [*base_loco, "check_motion_mode"],
+            timeout_s=probe_timeout,
+            env=child_env,
+        )
+        probes["probe_loco_sport"] = run_command(
+            [*base_loco, "probe_loco", "--loco-service-name", "sport"],
+            timeout_s=probe_timeout,
+            env=child_env,
+        )
+        probes["probe_loco_ai_sport"] = run_command(
+            [*base_loco, "probe_loco", "--loco-service-name", "ai_sport"],
+            timeout_s=probe_timeout,
+            env=child_env,
+        )
+        report["interface_results"][interface]["classification"] = classify_interface(probes)
+
+    ok_interfaces = [
+        interface
+        for interface, result in report["interface_results"].items()
+        if result["classification"]["ok"]
+    ]
+    if not ok_interfaces:
+        report["diagnosis"] = (
+            "Import check passed, but no interface had a successful SDK RPC response. "
+            "3102=request sending/network/interface, 3103=API not registered/wrong service, "
+            "3104=timeout/discovery or service unavailable."
+        )
+    elif len(ok_interfaces) == 1:
+        report["diagnosis"] = f"Use interface {ok_interfaces[0]} for Unitree SDK2 DDS RPC."
+    else:
+        report["diagnosis"] = f"Multiple interfaces had SDK RPC responses: {', '.join(ok_interfaces)}."
 
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0

@@ -28,6 +28,21 @@ from object_tracking.unitree_g1 import (
 )
 
 
+COMMAND_CHOICES = (
+    "stand_up",
+    "balance_stand",
+    "stop_move",
+    "damp",
+    "move",
+    "move_arms_up",
+    "probe_loco",
+    "check_motion_mode",
+    "select_ai_mode",
+    "diagnose",
+    "smoke_move",
+)
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Send Unitree G1 commands via unitree-sdk2 Python package (version 1.0.1)."
@@ -83,17 +98,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=(
-            "stand_up",
-            "balance_stand",
-            "stop_move",
-            "damp",
-            "move",
-            "move_arms_up",
-            "probe_loco",
-            "check_motion_mode",
-            "select_ai_mode",
-        ),
+        choices=COMMAND_CHOICES,
         help="G1 loco command to send. Omit and pass --diagnose for diagnostics only.",
     )
     parser.add_argument(
@@ -126,6 +131,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--smoke-loco-config-sweep",
         action="store_true",
         help="Run subprocess smoke tests once per DDS config mode.",
+    )
+    parser.add_argument(
+        "--i-understand-this-moves-the-robot",
+        action="store_true",
+        help="Required for smoke_move. Sends a tiny forward velocity command briefly, then StopMove.",
     )
     return parser
 
@@ -594,8 +604,79 @@ def _diagnose_client(
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
+def _load_result_json(result_stdout: str) -> object:
+    try:
+        return json.loads(result_stdout)
+    except Exception:
+        return result_stdout
+
+
+def _runtime_diagnose(
+    robot_ip: str | None,
+    network_interface: str | None,
+    timeout_s: float,
+    domain_id: int,
+    loco_service_name: str,
+    cyclonedds_log_file: str | None,
+    dds_config_mode: str,
+) -> None:
+    effective_service = effective_loco_service_name(loco_service_name)
+    report: dict[str, object] = {
+        "ok": False,
+        "interface": network_interface or "auto",
+        "domain_id": domain_id,
+        "dds_config_mode": dds_config_mode,
+        "service_name": effective_service,
+        "client": "unitree_sdk2py.g1.loco.g1_loco_client.LocoClient",
+        "motion_switcher_client": "unitree_sdk2py.comm.motion_switcher.motion_switcher_client.MotionSwitcherClient",
+        "sdk_imports": {
+            "unitree_sdk2py": _module_info("unitree_sdk2py"),
+            "cyclonedds": _module_info("cyclonedds"),
+            "g1_loco": _g1_loco_info(loco_service_name),
+        },
+        "check_motion_mode": None,
+        "loco_probe": None,
+    }
+
+    try:
+        motion_client = MotionSwitcherSdk2Client(
+            network_interface=network_interface,
+            robot_ip=robot_ip,
+            timeout_s=timeout_s,
+            domain_id=domain_id,
+            cyclonedds_log_file=cyclonedds_log_file,
+            dds_config_mode=dds_config_mode,
+        )
+        report["check_motion_mode"] = _load_result_json(motion_client.check_mode().stdout)
+    except Exception as exc:
+        report["check_motion_mode"] = {"ok": False, "exception": repr(exc)}
+
+    try:
+        loco_client = G1LocoSdk2Client(
+            network_interface=network_interface,
+            robot_ip=robot_ip,
+            timeout_s=timeout_s,
+            domain_id=domain_id,
+            loco_service_name=loco_service_name,
+            cyclonedds_log_file=cyclonedds_log_file,
+            dds_config_mode=dds_config_mode,
+        )
+        report["loco_probe"] = _load_result_json(loco_client.probe_loco().stdout)
+    except Exception as exc:
+        report["loco_probe"] = {"ok": False, "exception": repr(exc)}
+
+    report["ok"] = any(
+        isinstance(item, dict) and bool(item.get("ok"))
+        for item in (report["check_motion_mode"], report["loco_probe"])
+    )
+    print(json.dumps(report, indent=2, sort_keys=True))
+
+
 def main() -> None:
     args = build_parser().parse_args()
+    if args.command is None and args.robot_ip in COMMAND_CHOICES:
+        args.command = args.robot_ip
+        args.robot_ip = None
     robot_ip = args.robot_ip_option or args.robot_ip
 
     if args.diagnose:
@@ -684,7 +765,7 @@ def main() -> None:
     if args.command is None:
         print(
             "Missing command. Use one of: stand_up, balance_stand, stop_move, damp, move, move_arms_up, "
-            "probe_loco, check_motion_mode, select_ai_mode.",
+            "probe_loco, check_motion_mode, select_ai_mode, diagnose, smoke_move.",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -702,6 +783,26 @@ def main() -> None:
         except ValueError as exc:
             print(f"Invalid --velocity: {exc}", file=sys.stderr)
             raise SystemExit(1)
+
+    if args.command == "smoke_move" and not args.i_understand_this_moves_the_robot:
+        print(
+            "smoke_move sends a tiny movement command. Re-run with "
+            "--i-understand-this-moves-the-robot when the robot is physically safe.",
+            file=sys.stderr,
+        )
+        raise SystemExit(1)
+
+    if args.command == "diagnose":
+        _runtime_diagnose(
+            robot_ip=robot_ip,
+            network_interface=args.network_interface,
+            timeout_s=args.timeout,
+            domain_id=args.domain_id,
+            loco_service_name=args.loco_service_name,
+            cyclonedds_log_file=args.cyclonedds_log_file,
+            dds_config_mode=args.dds_config_mode,
+        )
+        return
 
     try:
         if args.command in ("check_motion_mode", "select_ai_mode"):
@@ -721,6 +822,43 @@ def main() -> None:
                 result = client.select_mode("ai")
             else:
                 result = client.check_mode()
+        elif args.command == "smoke_move":
+            motion_client = MotionSwitcherSdk2Client(
+                network_interface=args.network_interface,
+                robot_ip=robot_ip,
+                timeout_s=args.timeout,
+                domain_id=args.domain_id,
+                cyclonedds_log_file=args.cyclonedds_log_file,
+                dds_config_mode=args.dds_config_mode,
+            )
+            check_result = _load_result_json(motion_client.check_mode().stdout)
+            if not (isinstance(check_result, dict) and check_result.get("ok")):
+                raise UnitreeG1Error(
+                    "Refusing smoke_move because check_motion_mode did not return ok.\n"
+                    f"check_motion_mode: {check_result}"
+                )
+            select_result = _load_result_json(motion_client.select_mode("ai").stdout)
+            if not (isinstance(select_result, dict) and select_result.get("ok")):
+                raise UnitreeG1Error(
+                    "Refusing smoke_move because select_ai_mode did not return ok.\n"
+                    f"select_ai_mode: {select_result}"
+                )
+            client = G1LocoSdk2Client(
+                network_interface=args.network_interface,
+                robot_ip=robot_ip,
+                timeout_s=args.timeout,
+                domain_id=args.domain_id,
+                loco_service_name=args.loco_service_name,
+                cyclonedds_log_file=args.cyclonedds_log_file,
+                dds_config_mode=args.dds_config_mode,
+            )
+            probe_result = _load_result_json(client.probe_loco().stdout)
+            if not (isinstance(probe_result, dict) and probe_result.get("ok")):
+                raise UnitreeG1Error(
+                    "Refusing smoke_move because probe_loco did not return ok.\n"
+                    f"probe_loco: {probe_result}"
+                )
+            result = client.move(0.05, 0.0, 0.0, 0.3)
         elif args.backend == "go2_sport":
             client = Go2SportSdk2Client(
                 network_interface=args.network_interface,
@@ -740,7 +878,7 @@ def main() -> None:
                 cyclonedds_log_file=args.cyclonedds_log_file,
                 dds_config_mode=args.dds_config_mode,
             )
-        if args.command in ("check_motion_mode", "select_ai_mode"):
+        if args.command in ("check_motion_mode", "select_ai_mode", "smoke_move"):
             pass
         elif args.command == "move":
             result = client.move(vx, vy, omega, duration)
