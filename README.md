@@ -100,3 +100,10 @@ uv run loco 192.168.0.4 stop_move --network-interface eno1
 ```
 
 `--interface auto` is the default. Use `uv run loco --diagnose <robot_ip>` to print the resolved interface, Python paths, Unitree SDK path/version, CycloneDDS path/version, and relevant DDS environment variables.
+
+If `LocoClient` fails during DDS topic creation, probe the specific DDS topics without sending robot commands:
+
+```bash
+uv run loco --dds-probe 192.168.0.4
+uv run loco --dds-probe 192.168.0.4 --interface eno1
+```

@@ -11,6 +11,7 @@ import sys
 from object_tracking.unitree_g1 import (
     G1LocoSdk2Client,
     UnitreeG1Error,
+    UnitreeSdk2Context,
     normalize_network_interface,
 )
 
@@ -60,6 +61,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--diagnose",
         action="store_true",
         help="Print SDK route/proxy diagnostics and exit.",
+    )
+    parser.add_argument(
+        "--dds-probe",
+        action="store_true",
+        help="Initialize DDS and probe Unitree topic creation without sending robot commands.",
     )
     return parser
 
@@ -144,6 +150,85 @@ def _g1_loco_info() -> dict[str, object]:
     }
 
 
+def _probe_one_topic(name: str, type_path: str) -> dict[str, object]:
+    module_name, attr_name = type_path.rsplit(":", 1)
+    try:
+        from unitree_sdk2py.core.channel import ChannelPublisher
+
+        module = __import__(module_name, fromlist=[attr_name])
+        topic_type = getattr(module, attr_name)
+        publisher = ChannelPublisher(name, topic_type)
+        publisher.Init()
+    except Exception as exc:
+        return {
+            "ok": False,
+            "topic": name,
+            "type": type_path,
+            "error_type": exc.__class__.__name__,
+            "error": str(exc),
+        }
+    return {"ok": True, "topic": name, "type": type_path}
+
+
+def _dds_probe(
+    robot_ip: str | None,
+    network_interface: str | None,
+    domain_id: int,
+) -> None:
+    if robot_ip is None and normalize_network_interface(network_interface) is None:
+        print("Pass robot_ip/--robot-ip or --interface/--network-interface for DDS probe.", file=sys.stderr)
+        raise SystemExit(1)
+
+    try:
+        resolved_interface = UnitreeSdk2Context.initialize(
+            robot_ip=robot_ip,
+            network_interface=network_interface,
+            domain_id=domain_id,
+        )
+    except UnitreeG1Error as exc:
+        report = {
+            "ok": False,
+            "stage": "dds_initialize",
+            "robot_ip": robot_ip,
+            "requested_interface": network_interface or "auto",
+            "domain_id": domain_id,
+            "error": str(exc),
+        }
+        print(json.dumps(report, indent=2, sort_keys=True))
+        raise SystemExit(1) from exc
+
+    unique_suffix = f"{os.getpid()}"
+    probes = [
+        (
+            f"rt/unitree_probe/request_{unique_suffix}",
+            "unitree_sdk2py.idl.unitree_api.msg.dds_:Request_",
+        ),
+        (
+            "rt/api/sport/request",
+            "unitree_sdk2py.idl.unitree_api.msg.dds_:Request_",
+        ),
+        (
+            f"rt/unitree_probe/lowcmd_{unique_suffix}",
+            "unitree_sdk2py.idl.unitree_hg.msg.dds_:LowCmd_",
+        ),
+    ]
+    results = [_probe_one_topic(name, type_path) for name, type_path in probes]
+    print(
+        json.dumps(
+            {
+                "ok": all(item["ok"] for item in results),
+                "robot_ip": robot_ip,
+                "requested_interface": network_interface or "auto",
+                "resolved_interface": resolved_interface,
+                "domain_id": domain_id,
+                "probes": results,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 def _diagnose_client(
     robot_ip: str | None,
     network_interface: str | None,
@@ -201,6 +286,14 @@ def main() -> None:
             robot_ip=robot_ip,
             network_interface=args.network_interface,
             timeout_s=args.timeout,
+            domain_id=args.domain_id,
+        )
+        return
+
+    if args.dds_probe:
+        _dds_probe(
+            robot_ip=robot_ip,
+            network_interface=args.network_interface,
             domain_id=args.domain_id,
         )
         return
