@@ -7,3 +7,12 @@ __pycache__/
 *.egg-info/
 runs/*
 !runs/.gitkeep
+models/*
+!models/plushie_detector/
+models/plushie_detector/*
+!models/plushie_detector/.gitkeep
+!models/pretrained/
+models/pretrained/*
+!models/pretrained/.gitkeep
+
+*.pt

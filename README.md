@@ -113,7 +113,165 @@ Example local webcam path (non-Robot testing):
 uv run python scripts/run_manual_tracker.py --camera 0 --output runs/object_manual_test
 ```
 
+## YOLO FastAPI stream
+
+For low-latency browser preview, use the headless FastAPI MJPEG server instead of Streamlit. The Ubuntu server receives the Unitree H264 RTP stream on UDP port `5600`, decodes it with GStreamer/OpenCV, runs YOLO, draws boxes, and serves the latest annotated JPEG at `/stream.mjpg`.
+
+On the Ubuntu vision box, run this once:
+
+```bash
+cd ~/Documents/project
+./scripts/setup_vision_server.sh
+```
+
+Then start the stream server:
+
+```bash
+./scripts/run_yolo_stream.sh
+```
+
+The defaults are already set for the current plan:
+
+```text
+model=yolov8n.pt
+imgsz=320
+conf=0.35
+infer_every=1
+jpeg_quality=60
+max_det=20
+opencv_threads=16
+torch_threads=16
+stream_fps=0 (unbounded; sends each new JPEG immediately)
+host=0.0.0.0
+port=8000
+```
+
+Then open this from the MacBook:
+
+```text
+http://192.168.0.122:8000
+```
+
+Useful endpoints:
+
+```text
+/stream.mjpg
+/snapshot.jpg
+/capture
+/detections
+/tracks
+/health
+```
+
+If `/snapshot.jpg` returns `503` and the server log never prints `Loading YOLO model`, the camera loop has not produced a decoded frame yet. Check the GStreamer pipeline and make sure nothing drops RTP/H264 packets before `rtph264depay`.
+
+The setup script uses `uv venv --system-site-packages .venv`, so the project keeps the standard `.venv` name while still seeing Ubuntu's system OpenCV with GStreamer enabled. It also removes pip OpenCV wheels because those usually do not include GStreamer.
+
+To trade a little detector update rate for more camera/browser FPS without editing files:
+
+```bash
+INFER_EVERY=2 JPEG_QUALITY=55 ./scripts/run_yolo_stream.sh
+```
+
+Keep the Unitree relay running separately so compressed video reaches the Ubuntu box:
+
+```bash
+gst-launch-1.0 -v \
+  udpsrc multicast-group=230.1.1.1 address=0.0.0.0 port=1720 auto-multicast=true multicast-iface=wlan0 buffer-size=1048576 ! \
+  "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000" ! \
+  queue ! \
+  udpsink host=192.168.0.122 port=5600 sync=false async=false
+```
+
+## Plushie detector pipeline
+
+The runtime perception loop should stay detector + tracker only. The custom YOLO detector finds plushie boxes, the tracker assigns `track_id` and estimates pixel velocity, and later language/LLM code should consume structured JSON from `/detections` and `/tracks` rather than raw frames. A VLM can still be useful for dataset labeling or rare semantic fallback, but it is not part of the real-time loop.
+
+Dataset layout:
+
+```text
+data/plushie/
+  plushie.yaml
+  images/train/
+  images/val/
+  labels/train/
+  labels/val/
+```
+
+Training artifacts are intentionally rooted under `models/`:
+
+```text
+models/plushie_detector/yolov8n_plushie/weights/best.pt
+```
+
+Capture frames from the running stream server:
+
+```bash
+NOTE="plushie moving left to right" COUNT=20 INTERVAL=0.25 \
+  ./scripts/capture_training_frames.sh
+```
+
+This calls `/capture` and writes raw images plus metadata to:
+
+```text
+runs/captures/plushie/YYYYMMDD_HHMMSS/images/frame_000001.jpg
+runs/captures/plushie/YYYYMMDD_HHMMSS/metadata.jsonl
+```
+
+Label the captured frames in CVAT, Roboflow, or Label Studio, export YOLO detection labels, then place images/labels under `data/plushie`.
+
+Train the plushie detector:
+
+```bash
+./scripts/train_plushie_detector.sh
+```
+
+Useful overrides:
+
+```bash
+MODEL=yolov8n.pt EPOCHS=80 IMGSZ=640 BATCH=16 ./scripts/train_plushie_detector.sh
+```
+
+Evaluate the trained detector:
+
+```bash
+./scripts/eval_plushie_detector.sh
+```
+
+Run the plushie stream. This uses `models/plushie_detector/yolov8n_plushie/weights/best.pt` if it exists and falls back to `yolov8n.pt` otherwise:
+
+```bash
+./scripts/run_plushie_stream.sh
+```
+
+Check structured perception output:
+
+```bash
+curl http://127.0.0.1:8000/detections
+curl http://127.0.0.1:8000/tracks
+```
+
+The current instruction parser stub is rule-based and does not call an LLM:
+
+```python
+from object_tracking.instruction_parser import parse_instruction
+
+parse_instruction("stop the stuffed animal")
+```
+
 ## Unitree SDK2 loco
+
+Find the robot current LAN IP:
+
+```bash
+uv run g1-scan
+```
+
+If the router blocks ping or the robot is quiet, run a slower scan:
+
+```bash
+uv run g1-scan --include-sleeping --connect-timeout 0.5
+```
 
 Run commands with robot IP:
 

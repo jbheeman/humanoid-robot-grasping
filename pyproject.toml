@@ -12,6 +12,13 @@ dependencies = [
 loco = [
     "unitree-sdk2==1.0.1",
 ]
+vision-server = [
+    "fastapi>=0.111",
+    "pillow>=10",
+    "tqdm>=4.66",
+    "ultralytics>=8.2",
+    "uvicorn[standard]>=0.30",
+]
 
 [dependency-groups]
 dev = []
@@ -21,6 +28,9 @@ object-manual-tracker = "object_tracking.manual_tracker:main"
 loco = "object_tracking.g1_loco_cli:main"
 vision = "object_tracking.g1_vision_cli:main"
 vision-streamlit = "object_tracking.streamlit_viewer_cli:main"
+vision-yolo-stream = "object_tracking.yolo_stream_server:main"
+train-plushie-detector = "object_tracking.train_plushie_detector:main"
+g1-scan = "object_tracking.g1_scan_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
