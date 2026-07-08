@@ -24,8 +24,15 @@ TORCH_THREADS="${TORCH_THREADS:-16}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 STREAM_FPS="${STREAM_FPS:-0}"
+STOP_EXISTING="${STOP_EXISTING:-1}"
 
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
+if [[ "${STOP_EXISTING}" == "1" ]]; then
+  pkill -f "object_tracking.yolo_stream_server" >/dev/null 2>&1 || true
+  pkill -f "gst-launch-1.0 -q .*fdsink fd=1" >/dev/null 2>&1 || true
+  sleep 0.5
+fi
 
 args=()
 if [[ -n "${PIPELINE}" ]]; then

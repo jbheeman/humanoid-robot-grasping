@@ -10,7 +10,7 @@ from object_tracking.unitree_g1 import G1LocoSdk2Client, UnitreeG1Error
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
-        description="Send Unitree G1 commands via unitree-sdk2 Python package (version 1.0.1)."
+        description="Send Unitree G1 commands via unitree-sdk2py Python package (version 1.0.1)."
     )
     parser.add_argument("robot_ip", nargs="?", help="Robot IP address.")
     parser.add_argument(
@@ -96,7 +96,7 @@ def _sdk2_python_presence() -> dict[str, object]:
     try:
         from importlib.metadata import version
 
-        return {"available": True, "module": "unitree-sdk2", "version": version("unitree-sdk2")}
+        return {"available": True, "module": "unitree-sdk2py", "version": version("unitree-sdk2py")}
     except Exception as exc:
         return {"available": False, "error": str(exc)}
 
@@ -120,7 +120,7 @@ def _diagnose_client(
         "timeout_s": timeout_s,
         "route": route,
         "resolved_interface": resolved_interface,
-        "unitree_sdk2": _sdk2_python_presence(),
+        "unitree_sdk2py": _sdk2_python_presence(),
     }
     print(json.dumps(report, indent=2, sort_keys=True))
 

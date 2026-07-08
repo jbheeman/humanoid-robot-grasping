@@ -9,13 +9,7 @@ git switch aarav
 uv sync
 ```
 
-This installs vision dependencies only by default (`opencv-python`). Loco extras are optional:
-
-```bash
-uv sync --extra loco
-```
-
-Loco uses `unitree-sdk2==1.0.1` (package path: `unitree_sdk2`).
+This installs the default runtime plus the Unitree loco dependency group. The Unitree SDK checkout must exist next to this repo at `../unitree_sdk2_python`; uv installs it editable as `unitree-sdk2py==1.0.1` (import path: `unitree_sdk2py`). If your SDK checkout is somewhere else, update the `unitree-sdk2py` path in `pyproject.toml` before running `uv sync`.
 
 ## Vision runbook
 
@@ -65,7 +59,7 @@ rsync -av \
 Then run from the remote host (required for G1 UDP/GStreamer):
 
 ```bash
-ssh <robot_ssh_user>@<robot_ssh_host> "cd /home/<robot_ssh_user>/project && uv sync --extra loco && uv run vision <g1_ip> --no-ssh"
+ssh <robot_ssh_user>@<robot_ssh_host> "cd /home/<robot_ssh_user>/project && uv sync && uv run vision <g1_ip> --no-ssh"
 ```
 
 Optional: track headless for testing:
@@ -115,7 +109,7 @@ uv run python scripts/run_manual_tracker.py --camera 0 --output runs/object_manu
 
 ## YOLO FastAPI stream
 
-For low-latency browser preview, use the headless FastAPI MJPEG server instead of Streamlit. The Ubuntu server receives the Unitree H264 RTP stream on UDP port `5600`, decodes it with GStreamer/OpenCV, runs YOLO, draws boxes, and serves the latest annotated JPEG at `/stream.mjpg`.
+For low-latency browser preview, use the headless FastAPI MJPEG server instead of Streamlit. By default it reads the direct RealSense/V4L2 color stream at `640x480@30`, scales to `640x360`, runs YOLO, draws boxes/tracks, and serves the latest annotated JPEG at `/stream.mjpg`.
 
 On the Ubuntu vision box, run this once:
 
@@ -124,7 +118,7 @@ cd ~/Documents/project
 ./scripts/setup_vision_server.sh
 ```
 
-Then start the stream server:
+Then start the 30 FPS direct-camera stream server:
 
 ```bash
 ./scripts/run_yolo_stream.sh
@@ -133,6 +127,7 @@ Then start the stream server:
 The defaults are already set for the current plan:
 
 ```text
+pipeline=v4l2src device=/dev/video0 ... framerate=30/1
 model=yolov8n.pt
 imgsz=320
 conf=0.35
@@ -173,14 +168,17 @@ To trade a little detector update rate for more camera/browser FPS without editi
 INFER_EVERY=2 JPEG_QUALITY=55 ./scripts/run_yolo_stream.sh
 ```
 
-Keep the Unitree relay running separately so compressed video reaches the Ubuntu box:
+If `/dev/video0` is not the RealSense RGB device, find the correct node and override it:
 
 ```bash
-gst-launch-1.0 -v \
-  udpsrc multicast-group=230.1.1.1 address=0.0.0.0 port=1720 auto-multicast=true multicast-iface=wlan0 buffer-size=1048576 ! \
-  "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000" ! \
-  queue ! \
-  udpsink host=192.168.0.122 port=5600 sync=false async=false
+v4l2-ctl --list-devices
+DEVICE=/dev/videoX ./scripts/run_realsense_stream.sh
+```
+
+The old Unitree multimedia UDP path is still available, but it is expected to be capped around 15 FPS at this resolution:
+
+```bash
+./scripts/run_unitree_udp_stream.sh
 ```
 
 ## Plushie detector pipeline
@@ -198,10 +196,12 @@ data/plushie/
   labels/val/
 ```
 
-Training artifacts are intentionally rooted under `models/`:
+Training artifacts and pretrained model downloads are intentionally rooted under `models/`:
 
 ```text
-models/plushie_detector/yolov8n_plushie/weights/best.pt
+models/pretrained/yolo11x.pt
+models/plushie_detector/yolo11x_plushie/weights/best.pt
+models/plushie_detector/yolo11x_plushie/weights/last.pt
 ```
 
 Capture frames from the running stream server:
@@ -220,16 +220,71 @@ runs/captures/plushie/YYYYMMDD_HHMMSS/metadata.jsonl
 
 Label the captured frames in CVAT, Roboflow, or Label Studio, export YOLO detection labels, then place images/labels under `data/plushie`.
 
+Install public bootstrap datasets in the background:
+
+```bash
+nohup ./scripts/install_all_plushie_datasets.sh > runs/dataset_install/nohup.log 2>&1 &
+tail -f runs/dataset_install/install_all_plushie_datasets.log
+```
+
+The installer currently pulls COCO 2017 `teddy bear` plus Open Images `Teddy bear`, maps positives to `plushie`, and adds 1:1 hard negatives from confusing toy/animal/soft-object classes. Roboflow sources are listed but skipped until `ROBOFLOW_API_KEY` is provided and each dataset license is acceptable.
+
+Create train-only augmented images that mimic the G1 feed: blur, motion smear, JPEG compression, sensor noise, gray-floor 1280x720 canvases, and smaller object scale. Validation data is left untouched.
+
+```bash
+./scripts/augment_plushie_dataset.sh
+```
+
+After the default public-dataset install and augmentation pass, the local YOLO set is currently:
+
+```text
+train images/labels: 25288
+val images/labels:     225
+augmented train rows: 18966
+```
+
+Useful capped smoke test:
+
+```bash
+./scripts/augment_plushie_dataset.sh --max-source-images 20 --aug-per-image 3
+```
+
 Train the plushie detector:
 
 ```bash
 ./scripts/train_plushie_detector.sh
 ```
 
+Fast MVP training pass for same-day testing:
+
+```bash
+MODEL=yolov8n.pt NAME=yolov8n_plushie_mvp EPOCHS=25 IMGSZ=960 BATCH=128 WORKERS=10 CACHE=disk RAM_RESERVE_GB=24 CPU_RESERVE_PERCENT=50 SAVE_PERIOD=5 PATIENCE=6 ./scripts/run_guarded_plushie_training.sh
+```
+
 Useful overrides:
 
 ```bash
-MODEL=yolov8n.pt EPOCHS=80 IMGSZ=640 BATCH=16 ./scripts/train_plushie_detector.sh
+MODEL=yolo11x.pt EPOCHS=160 IMGSZ=1280 BATCH=16 SAVE_PERIOD=5 ./scripts/train_plushie_detector.sh
+```
+
+Recommended GB10 server training pass for the current COCO-derived dataset:
+
+```bash
+MODEL=yolo11x.pt EPOCHS=160 IMGSZ=1280 BATCH=16 WORKERS=10 CACHE=auto RAM_RESERVE_GB=16 CPU_RESERVE_PERCENT=50 SAVE_PERIOD=5 PATIENCE=40 ./scripts/run_guarded_plushie_training.sh
+```
+
+For this augmented dataset, avoid `BATCH=-1 CACHE=ram` at `IMGSZ=1280`. AutoBatch probes oversized batches, and decoded RAM cache at 1280 can exceed the 120 GiB usable memory budget before model/data-loader overhead. `CACHE=auto` uses RAM cache only when the estimate fits the configured reserve; otherwise it uses disk cache and lets the OS page cache consume spare RAM safely. The guarded launcher adds cgroup limits: memory is capped to total RAM minus `RAM_RESERVE_GB`, swap is disabled for the training unit, and CPU quota leaves `CPU_RESERVE_PERCENT` for the rest of the system. On the GB10, `BATCH=16` was the best observed balance: it used about 58.5 GiB GPU memory without pushing host RAM into the danger zone. `BATCH=24` used about 87.6 GiB GPU memory but drove host memory low enough to touch swap, so do not use it for this dataset.
+
+After adding Unitree-camera frames, fine-tune from the latest checkpoint for another 80-120 epochs:
+
+```bash
+MODEL=models/plushie_detector/yolo11x_plushie/weights/best.pt EPOCHS=120 IMGSZ=1280 BATCH=16 WORKERS=10 CACHE=auto RAM_RESERVE_GB=16 CPU_RESERVE_PERCENT=50 NAME=yolo11x_plushie_unitree ./scripts/run_guarded_plushie_training.sh
+```
+
+Resume the latest interrupted run:
+
+```bash
+RESUME=1 ./scripts/train_plushie_detector.sh
 ```
 
 Evaluate the trained detector:
@@ -238,11 +293,13 @@ Evaluate the trained detector:
 ./scripts/eval_plushie_detector.sh
 ```
 
-Run the plushie stream. This uses `models/plushie_detector/yolov8n_plushie/weights/best.pt` if it exists and falls back to `yolov8n.pt` otherwise:
+Run the plushie stream. This uses `models/plushie_detector/yolo11x_plushie/weights/best.pt` if it exists. If no trained model exists yet, put a fallback model under `models/pretrained/` or set `MODEL` to an explicit path under `models/`.
 
 ```bash
 ./scripts/run_plushie_stream.sh
 ```
+
+Known dataset sources are tracked in [docs/PLUSHIE_DATASETS.md](docs/PLUSHIE_DATASETS.md).
 
 Check structured perception output:
 

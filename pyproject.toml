@@ -9,9 +9,6 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-loco = [
-    "unitree-sdk2==1.0.1",
-]
 vision-server = [
     "fastapi>=0.111",
     "pillow>=10",
@@ -22,6 +19,10 @@ vision-server = [
 
 [dependency-groups]
 dev = []
+loco = [
+    "cyclonedds==0.10.2",
+    "unitree-sdk2py==1.0.1",
+]
 
 [project.scripts]
 object-manual-tracker = "object_tracking.manual_tracker:main"
@@ -38,3 +39,7 @@ build-backend = "setuptools.build_meta"
 
 [tool.uv]
 package = true
+default-groups = ["dev", "loco"]
+
+[tool.uv.sources]
+unitree-sdk2py = { path = "../unitree_sdk2_python", editable = true }

@@ -136,7 +136,7 @@ def get_sdk2_video_sample(
     if ChannelFactoryInitialize is None or VideoClient is None:
         detail = str(_SDK2_IMPORT_ERROR) if _SDK2_IMPORT_ERROR is not None else "missing imports"
         raise UnitreeG1Error(
-            "Could not import Unitree SDK2 video dependencies. Install and configure unitree-sdk2 and CycloneDDS on the robot-network host.\n"
+            "Could not import Unitree SDK2 video dependencies. Install and configure unitree-sdk2py and CycloneDDS on the robot-network host.\n"
             f"Original error: {detail}"
         )
 
@@ -161,7 +161,7 @@ def get_sdk2_video_sample(
 
 
 class G1LocoSdk2Client:
-    """Thin wrapper around Unitree SDK2 Python sport client (unitree-sdk2==1.0.1)."""
+    """Thin wrapper around Unitree SDK2 Python sport client (unitree-sdk2py==1.0.1)."""
 
     def __init__(
         self,
@@ -172,7 +172,7 @@ class G1LocoSdk2Client:
         if ChannelFactoryInitialize is None or SportClient is None:
             detail = str(_SDK2_IMPORT_ERROR) if _SDK2_IMPORT_ERROR is not None else "missing imports"
             raise UnitreeG1Error(
-                "Could not import unitree-sdk2 Python package. Install loco dependencies with: `uv sync --extra loco`.\n"
+                "Could not import unitree-sdk2py Python package. Install loco dependencies with: `uv sync`.\n"
                 f"Original error: {detail}"
             )
 
@@ -192,7 +192,7 @@ class G1LocoSdk2Client:
     def _result(self, command: list[str], code: int) -> UnitreeCommandResult:
         code_int = int(code)
         if code_int != 0:
-            raise UnitreeG1Error(f"unitree-sdk2 command returned non-zero code {code_int}: {command}")
+            raise UnitreeG1Error(f"unitree-sdk2py command returned non-zero code {code_int}: {command}")
         return UnitreeCommandResult(command=command, returncode=0, stdout="", stderr="")
 
     def _call(self, method: str, *args: object) -> UnitreeCommandResult:

@@ -4,6 +4,7 @@ import argparse
 import json
 import os
 import re
+import socket
 import subprocess
 import threading
 import time
@@ -620,8 +621,21 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
+def assert_port_available(host: str, port: int) -> None:
+    bind_host = "" if host in {"", "0.0.0.0"} else host
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as sock:
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        try:
+            sock.bind((bind_host, port))
+        except OSError as exc:
+            raise SystemExit(
+                f"Port {port} is already in use. Stop the old stream server or run with PORT={port + 1}."
+            ) from exc
+
+
 def main() -> None:
     args = build_parser().parse_args()
+    assert_port_available(args.host, args.port)
     configure_runtime(args.opencv_threads, args.torch_threads)
 
     with state.lock:

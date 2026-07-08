@@ -7,6 +7,17 @@ __pycache__/
 *.egg-info/
 runs/*
 !runs/.gitkeep
+data/sources/
+data/plushie/dataset_manifest.json
+data/plushie/sources.yaml
+data/plushie/images/**/*.jpg
+data/plushie/images/**/*.jpeg
+data/plushie/images/**/*.png
+data/plushie/images/**/*.npy
+data/plushie/labels/**/*.txt
+data/plushie/labels/**/*.cache
+data/plushie/images/**/aug_*
+data/plushie/labels/**/aug_*
 models/*
 !models/plushie_detector/
 models/plushie_detector/*
@@ -14,5 +25,4 @@ models/plushie_detector/*
 !models/pretrained/
 models/pretrained/*
 !models/pretrained/.gitkeep
-
 *.pt
