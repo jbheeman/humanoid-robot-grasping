@@ -261,6 +261,19 @@ python3 scripts/robot.py drive
 
 Keys: `w/s` forward/back, `a/d` strafe, `q/e` turn, Space or `x` stop, Ctrl-C sends stop and exits. This is a software stop path over Wi-Fi, not a replacement for the robot/controller hardware e-stop.
 
+Unitree SDK example actions can also be listed and run through the same bridge:
+
+```bash
+python3 scripts/robot.py sdk-examples
+python3 scripts/robot.py sdk-example motion_switcher check_mode
+python3 scripts/robot.py sdk-example g1_loco high_stand
+python3 scripts/robot.py sdk-example g1_loco move_forward_tiny --speed 0.1 --duration 0.5
+python3 scripts/robot.py sdk-example g1_arm_action "hands up"
+python3 scripts/robot.py sdk-example g1_arm_action "release arm"
+```
+
+The original SDK files these map to are `example/g1/high_level/g1_loco_client_example.py`, `example/g1/high_level/g1_arm_action_example.py`, and `example/motionSwitcher/motion_switcher_example.py`. The wrapper is allowlisted because the original examples are interactive loops and several actions move the robot immediately.
+
 `amount` is the fraction of the forward arm target. Start around `0.1` to `0.2`. Arm and velocity motion use smoothstep easing so they ease in/out instead of snapping to a linear ramp.
 
 Only use robot-local checks to isolate low-level robot networking after server-side tests are exhausted:

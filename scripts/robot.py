@@ -39,6 +39,14 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("stop")
     subparsers.add_parser("estop")
     subparsers.add_parser("smoke-move")
+    subparsers.add_parser("sdk-examples", help="List allowlisted Unitree SDK example actions exposed by the bridge.")
+
+    sdk_example = subparsers.add_parser("sdk-example", help="Run an allowlisted Unitree SDK example action via the bridge.")
+    sdk_example.add_argument("example", choices=("g1_loco", "g1_arm_action", "motion_switcher"))
+    sdk_example.add_argument("action", nargs="?", default="list")
+    sdk_example.add_argument("--speed", type=float, default=0.1)
+    sdk_example.add_argument("--duration", type=float, default=0.5)
+    sdk_example.add_argument("--smoke", action="store_true")
 
     arms = subparsers.add_parser("arms-up", help="Move arms through the HTTP bridge high-level arm command.")
     arms.add_argument("amount", nargs="?", type=float, default=0.15)
@@ -266,6 +274,17 @@ def main() -> int:
         return print_response(*send_json(bridge_url(args.host, args.port, "/probe_loco")))
     if args.command == "mode":
         return print_response(*send_json(bridge_url(args.host, args.port, "/check_motion_mode")))
+    if args.command == "sdk-examples":
+        return print_response(*send_json(bridge_url(args.host, args.port, "/sdk/examples")))
+    if args.command == "sdk-example":
+        payload = {
+            "example": args.example,
+            "action": args.action,
+            "speed": args.speed,
+            "duration": args.duration,
+            "smoke": args.smoke,
+        }
+        return print_response(*send_json(bridge_url(args.host, args.port, "/sdk/example"), payload))
     if args.command == "drive":
         return drive(args)
 
