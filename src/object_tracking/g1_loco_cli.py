@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("stand_up", "balance_stand", "stop_move", "damp", "move"),
+        choices=("stand_up", "balance_stand", "stop_move", "damp", "move", "move_arms_up"),
         help="G1 loco command to send. Omit and pass --diagnose for diagnostics only.",
     )
     parser.add_argument(
@@ -139,7 +139,7 @@ def main() -> None:
 
     if args.command is None:
         print(
-            "Missing command. Use one of: stand_up, balance_stand, stop_move, damp, move.",
+            "Missing command. Use one of: stand_up, balance_stand, stop_move, damp, move, move_arms_up.",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -166,6 +166,9 @@ def main() -> None:
         )
         if args.command == "move":
             result = client.move(vx, vy, omega, duration)
+        elif args.command == "move_arms_up":
+            print("Moving arms to the forward test pose. Press Ctrl-C to stop holding.", file=sys.stderr)
+            result = client.move_arms_up()
         else:
             result = client.command(args.command)
     except UnitreeG1Error as exc:

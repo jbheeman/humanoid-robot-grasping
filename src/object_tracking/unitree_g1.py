@@ -9,13 +9,29 @@ import time
 
 try:
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-    from unitree_sdk2py.go2.sport.sport_client import SportClient
+    from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
 except Exception as exc:  # pragma: no cover - surfaced as runtime error when dependency missing
     ChannelFactoryInitialize = None
-    SportClient = None
+    LocoClient = None
     _SDK2_IMPORT_ERROR = exc
 else:  # pragma: no cover
     _SDK2_IMPORT_ERROR = None
+
+try:
+    from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
+    from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
+    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
+    from unitree_sdk2py.utils.crc import CRC
+except Exception as exc:  # pragma: no cover - only needed for low-level arm test
+    ChannelPublisher = None
+    ChannelSubscriber = None
+    unitree_hg_msg_dds__LowCmd_ = None
+    LowCmd_ = None
+    LowState_ = None
+    CRC = None
+    _SDK2_LOW_LEVEL_IMPORT_ERROR = exc
+else:  # pragma: no cover
+    _SDK2_LOW_LEVEL_IMPORT_ERROR = None
 
 
 def default_camera_env() -> list[str]:
@@ -76,6 +92,33 @@ class UnitreeG1Error(RuntimeError):
     pass
 
 
+class G1JointIndex:
+    LeftShoulderPitch = 15
+    LeftShoulderRoll = 16
+    LeftShoulderYaw = 17
+    LeftElbow = 18
+    LeftWristRoll = 19
+    RightShoulderPitch = 22
+    RightShoulderRoll = 23
+    RightShoulderYaw = 24
+    RightElbow = 25
+    RightWristRoll = 26
+
+
+G1_ARM_FORWARD_TARGETS = {
+    G1JointIndex.LeftShoulderPitch: 0.85,
+    G1JointIndex.LeftShoulderRoll: 0.20,
+    G1JointIndex.LeftShoulderYaw: 0.0,
+    G1JointIndex.LeftElbow: 0.20,
+    G1JointIndex.LeftWristRoll: 0.0,
+    G1JointIndex.RightShoulderPitch: 0.85,
+    G1JointIndex.RightShoulderRoll: -0.20,
+    G1JointIndex.RightShoulderYaw: 0.0,
+    G1JointIndex.RightElbow: 0.20,
+    G1JointIndex.RightWristRoll: 0.0,
+}
+
+
 @dataclass(frozen=True)
 class UnitreeCommandResult:
     command: list[str]
@@ -124,7 +167,7 @@ def g1_camera_candidates(robot_ip: str, camera_url: str | None = None) -> list[s
 
 
 class G1LocoSdk2Client:
-    """Thin wrapper around Unitree SDK2 Python sport client (unitree-sdk2==1.0.1)."""
+    """Thin wrapper around Unitree SDK2 Python G1 loco client."""
 
     def __init__(
         self,
@@ -132,7 +175,7 @@ class G1LocoSdk2Client:
         robot_ip: str | None = None,
         timeout_s: float = 15.0,
     ) -> None:
-        if ChannelFactoryInitialize is None or SportClient is None:
+        if ChannelFactoryInitialize is None or LocoClient is None:
             detail = str(_SDK2_IMPORT_ERROR) if _SDK2_IMPORT_ERROR is not None else "missing imports"
             raise UnitreeG1Error(
                 "Could not import unitree-sdk2 Python package. Install loco dependencies with: `uv sync --extra loco`.\n"
@@ -148,9 +191,10 @@ class G1LocoSdk2Client:
         self.timeout_s = timeout_s
 
         ChannelFactoryInitialize(0, network_interface)
-        self._client = SportClient()
+        self._client = LocoClient()
         self._client.Init()
         self._client.SetTimeout(timeout_s)
+        self._arm_low_state = None
 
     def _result(self, command: list[str], code: int) -> UnitreeCommandResult:
         code_int = int(code)
@@ -160,21 +204,41 @@ class G1LocoSdk2Client:
 
     def _call(self, method: str, *args: object) -> UnitreeCommandResult:
         method_obj = getattr(self._client, method)
-        call_result = method_obj(*args) if args else method_obj()
+        try:
+            call_result = method_obj(*args) if args else method_obj()
+        except TypeError:
+            if method == "BalanceStand" and not args:
+                call_result = method_obj(0)
+            else:
+                raise
         if isinstance(call_result, tuple) and len(call_result) >= 1:
             code = call_result[0]
         else:
             code = call_result
-        return self._result(["sport", method.lower()], code if code is not None else 0)
+        return self._result(["loco", method.lower()], code if code is not None else 0)
+
+    def _call_first(self, methods: list[str]) -> UnitreeCommandResult:
+        for method in methods:
+            if hasattr(self._client, method):
+                return self._call(method)
+        choices = ", ".join(methods)
+        raise UnitreeG1Error(f"Installed G1 loco client does not expose any of: {choices}")
 
     def get_fsm_id(self) -> UnitreeCommandResult:
-        raise UnitreeG1Error("get_fsm_id is not implemented in unitree-sdk2py. Use stand_up/balance_stand/move/specific sport commands.")
+        if hasattr(self._client, "GetFsmId"):
+            result = self._client.GetFsmId()
+            code = result[0] if isinstance(result, tuple) and result else result
+            stdout = ""
+            if isinstance(result, tuple) and len(result) > 1:
+                stdout = f"{result[1]}\n"
+            return UnitreeCommandResult(command=["loco", "get_fsm_id"], returncode=int(code or 0), stdout=stdout, stderr="")
+        raise UnitreeG1Error("get_fsm_id is not implemented by the installed G1 loco client.")
 
     def start(self) -> UnitreeCommandResult:
-        raise UnitreeG1Error("start is not implemented in unitree-sdk2py. Use stand_up or balance_stand.")
+        return self._call("Start")
 
     def stand_up(self) -> UnitreeCommandResult:
-        return self._call("StandUp")
+        return self._call_first(["StandUp", "Squat2StandUp", "Lie2StandUp", "HighStand"])
 
     def balance_stand(self) -> UnitreeCommandResult:
         return self._call("BalanceStand")
@@ -186,7 +250,7 @@ class G1LocoSdk2Client:
         return self._call("Damp")
 
     def move(self, vx: float, vy: float, omega: float, duration: float | None = None) -> UnitreeCommandResult:
-        cmd = ["sport", "move", str(vx), str(vy), str(omega)]
+        cmd = ["loco", "move", str(vx), str(vy), str(omega)]
         if duration is not None:
             cmd.append(str(duration))
 
@@ -198,12 +262,78 @@ class G1LocoSdk2Client:
 
         return result
 
+    def _low_state_handler(self, msg: object) -> None:
+        self._arm_low_state = msg
+
+    def move_arms_up(self) -> UnitreeCommandResult:
+        if (
+            ChannelPublisher is None
+            or ChannelSubscriber is None
+            or unitree_hg_msg_dds__LowCmd_ is None
+            or LowCmd_ is None
+            or LowState_ is None
+            or CRC is None
+        ):
+            detail = (
+                str(_SDK2_LOW_LEVEL_IMPORT_ERROR)
+                if _SDK2_LOW_LEVEL_IMPORT_ERROR is not None
+                else "missing low-level SDK2 imports"
+            )
+            raise UnitreeG1Error(f"Could not import SDK2 low-level G1 DDS APIs.\nOriginal error: {detail}")
+
+        publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
+        publisher.Init()
+        subscriber = ChannelSubscriber("rt/lowstate", LowState_)
+        subscriber.Init(self._low_state_handler, 10)
+
+        deadline = time.monotonic() + min(self.timeout_s, 10.0)
+        while self._arm_low_state is None:
+            if time.monotonic() > deadline:
+                raise UnitreeG1Error("Timed out waiting for rt/lowstate before moving arms.")
+            time.sleep(0.01)
+
+        low_cmd = unitree_hg_msg_dds__LowCmd_()
+        crc = CRC()
+        arm_joint_ids = sorted(G1_ARM_FORWARD_TARGETS)
+        start_q = {
+            joint_id: float(self._arm_low_state.motor_state[joint_id].q)
+            for joint_id in arm_joint_ids
+        }
+
+        control_dt = 0.02
+        ramp_s = 2.0
+        started_at = time.monotonic()
+
+        try:
+            while True:
+                elapsed = time.monotonic() - started_at
+                ratio = min(max(elapsed / ramp_s, 0.0), 1.0)
+                low_cmd.mode_pr = 0
+                low_cmd.mode_machine = int(getattr(self._arm_low_state, "mode_machine", 0))
+
+                for joint_id in arm_joint_ids:
+                    target = G1_ARM_FORWARD_TARGETS[joint_id]
+                    motor = low_cmd.motor_cmd[joint_id]
+                    motor.mode = 1
+                    motor.tau = 0.0
+                    motor.q = (1.0 - ratio) * start_q[joint_id] + ratio * target
+                    motor.dq = 0.0
+                    motor.kp = 25.0
+                    motor.kd = 1.0
+
+                low_cmd.crc = crc.Crc(low_cmd)
+                publisher.Write(low_cmd)
+                time.sleep(control_dt)
+        except KeyboardInterrupt:
+            return UnitreeCommandResult(command=["loco", "move_arms_up"], returncode=0, stdout="", stderr="")
+
     def command(self, name: str) -> UnitreeCommandResult:
         commands = {
             "stand_up": self.stand_up,
             "balance_stand": self.balance_stand,
             "stop_move": self.stop_move,
             "damp": self.damp,
+            "move_arms_up": self.move_arms_up,
         }
         try:
             return commands[name]()
