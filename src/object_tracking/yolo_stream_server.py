@@ -80,10 +80,10 @@ def opencv_gstreamer_enabled() -> bool:
 
 
 def _pipeline_dimension(pipeline: str, name: str, default: int) -> int:
-    match = re.search(rf"{name}=\(int\)(\d+)|{name}=(\d+)", pipeline)
-    if match is None:
+    matches = re.findall(rf"{name}=\(int\)(\d+)|{name}=(\d+)", pipeline)
+    if not matches:
         return default
-    value = match.group(1) or match.group(2)
+    value = matches[-1][0] or matches[-1][1]
     return int(value)
 
 

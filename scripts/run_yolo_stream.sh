@@ -13,6 +13,7 @@ fi
 cd "${ROOT_DIR}"
 
 MODEL="${MODEL:-yolov8n.pt}"
+PIPELINE="${PIPELINE:-}"
 IMGSZ="${IMGSZ:-320}"
 CONF="${CONF:-0.35}"
 INFER_EVERY="${INFER_EVERY:-1}"
@@ -26,7 +27,13 @@ STREAM_FPS="${STREAM_FPS:-0}"
 
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
+args=()
+if [[ -n "${PIPELINE}" ]]; then
+  args+=(--pipeline "${PIPELINE}")
+fi
+
 exec "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
+  "${args[@]}" \
   --model "${MODEL}" \
   --imgsz "${IMGSZ}" \
   --conf "${CONF}" \
