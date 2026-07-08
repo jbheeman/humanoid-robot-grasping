@@ -170,6 +170,14 @@ DEFAULT_G1_LOCO_SERVICE_NAME = "ai_sport"
 DDS_CONFIG_MODE_CHOICES = ("unitree", "no_trace", "simple", "autodetermine")
 DEFAULT_DDS_CONFIG_MODE = "no_trace"
 
+UNITREE_SDK_ERROR_CODES = {
+    0: "OK",
+    3001: "Unknown error",
+    3102: "Request sending error",
+    3103: "API not registered",
+    3104: "Request timeout",
+}
+
 SIMPLE_DDS_CONFIG_HAS_INTERFACE = """<?xml version="1.0" encoding="UTF-8" ?>
 <CycloneDDS>
   <Domain Id="any">
@@ -216,6 +224,40 @@ def effective_loco_service_name(loco_service_name: str | None) -> str:
 
 def loco_rpc_request_topic(loco_service_name: str) -> str:
     return f"rt/api/{loco_service_name}/request"
+
+
+def unitree_error_name(code: int | None) -> str:
+    if code is None:
+        return "unknown"
+    return UNITREE_SDK_ERROR_CODES.get(int(code), "unrecognized SDK error")
+
+
+def unitree_rpc_result_report(result: object) -> dict[str, object]:
+    if isinstance(result, tuple) and result:
+        code = int(result[0])
+        data = result[1:] if len(result) > 1 else ()
+        return {
+            "ok": code == 0,
+            "code": code,
+            "code_name": unitree_error_name(code),
+            "data": repr(data[0]) if len(data) == 1 else repr(data),
+            "raw": repr(result),
+        }
+    if isinstance(result, int):
+        return {
+            "ok": result == 0,
+            "code": int(result),
+            "code_name": unitree_error_name(int(result)),
+            "data": None,
+            "raw": repr(result),
+        }
+    return {
+        "ok": True,
+        "code": None,
+        "code_name": "not a Unitree status tuple",
+        "data": repr(result),
+        "raw": repr(result),
+    }
 
 
 def patch_g1_loco_service_name(loco_service_name: str) -> tuple[object, dict[str, object]]:
@@ -472,7 +514,8 @@ class G1LocoSdk2Client:
         if code_int != 0:
             topic = loco_rpc_request_topic(self.loco_service_name)
             raise UnitreeG1Error(
-                f"unitree-sdk2 command returned non-zero code {code_int}: {command}\n\n"
+                f"unitree-sdk2 command returned non-zero code {code_int} "
+                f"({unitree_error_name(code_int)}): {command}\n\n"
                 "DDS and client construction succeeded, but no robot RPC server responded on "
                 f"{topic}.\n"
                 "Try:\n"
@@ -528,17 +571,20 @@ class G1LocoSdk2Client:
                 methods.append(name)
 
         read_results: dict[str, object] = {}
-        for method_name in ("GetFsmId", "GetFsmMode", "GetBalanceMode"):
+        for method_name in (
+            "GetApiVersion",
+            "GetServerApiVersion",
+            "GetLeaseId",
+            "GetFsmId",
+            "GetFsmMode",
+            "GetBalanceMode",
+        ):
             if not hasattr(self._client, method_name):
                 read_results[method_name] = {"available": False}
                 continue
             method = getattr(self._client, method_name)
             try:
-                read_results[method_name] = {
-                    "available": True,
-                    "ok": True,
-                    "raw": repr(method()),
-                }
+                read_results[method_name] = {"available": True, **unitree_rpc_result_report(method())}
             except Exception as exc:
                 read_results[method_name] = {
                     "available": True,
@@ -546,10 +592,21 @@ class G1LocoSdk2Client:
                     "exception": repr(exc),
                 }
 
+        remote_calls = [
+            result
+            for result in read_results.values()
+            if isinstance(result, dict) and result.get("available") and result.get("code") is not None
+        ]
+        rpc_ok = bool(remote_calls) and any(bool(result.get("ok")) for result in remote_calls)
         report = {
-            "ok": True,
+            "ok": rpc_ok,
             "loco_service_name": self.loco_service_name,
             "rpc_request_topic": loco_rpc_request_topic(self.loco_service_name),
+            "rpc_status": (
+                "at least one read-only RPC returned code 0"
+                if rpc_ok
+                else "no read-only robot RPC call returned code 0"
+            ),
             "timeout_s": self.timeout_s,
             "domain_id": self.domain_id,
             "network_interface": self.network_interface,
