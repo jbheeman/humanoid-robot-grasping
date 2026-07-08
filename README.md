@@ -92,6 +92,8 @@ uv run loco 192.168.0.4 stop_move
 uv run loco --diagnose 192.168.0.4
 ```
 
+For G1 loco, `--loco-service-name auto` is the default and patches the SDK to use `ai_sport`. Use `--loco-service-name sport` only when explicitly testing older firmware/service behavior.
+
 By default, loco resolves the local DDS interface with `ip route get <robot_ip>`. If DDS picks the wrong NIC, pass it explicitly:
 
 ```bash
@@ -105,7 +107,7 @@ If `LocoClient` fails during DDS topic creation, probe the specific DDS topics w
 
 ```bash
 uv run loco --dds-probe 192.168.0.4
-uv run loco --dds-probe 192.168.0.4 --interface eno1
+uv run loco --dds-probe 192.168.0.4 --interface eno1 --loco-service-name ai_sport
 ```
 
 ### Unitree DDS troubleshooting
@@ -113,8 +115,14 @@ uv run loco --dds-probe 192.168.0.4 --interface eno1
 If `LocoClient` fails while creating a CycloneDDS topic, first run the project-free minimal constructor test:
 
 ```bash
-uv run python scripts/unitree_loco_minimal.py --robot-ip 192.168.0.4
-uv run python scripts/unitree_loco_minimal.py --interface eno1
+uv run python scripts/unitree_loco_minimal.py --robot-ip 192.168.0.4 --loco-service-name ai_sport
+uv run python scripts/unitree_loco_minimal.py --interface eno1 --loco-service-name ai_sport
+```
+
+You can also run the same smoke test through the main CLI without sending movement commands:
+
+```bash
+uv run loco --smoke-loco 192.168.0.4 --interface eno1 --loco-service-name ai_sport
 ```
 
 If the minimal script fails, the problem is below this project: fix the Unitree SDK checkout, CycloneDDS/Python environment, DDS domain/interface, or robot firmware/SDK compatibility. Inspect `sys.path`, remove duplicate SDK installs, and reinstall exactly one `unitree_sdk2py` source cleanly.

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import os
 import subprocess
 import sys
@@ -162,6 +163,43 @@ def normalize_network_interface(network_interface: str | None) -> str | None:
     return value
 
 
+LOCO_SERVICE_CHOICES = ("auto", "sport", "ai_sport")
+DEFAULT_G1_LOCO_SERVICE_NAME = "ai_sport"
+
+
+def effective_loco_service_name(loco_service_name: str | None) -> str:
+    value = (loco_service_name or "auto").strip()
+    if value not in LOCO_SERVICE_CHOICES:
+        choices = ", ".join(LOCO_SERVICE_CHOICES)
+        raise UnitreeG1Error(f"Unsupported loco service name {value!r}. Use one of: {choices}")
+    if value == "auto":
+        return DEFAULT_G1_LOCO_SERVICE_NAME
+    return value
+
+
+def loco_rpc_request_topic(loco_service_name: str) -> str:
+    return f"rt/api/{loco_service_name}/request"
+
+
+def patch_g1_loco_service_name(loco_service_name: str) -> tuple[object, dict[str, object]]:
+    effective_name = effective_loco_service_name(loco_service_name)
+    api_module = importlib.import_module("unitree_sdk2py.g1.loco.g1_loco_api")
+    detected_api_name = getattr(api_module, "LOCO_SERVICE_NAME", None)
+    api_module.LOCO_SERVICE_NAME = effective_name
+
+    client_module = importlib.import_module("unitree_sdk2py.g1.loco.g1_loco_client")
+    detected_client_name = getattr(client_module, "LOCO_SERVICE_NAME", None)
+    client_module.LOCO_SERVICE_NAME = effective_name
+
+    return client_module.LocoClient, {
+        "requested_service_name": loco_service_name,
+        "effective_service_name": effective_name,
+        "detected_api_service_name": detected_api_name,
+        "detected_client_service_name": detected_client_name,
+        "rpc_request_topic": loco_rpc_request_topic(effective_name),
+    }
+
+
 class UnitreeSdk2Context:
     _initialized = False
     _domain_id: int | None = None
@@ -216,20 +254,36 @@ class UnitreeSdk2Context:
         return resolved_interface
 
 
-def g1_loco_init_error(exc: Exception, robot_ip: str | None, network_interface: str, domain_id: int) -> UnitreeG1Error:
+def g1_loco_init_error(
+    exc: Exception,
+    robot_ip: str | None,
+    network_interface: str,
+    domain_id: int,
+    loco_service_name: str,
+) -> UnitreeG1Error:
     robot = robot_ip or "<robot_ip>"
+    topic = loco_rpc_request_topic(loco_service_name)
+    suggestion = ""
+    if topic == "rt/api/sport/request" and "DDS_RETCODE_PRECONDITION_NOT_MET" in str(exc):
+        suggestion = (
+            "\nThis failed on the legacy sport service topic. For newer G1 ai_sport firmware, try:\n"
+            f"  uv run loco --smoke-loco {robot} --interface {network_interface} --loco-service-name ai_sport\n"
+        )
     return UnitreeG1Error(
         "Failed to initialize Unitree G1 LocoClient before sending command.\n\n"
         "Likely causes:\n"
-        "1. CycloneDDS topic/type conflict on Unitree RPC topic rt/api/sport/request.\n"
-        "2. Wrong local network interface selected for CycloneDDS.\n"
+        f"1. Unitree firmware/service-name mismatch for DDS topic {topic}.\n"
+        "2. CycloneDDS topic/type conflict on the Unitree RPC request topic.\n"
         "3. unitree_sdk2py checkout/version mismatch with this repo or the robot firmware.\n\n"
         "Try:\n"
         f"  ip route get {robot}\n"
         f"  uv run loco --diagnose {robot}\n"
-        f"  uv run loco {robot} stop_move --interface {network_interface}\n\n"
+        f"  uv run loco --smoke-loco {robot} --interface {network_interface} --loco-service-name {loco_service_name}\n"
+        f"{suggestion}\n"
         f"DDS domain: {domain_id}\n"
         f"DDS interface: {network_interface}\n"
+        f"Loco service: {loco_service_name}\n"
+        f"DDS request topic: {topic}\n"
         f"Original error: {exc}"
     )
 
@@ -255,6 +309,7 @@ class G1LocoSdk2Client:
         robot_ip: str | None = None,
         timeout_s: float = 15.0,
         domain_id: int = 0,
+        loco_service_name: str = "auto",
     ) -> None:
         self.network_interface = UnitreeSdk2Context.initialize(
             robot_ip=robot_ip,
@@ -263,20 +318,26 @@ class G1LocoSdk2Client:
         )
         self.timeout_s = timeout_s
         self.domain_id = domain_id
+        self.loco_service_name = effective_loco_service_name(loco_service_name)
 
         try:
-            from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
+            LocoClient, service_report = patch_g1_loco_service_name(loco_service_name)
         except Exception as exc:
             raise UnitreeG1Error(
-                "Could not import Unitree G1 LocoClient. Install dependencies with: `uv sync`.\n"
+                "Could not import and patch Unitree G1 LocoClient service name. Install dependencies with: `uv sync`.\n"
+                f"Requested service: {loco_service_name}\n"
                 f"Original error: {exc}"
             ) from exc
 
-        print("Constructing G1 LocoClient", file=sys.stderr)
+        print(
+            f"Constructing G1 LocoClient service={service_report['effective_service_name']} "
+            f"topic={service_report['rpc_request_topic']}",
+            file=sys.stderr,
+        )
         try:
             self._client = LocoClient()
         except Exception as exc:
-            raise g1_loco_init_error(exc, robot_ip, self.network_interface, domain_id) from exc
+            raise g1_loco_init_error(exc, robot_ip, self.network_interface, domain_id, self.loco_service_name) from exc
         self._client.Init()
         self._client.SetTimeout(timeout_s)
         self._arm_low_state = None

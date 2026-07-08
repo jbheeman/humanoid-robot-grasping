@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import argparse
+import importlib
 import importlib.metadata
 import json
 import pathlib
@@ -17,7 +18,42 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--interface", "--network-interface", dest="network_interface")
     parser.add_argument("--domain-id", type=int, default=0)
     parser.add_argument("--robot-ip", help="Robot IP used only for route/interface diagnostics.")
+    parser.add_argument(
+        "--loco-service-name",
+        choices=("auto", "sport", "ai_sport"),
+        default="auto",
+        help="G1 loco RPC service name. auto prefers ai_sport.",
+    )
     return parser
+
+
+def effective_loco_service_name(raw: str | None) -> str:
+    if raw in (None, "", "auto"):
+        return "ai_sport"
+    return raw
+
+
+def loco_rpc_request_topic(service_name: str) -> str:
+    return f"rt/api/{service_name}/request"
+
+
+def patch_loco_service_name(raw_service_name: str) -> dict[str, object]:
+    service_name = effective_loco_service_name(raw_service_name)
+    api_module = importlib.import_module("unitree_sdk2py.g1.loco.g1_loco_api")
+    detected_api_service = getattr(api_module, "LOCO_SERVICE_NAME", None)
+    api_module.LOCO_SERVICE_NAME = service_name
+
+    client_module = importlib.import_module("unitree_sdk2py.g1.loco.g1_loco_client")
+    detected_client_service = getattr(client_module, "LOCO_SERVICE_NAME", None)
+    client_module.LOCO_SERVICE_NAME = service_name
+
+    return {
+        "requested_service_name": raw_service_name,
+        "effective_service_name": service_name,
+        "detected_api_service_name": detected_api_service,
+        "detected_client_service_name": detected_client_service,
+        "rpc_request_topic": loco_rpc_request_topic(service_name),
+    }
 
 
 def package_version(*names: str) -> dict[str, object]:
@@ -104,6 +140,9 @@ def main() -> int:
     report = {
         "python": {"executable": sys.executable, "version": sys.version},
         "domain_id": args.domain_id,
+        "requested_loco_service_name": args.loco_service_name,
+        "effective_loco_service_name": effective_loco_service_name(args.loco_service_name),
+        "loco_rpc_request_topic": loco_rpc_request_topic(effective_loco_service_name(args.loco_service_name)),
         "requested_interface": args.network_interface,
         "robot_ip": args.robot_ip,
         "route": route,
@@ -118,11 +157,18 @@ def main() -> int:
 
     try:
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
 
         print(f"initializing DDS domain={args.domain_id} interface={interface}", file=sys.stderr)
         ChannelFactoryInitialize(args.domain_id, str(interface))
-        print("Constructing G1 LocoClient", file=sys.stderr)
+
+        service_report = patch_loco_service_name(args.loco_service_name)
+        client_module = importlib.import_module("unitree_sdk2py.g1.loco.g1_loco_client")
+        LocoClient = client_module.LocoClient
+        print(
+            f"Constructing G1 LocoClient service={service_report['effective_service_name']} "
+            f"topic={service_report['rpc_request_topic']}",
+            file=sys.stderr,
+        )
         LocoClient()
     except Exception as exc:
         print("FAILURE: minimal G1 LocoClient construction failed", file=sys.stderr)

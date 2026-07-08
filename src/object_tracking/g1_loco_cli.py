@@ -12,9 +12,13 @@ import sys
 from object_tracking.unitree_g1 import (
     G1LocoSdk2Client,
     Go2SportSdk2Client,
+    LOCO_SERVICE_CHOICES,
     UnitreeG1Error,
     UnitreeSdk2Context,
+    effective_loco_service_name,
+    loco_rpc_request_topic,
     normalize_network_interface,
+    patch_g1_loco_service_name,
 )
 
 
@@ -54,6 +58,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Unitree SDK backend. g1_loco is default; go2_sport is explicit debugging only.",
     )
     parser.add_argument(
+        "--loco-service-name",
+        choices=LOCO_SERVICE_CHOICES,
+        default="auto",
+        help="G1 loco RPC service name. auto prefers ai_sport. Use sport only when explicitly needed.",
+    )
+    parser.add_argument(
         "command",
         nargs="?",
         choices=("stand_up", "balance_stand", "stop_move", "damp", "move", "move_arms_up"),
@@ -74,6 +84,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--dds-probe",
         action="store_true",
         help="Initialize DDS and probe Unitree topic creation without sending robot commands.",
+    )
+    parser.add_argument(
+        "--smoke-loco",
+        action="store_true",
+        help="Initialize DDS, patch the G1 loco service name, construct LocoClient, then exit.",
     )
     return parser
 
@@ -184,16 +199,22 @@ def _sdk_path_report() -> dict[str, object]:
     }
 
 
-def _g1_loco_info() -> dict[str, object]:
+def _g1_loco_info(loco_service_name: str) -> dict[str, object]:
     try:
+        import unitree_sdk2py.g1.loco.g1_loco_client as g1_loco_client
         from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
         from unitree_sdk2py.g1.loco.g1_loco_api import LOCO_SERVICE_NAME, LOCO_API_VERSION
     except Exception as exc:
         return {"available": False, "error": repr(exc)}
+    effective_service = effective_loco_service_name(loco_service_name)
     return {
         "available": True,
         "client": f"{LocoClient.__module__}.{LocoClient.__name__}",
-        "service_name": LOCO_SERVICE_NAME,
+        "detected_api_service_name": LOCO_SERVICE_NAME,
+        "detected_client_service_name": getattr(g1_loco_client, "LOCO_SERVICE_NAME", None),
+        "requested_service_name": loco_service_name,
+        "effective_service_name": effective_service,
+        "rpc_request_topic": loco_rpc_request_topic(effective_service),
         "api_version": LOCO_API_VERSION,
         "backend": "g1_loco",
     }
@@ -223,6 +244,7 @@ def _dds_probe(
     robot_ip: str | None,
     network_interface: str | None,
     domain_id: int,
+    loco_service_name: str,
 ) -> None:
     if robot_ip is None and normalize_network_interface(network_interface) is None:
         print("Pass robot_ip/--robot-ip or --interface/--network-interface for DDS probe.", file=sys.stderr)
@@ -247,13 +269,14 @@ def _dds_probe(
         raise SystemExit(1) from exc
 
     unique_suffix = f"{os.getpid()}"
+    effective_service = effective_loco_service_name(loco_service_name)
     probes = [
         (
             f"rt/unitree_probe/request_{unique_suffix}",
             "unitree_sdk2py.idl.unitree_api.msg.dds_:Request_",
         ),
         (
-            "rt/api/sport/request",
+            loco_rpc_request_topic(effective_service),
             "unitree_sdk2py.idl.unitree_api.msg.dds_:Request_",
         ),
         (
@@ -270,6 +293,9 @@ def _dds_probe(
                 "requested_interface": network_interface or "auto",
                 "resolved_interface": resolved_interface,
                 "domain_id": domain_id,
+                "requested_loco_service_name": loco_service_name,
+                "effective_loco_service_name": effective_service,
+                "loco_rpc_request_topic": loco_rpc_request_topic(effective_service),
                 "probes": results,
             },
             indent=2,
@@ -282,6 +308,7 @@ def _construct_g1_loco_minimal(
     robot_ip: str | None,
     network_interface: str | None,
     domain_id: int,
+    loco_service_name: str,
 ) -> None:
     resolved_interface = UnitreeSdk2Context.initialize(
         robot_ip=robot_ip,
@@ -289,11 +316,15 @@ def _construct_g1_loco_minimal(
         domain_id=domain_id,
     )
     try:
-        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
+        LocoClient, service_report = patch_g1_loco_service_name(loco_service_name)
     except Exception as exc:
-        raise UnitreeG1Error(f"Could not import G1 LocoClient: {exc}") from exc
+        raise UnitreeG1Error(f"Could not import and patch G1 LocoClient: {exc}") from exc
 
-    print("Constructing G1 LocoClient", file=sys.stderr)
+    print(
+        f"Constructing G1 LocoClient service={service_report['effective_service_name']} "
+        f"topic={service_report['rpc_request_topic']}",
+        file=sys.stderr,
+    )
     try:
         LocoClient()
     except Exception as exc:
@@ -302,6 +333,8 @@ def _construct_g1_loco_minimal(
             "so fix the Unitree SDK/CycloneDDS/Python environment first.\n"
             f"DDS domain: {domain_id}\n"
             f"DDS interface: {resolved_interface}\n"
+            f"Loco service: {service_report['effective_service_name']}\n"
+            f"DDS request topic: {service_report['rpc_request_topic']}\n"
             f"Original error: {exc}"
         ) from exc
 
@@ -312,6 +345,7 @@ def _construct_g1_loco_minimal(
                 "backend": "g1_loco_minimal",
                 "domain_id": domain_id,
                 "resolved_interface": resolved_interface,
+                "loco_service": service_report,
                 "sdk_paths": _sdk_path_report(),
             },
             indent=2,
@@ -325,6 +359,7 @@ def _diagnose_client(
     network_interface: str | None,
     timeout_s: float,
     domain_id: int,
+    loco_service_name: str,
 ) -> None:
     if robot_ip is None and network_interface is None:
         print("Pass robot_ip/--robot-ip or --network-interface to run diagnostics.", file=sys.stderr)
@@ -336,11 +371,15 @@ def _diagnose_client(
     if route.get("ok") and route.get("interface") and explicit_interface is None:
         resolved_interface = route["interface"]
 
+    effective_service = effective_loco_service_name(loco_service_name)
     report = {
         "backend": "g1_loco",
         "robot_ip": robot_ip,
         "timeout_s": timeout_s,
         "domain_id": domain_id,
+        "requested_loco_service_name": loco_service_name,
+        "effective_loco_service_name": effective_service,
+        "loco_rpc_request_topic": loco_rpc_request_topic(effective_service),
         "requested_interface": network_interface or "auto",
         "resolved_interface": resolved_interface,
         "route": route,
@@ -363,13 +402,13 @@ def _diagnose_client(
             "unitree_sdk2py": _module_info("unitree_sdk2py"),
             "cyclonedds": _module_info("cyclonedds"),
         },
-        "g1_loco": _g1_loco_info(),
+        "g1_loco": _g1_loco_info(loco_service_name),
         "sdk_paths": _sdk_path_report(),
         "topic_creation_plan": {
             "g1_loco": [
-                "Constructing G1 LocoClient",
-                "G1 LocoClient creates rt/api/sport/request through unitree_api.msg.dds_.Request_",
-                "G1 LocoClient creates rt/api/sport/response through unitree_api.msg.dds_.Response_",
+                f"Constructing G1 LocoClient service={effective_service}",
+                f"G1 LocoClient creates {loco_rpc_request_topic(effective_service)} through unitree_api.msg.dds_.Request_",
+                f"G1 LocoClient creates rt/api/{effective_service}/response through unitree_api.msg.dds_.Response_",
             ],
             "go2_sport": [
                 "Constructing Go2 SportClient",
@@ -391,7 +430,25 @@ def main() -> None:
             network_interface=args.network_interface,
             timeout_s=args.timeout,
             domain_id=args.domain_id,
+            loco_service_name=args.loco_service_name,
         )
+        return
+
+    if args.smoke_loco:
+        try:
+            _construct_g1_loco_minimal(
+                robot_ip=robot_ip,
+                network_interface=args.network_interface,
+                domain_id=args.domain_id,
+                loco_service_name=args.loco_service_name,
+            )
+        except UnitreeG1Error as exc:
+            print(f"Command failed: {exc}", file=sys.stderr)
+            print(
+                "Tip: try `uv run loco --smoke-loco <ip> --interface <dev> --loco-service-name ai_sport`.",
+                file=sys.stderr,
+            )
+            raise SystemExit(1) from exc
         return
 
     if args.dds_probe:
@@ -399,6 +456,7 @@ def main() -> None:
             robot_ip=robot_ip,
             network_interface=args.network_interface,
             domain_id=args.domain_id,
+            loco_service_name=args.loco_service_name,
         )
         return
 
@@ -408,6 +466,7 @@ def main() -> None:
                 robot_ip=robot_ip,
                 network_interface=args.network_interface,
                 domain_id=args.domain_id,
+                loco_service_name=args.loco_service_name,
             )
         except UnitreeG1Error as exc:
             print(f"Command failed: {exc}", file=sys.stderr)
@@ -437,13 +496,21 @@ def main() -> None:
             raise SystemExit(1)
 
     try:
-        client_cls = Go2SportSdk2Client if args.backend == "go2_sport" else G1LocoSdk2Client
-        client = client_cls(
-            network_interface=args.network_interface,
-            robot_ip=robot_ip,
-            timeout_s=args.timeout,
-            domain_id=args.domain_id,
-        )
+        if args.backend == "go2_sport":
+            client = Go2SportSdk2Client(
+                network_interface=args.network_interface,
+                robot_ip=robot_ip,
+                timeout_s=args.timeout,
+                domain_id=args.domain_id,
+            )
+        else:
+            client = G1LocoSdk2Client(
+                network_interface=args.network_interface,
+                robot_ip=robot_ip,
+                timeout_s=args.timeout,
+                domain_id=args.domain_id,
+                loco_service_name=args.loco_service_name,
+            )
         if args.command == "move":
             result = client.move(vx, vy, omega, duration)
         elif args.command == "move_arms_up":
