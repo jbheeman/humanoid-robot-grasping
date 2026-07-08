@@ -253,6 +253,14 @@ python3 scripts/robot.py move --vx 0.05 --vy 0 --omega 0 --duration 0.4 --ramp 0
 python3 scripts/robot.py stop
 ```
 
+For interactive testing from the server:
+
+```bash
+python3 scripts/robot.py drive
+```
+
+Keys: `w/s` forward/back, `a/d` strafe, `q/e` turn, Space or `x` stop, Ctrl-C sends stop and exits. This is a software stop path over Wi-Fi, not a replacement for the robot/controller hardware e-stop.
+
 `amount` is the fraction of the forward arm target. Start around `0.1` to `0.2`. Arm and velocity motion use smoothstep easing so they ease in/out instead of snapping to a linear ramp.
 
 Only use robot-local checks to isolate low-level robot networking after server-side tests are exhausted:

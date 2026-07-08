@@ -195,6 +195,9 @@ class Bridge:
             timeout_extra_s=max(duration + 5.0, 10.0),
         )
 
+    def command_estop(self) -> dict[str, object]:
+        return self.command_stop()
+
     def command_arms_up(self, body: dict[str, object]) -> dict[str, object]:
         allowed, error = self.movement_allowed()
         if not allowed:
@@ -319,6 +322,11 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
 
             if path == "/stop_move":
                 result = bridge.command_stop()
+                self.send_json(200 if result["ok"] else 502, result)
+                return
+
+            if path in ("/estop", "/stop"):
+                result = bridge.command_estop()
                 self.send_json(200 if result["ok"] else 502, result)
                 return
 

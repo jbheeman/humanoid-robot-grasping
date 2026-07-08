@@ -6,6 +6,8 @@ import json
 from pathlib import Path
 import subprocess
 import sys
+import termios
+import tty
 from urllib import request
 from urllib.error import HTTPError, URLError
 
@@ -35,6 +37,7 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("probe")
     subparsers.add_parser("mode")
     subparsers.add_parser("stop")
+    subparsers.add_parser("estop")
     subparsers.add_parser("smoke-move")
 
     arms = subparsers.add_parser("arms-up", help="Move arms through the HTTP bridge high-level arm command.")
@@ -53,6 +56,12 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--omega", "--wz", dest="omega", type=float, default=0.0)
     move.add_argument("--duration", type=float, default=0.4)
     move.add_argument("--ramp", type=float, default=0.15)
+
+    drive = subparsers.add_parser("drive", help="Interactive server-side control. Space/x/Ctrl-C sends stop.")
+    drive.add_argument("--speed", type=float, default=0.05)
+    drive.add_argument("--turn", type=float, default=0.12)
+    drive.add_argument("--duration", type=float, default=0.25)
+    drive.add_argument("--ramp", type=float, default=0.08)
 
     shoulder = subparsers.add_parser(
         "shoulder-pitch",
@@ -166,6 +175,83 @@ def print_response(status: int, body: str) -> int:
     return 0 if 200 <= status < 300 else 1
 
 
+def command_payload(command: str, args: argparse.Namespace) -> dict[str, object]:
+    if command in ("stop", "estop"):
+        return {"command": "stop"}
+    if command == "smoke-move":
+        return {"command": "smoke_move"}
+    if command == "arms-up":
+        return {"command": "arms-up", "amount": args.amount, "ramp": args.ramp, "hold": args.hold}
+    if command == "forward":
+        return {"command": "forward", "speed": args.speed, "duration": args.duration, "ramp": args.ramp}
+    if command == "move":
+        return {
+            "command": "move",
+            "vx": args.vx,
+            "vy": args.vy,
+            "omega": args.omega,
+            "duration": args.duration,
+            "ramp": args.ramp,
+        }
+    raise AssertionError(command)
+
+
+def send_command(host: str, port: int, payload: dict[str, object]) -> int:
+    return print_response(*send_json(bridge_url(host, port, "/cmd"), payload))
+
+
+def read_key() -> str:
+    fd = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(fd)
+    try:
+        tty.setcbreak(fd)
+        return sys.stdin.read(1)
+    finally:
+        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
+
+
+def drive(args: argparse.Namespace) -> int:
+    print("Interactive drive mode")
+    print("w/s: forward/back  a/d: strafe  q/e: turn  space/x: stop  Ctrl-C: stop+exit")
+    print("This is a software stop path, not a hardware e-stop.")
+    try:
+        while True:
+            key = read_key().lower()
+            payload: dict[str, object] | None = None
+            if key == "w":
+                payload = {"command": "move", "vx": args.speed, "vy": 0.0, "omega": 0.0}
+            elif key == "s":
+                payload = {"command": "move", "vx": -args.speed, "vy": 0.0, "omega": 0.0}
+            elif key == "a":
+                payload = {"command": "move", "vx": 0.0, "vy": args.speed, "omega": 0.0}
+            elif key == "d":
+                payload = {"command": "move", "vx": 0.0, "vy": -args.speed, "omega": 0.0}
+            elif key == "q":
+                payload = {"command": "move", "vx": 0.0, "vy": 0.0, "omega": args.turn}
+            elif key == "e":
+                payload = {"command": "move", "vx": 0.0, "vy": 0.0, "omega": -args.turn}
+            elif key in (" ", "x"):
+                payload = {"command": "stop"}
+            elif key in ("\x03", "\x04"):
+                send_command(args.host, args.port, {"command": "stop"})
+                return 130
+            else:
+                continue
+
+            if payload.get("command") == "move":
+                payload["duration"] = args.duration
+                payload["ramp"] = args.ramp
+            status, body = send_json(bridge_url(args.host, args.port, "/cmd"), payload)
+            ok = 200 <= status < 300
+            print(("ok" if ok else f"error {status}") + f": {payload}")
+            if not ok:
+                print(body)
+    except KeyboardInterrupt:
+        print("\nCtrl-C: sending stop")
+        send_command(args.host, args.port, {"command": "stop"})
+        return 130
+
+
 def main() -> int:
     args = build_parser().parse_args()
 
@@ -180,29 +266,14 @@ def main() -> int:
         return print_response(*send_json(bridge_url(args.host, args.port, "/probe_loco")))
     if args.command == "mode":
         return print_response(*send_json(bridge_url(args.host, args.port, "/check_motion_mode")))
+    if args.command == "drive":
+        return drive(args)
 
-    payload: dict[str, object]
-    if args.command == "stop":
-        payload = {"command": "stop"}
-    elif args.command == "smoke-move":
-        payload = {"command": "smoke_move"}
-    elif args.command == "arms-up":
-        payload = {"command": "arms-up", "amount": args.amount, "ramp": args.ramp, "hold": args.hold}
-    elif args.command == "forward":
-        payload = {"command": "forward", "speed": args.speed, "duration": args.duration, "ramp": args.ramp}
-    elif args.command == "move":
-        payload = {
-            "command": "move",
-            "vx": args.vx,
-            "vy": args.vy,
-            "omega": args.omega,
-            "duration": args.duration,
-            "ramp": args.ramp,
-        }
-    else:
-        raise AssertionError(args.command)
-
-    return print_response(*send_json(bridge_url(args.host, args.port, "/cmd"), payload))
+    try:
+        return send_command(args.host, args.port, command_payload(args.command, args))
+    except KeyboardInterrupt:
+        print("\nCtrl-C: sending stop")
+        return send_command(args.host, args.port, {"command": "stop"})
 
 
 if __name__ == "__main__":
