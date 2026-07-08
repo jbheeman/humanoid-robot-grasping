@@ -4,7 +4,8 @@ version = "0.1.0"
 description = "Initial plush object tracking utilities for Unitree G1 project."
 requires-python = ">=3.10"
 dependencies = [
-    "opencv-python>=4.9",
+    "numpy<2",
+    "streamlit>=1.36",
 ]
 
 [project.optional-dependencies]
@@ -19,6 +20,7 @@ dev = []
 object-manual-tracker = "object_tracking.manual_tracker:main"
 loco = "object_tracking.g1_loco_cli:main"
 vision = "object_tracking.g1_vision_cli:main"
+vision-streamlit = "object_tracking.streamlit_viewer_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

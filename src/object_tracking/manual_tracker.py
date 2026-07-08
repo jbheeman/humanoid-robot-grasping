@@ -1,10 +1,13 @@
 from __future__ import annotations
 
 import argparse
+import re
+import subprocess
 import time
 from pathlib import Path
 
 import cv2
+import numpy as np
 
 from object_tracking.logging import JsonlLogger
 from object_tracking.unitree_g1 import (
@@ -37,6 +40,78 @@ def parse_camera(value: str) -> int | str:
         return value
 
 
+def opencv_gstreamer_enabled() -> bool:
+    try:
+        build_info = cv2.getBuildInformation()
+    except Exception:
+        return hasattr(cv2, "CAP_GSTREAMER")
+
+    for line in build_info.splitlines():
+        if line.strip().startswith("GStreamer:"):
+            return "YES" in line.upper()
+    return False
+
+
+def _strip_appsink(source: str) -> str:
+    return re.sub(r"\s*!\s*appsink(?:\s+[^!]*)?$", "", source).strip()
+
+
+class GstLaunchCapture:
+    width = 640
+    height = 480
+    fps = 30.0
+
+    def __init__(self, source: str) -> None:
+        self.source = source
+        pipeline = (
+            f"{_strip_appsink(source)} ! videoconvert ! "
+            f"video/x-raw,format=BGR,width={self.width},height={self.height},framerate=30/1 ! "
+            "fdsink fd=1"
+        )
+        self.command = f"gst-launch-1.0 -q {pipeline}"
+        self.proc = subprocess.Popen(
+            self.command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+        )
+        self.frame_size = self.width * self.height * 3
+
+    def isOpened(self) -> bool:
+        return self.proc.poll() is None and self.proc.stdout is not None
+
+    def read(self) -> tuple[bool, object | None]:
+        if self.proc.stdout is None:
+            return False, None
+        chunks: list[bytes] = []
+        remaining = self.frame_size
+        while remaining > 0:
+            chunk = self.proc.stdout.read(remaining)
+            if not chunk:
+                return False, None
+            chunks.append(chunk)
+            remaining -= len(chunk)
+        frame = np.frombuffer(b"".join(chunks), dtype=np.uint8).reshape((self.height, self.width, 3))
+        return True, frame.copy()
+
+    def get(self, prop: int) -> float:
+        if prop == cv2.CAP_PROP_FRAME_WIDTH:
+            return float(self.width)
+        if prop == cv2.CAP_PROP_FRAME_HEIGHT:
+            return float(self.height)
+        if prop == cv2.CAP_PROP_FPS:
+            return self.fps
+        return 0.0
+
+    def release(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
 def parse_bbox(value: str) -> tuple[int, int, int, int]:
     parts = [part.strip() for part in value.replace(",", " ").split()]
     if len(parts) != 4:
@@ -59,11 +134,10 @@ def open_camera(camera: int | str, robot_ip: str | None, robot_camera_url: str |
     errors: list[str] = []
     for source in sources:
         if isinstance(source, str) and is_gstreamer_pipeline(source):
-            if not hasattr(cv2, "CAP_GSTREAMER"):
-                raise RuntimeError(
-                    "OpenCV in this environment does not expose CAP_GSTREAMER. Install a GStreamer-capable OpenCV build to use Unitree G1 camera streams."
-                )
-            cap = cv2.VideoCapture(source, cv2.CAP_GSTREAMER)
+            if opencv_gstreamer_enabled():
+                cap = cv2.VideoCapture(source, cv2.CAP_GSTREAMER)
+            else:
+                cap = GstLaunchCapture(source)
         else:
             cap = cv2.VideoCapture(source)
         if not cap.isOpened():

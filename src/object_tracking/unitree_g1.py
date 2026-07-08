@@ -10,9 +10,11 @@ import time
 try:
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize
     from unitree_sdk2py.go2.sport.sport_client import SportClient
+    from unitree_sdk2py.go2.video.video_client import VideoClient
 except Exception as exc:  # pragma: no cover - surfaced as runtime error when dependency missing
     ChannelFactoryInitialize = None
     SportClient = None
+    VideoClient = None
     _SDK2_IMPORT_ERROR = exc
 else:  # pragma: no cover
     _SDK2_IMPORT_ERROR = None
@@ -26,21 +28,24 @@ def default_camera_env() -> list[str]:
 
 
 def default_camera_ports() -> list[str]:
-    value = os.environ.get("G1_CAMERA_UDP_PORTS", "5600")
+    value = os.environ.get("G1_CAMERA_UDP_PORTS", "1720")
     ports = []
     for part in value.split(","):
         p = part.strip()
         if p:
             ports.append(p)
     if not ports:
-        ports.append("5600")
+        ports.append("1720")
     return ports
 
 
 def default_gstreamer_port_templates() -> list[str]:
+    multicast_group = os.environ.get("G1_CAMERA_MULTICAST_GROUP", "230.1.1.1").strip()
+    multicast_iface = os.environ.get("G1_CAMERA_MULTICAST_IFACE", "").strip()
+    iface = f" multicast-iface={multicast_iface}" if multicast_iface else ""
     return [
-        "udpsrc address={ip} port={port} ! application/x-rtp,media=(string)video,encoding-name=(string)H264,clock-rate=(int)90000,payload=(int)96 ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink",
-        "udpsrc address={ip} port={port} ! application/x-rtp,media=(string)video ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink",
+        f"udpsrc multicast-group={multicast_group} address=0.0.0.0 port={{port}} auto-multicast=true{iface} ! application/x-rtp,media=(string)video,encoding-name=(string)H264,clock-rate=(int)90000 ! queue ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink",
+        f"udpsrc address={multicast_group} port={{port}} auto-multicast=true ! application/x-rtp,media=(string)video,encoding-name=(string)H264,clock-rate=(int)90000 ! queue ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink",
     ]
 
 
@@ -121,6 +126,38 @@ def g1_camera_candidates(robot_ip: str, camera_url: str | None = None) -> list[s
         return [candidate.format(ip=robot_ip) for candidate in configured]
 
     return [template.format(ip=robot_ip) for template in DEFAULT_G1_CAMERA_TEMPLATES]
+
+
+def get_sdk2_video_sample(
+    robot_ip: str | None = None,
+    network_interface: str | None = None,
+    timeout_s: float = 3.0,
+) -> tuple[bytes, str]:
+    if ChannelFactoryInitialize is None or VideoClient is None:
+        detail = str(_SDK2_IMPORT_ERROR) if _SDK2_IMPORT_ERROR is not None else "missing imports"
+        raise UnitreeG1Error(
+            "Could not import Unitree SDK2 video dependencies. Install and configure unitree-sdk2 and CycloneDDS on the robot-network host.\n"
+            f"Original error: {detail}"
+        )
+
+    if network_interface is None:
+        if robot_ip is None:
+            raise UnitreeG1Error("Pass robot_ip or network_interface for SDK2 video.")
+        network_interface = resolve_network_interface(robot_ip)
+
+    ChannelFactoryInitialize(0, network_interface)
+    client = VideoClient()
+    client.Init()
+    client.SetTimeout(timeout_s)
+
+    code, image = client.GetImageSample()
+    code_int = int(code) if code is not None else -1
+    if code_int != 0:
+        raise UnitreeG1Error(f"SDK2 videohub GetImageSample returned code {code_int}.")
+    if image is None or len(image) == 0:
+        raise UnitreeG1Error("SDK2 videohub GetImageSample returned no image bytes.")
+
+    return bytes(image), network_interface
 
 
 class G1LocoSdk2Client:
