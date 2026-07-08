@@ -108,6 +108,24 @@ def build_parser() -> argparse.ArgumentParser:
         help="Required for command=move.",
     )
     parser.add_argument(
+        "--arm-scale",
+        type=float,
+        default=1.0,
+        help="For move_arms_up: fraction of the forward arm target to use. Default: 1.0.",
+    )
+    parser.add_argument(
+        "--arm-ramp-s",
+        type=float,
+        default=2.0,
+        help="For move_arms_up: seconds to ramp to the target. Default: 2.0.",
+    )
+    parser.add_argument(
+        "--arm-hold-s",
+        type=float,
+        default=None,
+        help="For move_arms_up: seconds to hold target before returning. Default: hold until Ctrl-C.",
+    )
+    parser.add_argument(
         "--diagnose",
         action="store_true",
         help="Print SDK route/proxy diagnostics and exit.",
@@ -883,8 +901,18 @@ def main() -> None:
         elif args.command == "move":
             result = client.move(vx, vy, omega, duration)
         elif args.command == "move_arms_up":
-            print("Moving arms to the forward test pose. Press Ctrl-C to stop holding.", file=sys.stderr)
-            result = client.move_arms_up()
+            if args.arm_hold_s is None:
+                print("Moving arms to the forward test pose. Press Ctrl-C to stop holding.", file=sys.stderr)
+            else:
+                print(
+                    f"Moving arms with scale={args.arm_scale}, ramp_s={args.arm_ramp_s}, hold_s={args.arm_hold_s}.",
+                    file=sys.stderr,
+                )
+            result = client.move_arms_up(
+                hold_s=args.arm_hold_s,
+                scale=args.arm_scale,
+                ramp_s=args.arm_ramp_s,
+            )
         else:
             result = client.command(args.command)
     except UnitreeG1Error as exc:

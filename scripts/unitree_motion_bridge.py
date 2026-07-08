@@ -31,7 +31,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-movement",
         action="store_true",
-        help="Allow endpoints that can move the robot: /move and /smoke_move.",
+        help="Allow endpoints that can move the robot: /move, /move_arms_up, and /smoke_move.",
     )
     return parser
 
@@ -240,6 +240,43 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
                         bridge.args.loco_service_name,
                     ],
                     timeout_extra_s=max(duration + 5.0, 10.0),
+                )
+                self.send_json(200 if result["ok"] else 502, result)
+                return
+
+            if path == "/move_arms_up":
+                if not bridge.args.allow_movement or not body.get("i_understand_this_moves_the_robot"):
+                    self.send_json(
+                        403,
+                        {
+                            "ok": False,
+                            "error": (
+                                "Start bridge with --allow-movement and send "
+                                '{"i_understand_this_moves_the_robot": true}.'
+                            ),
+                        },
+                    )
+                    return
+                try:
+                    scale = float(body.get("scale", 0.2))
+                    ramp_s = float(body.get("ramp_s", 1.0))
+                    hold_s = float(body.get("hold_s", 1.0))
+                except (TypeError, ValueError) as exc:
+                    self.send_json(400, {"ok": False, "error": f"Invalid arm movement body: {exc}"})
+                    return
+                result = bridge.run_loco(
+                    [
+                        "move_arms_up",
+                        "--loco-service-name",
+                        bridge.args.loco_service_name,
+                        "--arm-scale",
+                        str(scale),
+                        "--arm-ramp-s",
+                        str(ramp_s),
+                        "--arm-hold-s",
+                        str(hold_s),
+                    ],
+                    timeout_extra_s=max(ramp_s + hold_s + 5.0, 10.0),
                 )
                 self.send_json(200 if result["ok"] else 502, result)
                 return

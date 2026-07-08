@@ -245,6 +245,16 @@ curl -X POST http://192.168.0.212:8765/smoke_move \
   -d '{"i_understand_this_moves_the_robot": true}'
 ```
 
+Small bounded arm test:
+
+```bash
+curl -X POST http://192.168.0.212:8765/move_arms_up \
+  -H 'Content-Type: application/json' \
+  -d '{"i_understand_this_moves_the_robot": true, "scale": 0.2, "ramp_s": 1.0, "hold_s": 1.0}'
+```
+
+`scale` is the fraction of the forward arm target. Start around `0.1` to `0.2`.
+
 Only use robot-local checks to isolate low-level robot networking after server-side tests are exhausted:
 
 ```bash

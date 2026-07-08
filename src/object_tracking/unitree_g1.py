@@ -774,7 +774,19 @@ class G1LocoSdk2Client:
     def _low_state_handler(self, msg: object) -> None:
         self._arm_low_state = msg
 
-    def move_arms_up(self) -> UnitreeCommandResult:
+    def move_arms_up(
+        self,
+        hold_s: float | None = None,
+        scale: float = 1.0,
+        ramp_s: float = 2.0,
+    ) -> UnitreeCommandResult:
+        if scale <= 0.0 or scale > 1.0:
+            raise UnitreeG1Error("move_arms_up scale must be > 0.0 and <= 1.0.")
+        if ramp_s <= 0.0:
+            raise UnitreeG1Error("move_arms_up ramp_s must be > 0.0.")
+        if hold_s is not None and hold_s < 0.0:
+            raise UnitreeG1Error("move_arms_up hold_s must be >= 0.0.")
+
         if (
             ChannelPublisher is None
             or ChannelSubscriber is None
@@ -808,24 +820,41 @@ class G1LocoSdk2Client:
             joint_id: float(self._arm_low_state.motor_state[joint_id].q)
             for joint_id in arm_joint_ids
         }
+        target_q = {
+            joint_id: start_q[joint_id] + (G1_ARM_FORWARD_TARGETS[joint_id] - start_q[joint_id]) * scale
+            for joint_id in arm_joint_ids
+        }
 
         control_dt = 0.02
-        ramp_s = 2.0
         started_at = time.monotonic()
 
         try:
             while True:
                 elapsed = time.monotonic() - started_at
                 ratio = min(max(elapsed / ramp_s, 0.0), 1.0)
+                if hold_s is not None and elapsed >= ramp_s + hold_s:
+                    report = {
+                        "ok": True,
+                        "command": "move_arms_up",
+                        "scale": scale,
+                        "ramp_s": ramp_s,
+                        "hold_s": hold_s,
+                        "joint_targets": target_q,
+                    }
+                    return UnitreeCommandResult(
+                        command=["loco", "move_arms_up"],
+                        returncode=0,
+                        stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
+                        stderr="",
+                    )
                 low_cmd.mode_pr = 0
                 low_cmd.mode_machine = int(getattr(self._arm_low_state, "mode_machine", 0))
 
                 for joint_id in arm_joint_ids:
-                    target = G1_ARM_FORWARD_TARGETS[joint_id]
                     motor = low_cmd.motor_cmd[joint_id]
                     motor.mode = 1
                     motor.tau = 0.0
-                    motor.q = (1.0 - ratio) * start_q[joint_id] + ratio * target
+                    motor.q = (1.0 - ratio) * start_q[joint_id] + ratio * target_q[joint_id]
                     motor.dq = 0.0
                     motor.kp = 25.0
                     motor.kd = 1.0
