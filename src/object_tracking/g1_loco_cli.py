@@ -16,6 +16,7 @@ from object_tracking.unitree_g1 import (
     G1LocoSdk2Client,
     Go2SportSdk2Client,
     LOCO_SERVICE_CHOICES,
+    MotionSwitcherSdk2Client,
     UnitreeG1Error,
     UnitreeSdk2Context,
     default_cyclonedds_log_file,
@@ -82,7 +83,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("stand_up", "balance_stand", "stop_move", "damp", "move", "move_arms_up", "probe_loco"),
+        choices=(
+            "stand_up",
+            "balance_stand",
+            "stop_move",
+            "damp",
+            "move",
+            "move_arms_up",
+            "probe_loco",
+            "check_motion_mode",
+            "select_ai_mode",
+        ),
         help="G1 loco command to send. Omit and pass --diagnose for diagnostics only.",
     )
     parser.add_argument(
@@ -672,7 +683,8 @@ def main() -> None:
 
     if args.command is None:
         print(
-            "Missing command. Use one of: stand_up, balance_stand, stop_move, damp, move, move_arms_up, probe_loco.",
+            "Missing command. Use one of: stand_up, balance_stand, stop_move, damp, move, move_arms_up, "
+            "probe_loco, check_motion_mode, select_ai_mode.",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -692,7 +704,24 @@ def main() -> None:
             raise SystemExit(1)
 
     try:
-        if args.backend == "go2_sport":
+        if args.command in ("check_motion_mode", "select_ai_mode"):
+            client = MotionSwitcherSdk2Client(
+                network_interface=args.network_interface,
+                robot_ip=robot_ip,
+                timeout_s=args.timeout,
+                domain_id=args.domain_id,
+                cyclonedds_log_file=args.cyclonedds_log_file,
+                dds_config_mode=args.dds_config_mode,
+            )
+            if args.command == "select_ai_mode":
+                print(
+                    "Selecting Unitree motion mode 'ai'. Keep the robot physically safe and controller/e-stop ready.",
+                    file=sys.stderr,
+                )
+                result = client.select_mode("ai")
+            else:
+                result = client.check_mode()
+        elif args.backend == "go2_sport":
             client = Go2SportSdk2Client(
                 network_interface=args.network_interface,
                 robot_ip=robot_ip,
@@ -711,7 +740,9 @@ def main() -> None:
                 cyclonedds_log_file=args.cyclonedds_log_file,
                 dds_config_mode=args.dds_config_mode,
             )
-        if args.command == "move":
+        if args.command in ("check_motion_mode", "select_ai_mode"):
+            pass
+        elif args.command == "move":
             result = client.move(vx, vy, omega, duration)
         elif args.command == "move_arms_up":
             print("Moving arms to the forward test pose. Press Ctrl-C to stop holding.", file=sys.stderr)

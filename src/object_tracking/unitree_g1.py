@@ -460,6 +460,129 @@ def g1_camera_candidates(robot_ip: str, camera_url: str | None = None) -> list[s
     return [template.format(ip=robot_ip) for template in DEFAULT_G1_CAMERA_TEMPLATES]
 
 
+class MotionSwitcherSdk2Client:
+    """Thin wrapper around Unitree SDK2 motion switcher client."""
+
+    def __init__(
+        self,
+        network_interface: str | None = None,
+        robot_ip: str | None = None,
+        timeout_s: float = 15.0,
+        domain_id: int = 0,
+        cyclonedds_log_file: str | None = None,
+        dds_config_mode: str = DEFAULT_DDS_CONFIG_MODE,
+    ) -> None:
+        self.network_interface = UnitreeSdk2Context.initialize(
+            robot_ip=robot_ip,
+            network_interface=network_interface,
+            domain_id=domain_id,
+            cyclonedds_log_file=cyclonedds_log_file,
+            dds_config_mode=dds_config_mode,
+        )
+        self.timeout_s = timeout_s
+        self.domain_id = domain_id
+
+        try:
+            from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
+        except Exception as exc:
+            raise UnitreeG1Error(
+                "Could not import Unitree MotionSwitcherClient from unitree-sdk2py.\n"
+                f"Original error: {exc}"
+            ) from exc
+
+        print("Constructing MotionSwitcherClient", file=sys.stderr)
+        self._client = MotionSwitcherClient()
+        print(f"Setting MotionSwitcherClient timeout={timeout_s}", file=sys.stderr)
+        self._client.SetTimeout(timeout_s)
+        print("Calling MotionSwitcherClient.Init()", file=sys.stderr)
+        init_result = self._client.Init()
+        print(f"MotionSwitcherClient.Init() returned {init_result!r}", file=sys.stderr)
+
+    def _public_methods(self) -> list[str]:
+        methods = []
+        for name in dir(self._client):
+            if name.startswith("_"):
+                continue
+            try:
+                value = getattr(self._client, name)
+            except Exception:
+                continue
+            if callable(value):
+                methods.append(name)
+        return methods
+
+    def check_mode(self) -> UnitreeCommandResult:
+        if not hasattr(self._client, "CheckMode"):
+            report = {
+                "ok": False,
+                "error": "MotionSwitcherClient does not expose CheckMode",
+                "public_methods": self._public_methods(),
+            }
+            return UnitreeCommandResult(
+                command=["loco", "check_motion_mode"],
+                returncode=0,
+                stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
+                stderr="",
+            )
+
+        try:
+            result = self._client.CheckMode()
+            check_mode = unitree_rpc_result_report(result)
+        except Exception as exc:
+            check_mode = {"ok": False, "exception": repr(exc)}
+
+        report = {
+            "ok": bool(check_mode.get("ok")),
+            "domain_id": self.domain_id,
+            "network_interface": self.network_interface,
+            "timeout_s": self.timeout_s,
+            "public_methods": self._public_methods(),
+            "check_mode": check_mode,
+        }
+        return UnitreeCommandResult(
+            command=["loco", "check_motion_mode"],
+            returncode=0,
+            stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
+            stderr="",
+        )
+
+    def select_mode(self, mode: str) -> UnitreeCommandResult:
+        if not hasattr(self._client, "SelectMode"):
+            report = {
+                "ok": False,
+                "requested_mode": mode,
+                "error": "MotionSwitcherClient does not expose SelectMode",
+                "public_methods": self._public_methods(),
+            }
+            return UnitreeCommandResult(
+                command=["loco", "select_motion_mode", mode],
+                returncode=0,
+                stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
+                stderr="",
+            )
+
+        try:
+            result = self._client.SelectMode(mode)
+            select_mode = unitree_rpc_result_report(result)
+        except Exception as exc:
+            select_mode = {"ok": False, "exception": repr(exc)}
+
+        report = {
+            "ok": bool(select_mode.get("ok")),
+            "domain_id": self.domain_id,
+            "network_interface": self.network_interface,
+            "timeout_s": self.timeout_s,
+            "requested_mode": mode,
+            "select_mode": select_mode,
+        }
+        return UnitreeCommandResult(
+            command=["loco", "select_motion_mode", mode],
+            returncode=0,
+            stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
+            stderr="",
+        )
+
+
 class G1LocoSdk2Client:
     """Thin wrapper around Unitree SDK2 Python G1 loco client."""
 

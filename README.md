@@ -166,3 +166,13 @@ uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name spor
 ```
 
 If both probes return `3102` (`Request sending error`) on read-only methods, put the robot into high-level sport/ai-sport mode with the controller and retry. At that point the failure is the robot RPC server not responding on `rt/api/<service>/request`, not DDS initialization. The next useful checks are whether the robot firmware exposes the high-level loco RPC service at all and whether motion mode is enabled on the robot side.
+
+If the robot does not show an obvious `ai_sport`/`loco` Linux service to start manually, use the SDK motion switcher path:
+
+```bash
+uv run loco 192.168.0.212 check_motion_mode --interface enP7s7 --dds-config-mode no_trace
+uv run loco 192.168.0.212 select_ai_mode --interface enP7s7 --dds-config-mode no_trace
+uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
+```
+
+`check_motion_mode` is read-only. `select_ai_mode` calls `MotionSwitcherClient.SelectMode("ai")`, so only run it when the robot is physically safe and the controller/e-stop is ready.
