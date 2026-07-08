@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -22,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def run_command(command: list[str], timeout_s: float = 20.0) -> dict[str, object]:
+def run_command(command: list[str], timeout_s: float = 20.0, env: dict[str, str] | None = None) -> dict[str, object]:
     try:
         completed = subprocess.run(
             command,
@@ -30,6 +31,7 @@ def run_command(command: list[str], timeout_s: float = 20.0) -> dict[str, object
             capture_output=True,
             text=True,
             timeout=timeout_s,
+            env=env,
         )
     except Exception as exc:
         return {
@@ -64,6 +66,15 @@ def import_report() -> dict[str, object]:
 def main() -> int:
     args = build_parser().parse_args()
     script = pathlib.Path(__file__).resolve().with_name("g1_loco.py")
+    repo_root = script.parents[1]
+    src_path = repo_root / "src"
+    child_env = os.environ.copy()
+    existing_pythonpath = child_env.get("PYTHONPATH")
+    child_env["PYTHONPATH"] = (
+        str(src_path)
+        if not existing_pythonpath
+        else f"{src_path}{os.pathsep}{existing_pythonpath}"
+    )
     base_loco = [
         args.python,
         str(script),
@@ -83,6 +94,8 @@ def main() -> int:
         "interface": args.interface,
         "domain_id": args.domain_id,
         "python": args.python,
+        "repo_root": str(repo_root),
+        "child_pythonpath": child_env["PYTHONPATH"],
         "imports": import_report(),
         "route": run_command(["ip", "route"], timeout_s=5.0),
         "probes": {},
@@ -96,14 +109,17 @@ def main() -> int:
     report["probes"]["check_motion_mode"] = run_command(
         [*base_loco, "check_motion_mode"],
         timeout_s=probe_timeout,
+        env=child_env,
     )
     report["probes"]["probe_loco_ai_sport"] = run_command(
         [*base_loco, "probe_loco", "--loco-service-name", "ai_sport"],
         timeout_s=probe_timeout,
+        env=child_env,
     )
     report["probes"]["probe_loco_sport"] = run_command(
         [*base_loco, "probe_loco", "--loco-service-name", "sport"],
         timeout_s=probe_timeout,
+        env=child_env,
     )
 
     print(json.dumps(report, indent=2, sort_keys=True))

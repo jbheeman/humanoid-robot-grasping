@@ -210,6 +210,8 @@ cd ~/humanoid-robot-grasping
 python3 scripts/robot_eth0_rpc_probe.py --interface eth0 --robot-ip 192.168.123.164
 ```
 
+The probe script sets `PYTHONPATH=./src` for its child commands, so it can run directly from a copied checkout even before `pip install -e .` succeeds.
+
 If this succeeds from `eth0`, the dev machine path cannot reach the robot SDK RPC services. If it still returns `3102`, the issue is robot-side service/motion-mode availability.
 
 If the robot does not show an obvious `ai_sport`/`loco` Linux service to start manually, use the SDK motion switcher path:
