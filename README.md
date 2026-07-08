@@ -89,10 +89,12 @@ uv run loco 192.168.0.4 stand_up
 uv run loco 192.168.0.4 balance_stand
 uv run loco 192.168.0.4 move --velocity "0.2 0 0 1.0"
 uv run loco 192.168.0.4 stop_move
+uv run loco 192.168.0.212 stop_move --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
 uv run loco --diagnose 192.168.0.4
 ```
 
 For G1 loco, `--loco-service-name auto` is the default and patches the SDK to use `ai_sport`. Use `--loco-service-name sport` only when explicitly testing older firmware/service behavior.
+For DDS init, `--dds-config-mode no_trace` is the default. The Unitree SDK's original `unitree` config mode is kept for debugging, but it has been observed to crash with `SIGABRT` during `ChannelFactoryInitialize` on the G1 test machine.
 
 By default, loco resolves the local DDS interface with `ip route get <robot_ip>`. If DDS picks the wrong NIC, pass it explicitly:
 
@@ -139,7 +141,7 @@ uv run loco --smoke-loco-subprocess 192.168.0.4 --interface eno1 --loco-service-
 If one config mode passes, use it for later commands:
 
 ```bash
-uv run loco 192.168.0.4 stop_move --interface eno1 --loco-service-name ai_sport --dds-config-mode simple
+uv run loco 192.168.0.212 stop_move --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
 ```
 
 If every config mode exits with `SIGABRT` before `Constructing G1 LocoClient`, the failure is in CycloneDDS domain initialization, not in the repo movement wrapper or G1 service name patch. Rebuild or reinstall the native CycloneDDS and `unitree_sdk2py` stack before trying robot movement again.

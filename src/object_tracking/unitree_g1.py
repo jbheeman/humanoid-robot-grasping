@@ -167,7 +167,7 @@ def normalize_network_interface(network_interface: str | None) -> str | None:
 LOCO_SERVICE_CHOICES = ("auto", "sport", "ai_sport")
 DEFAULT_G1_LOCO_SERVICE_NAME = "ai_sport"
 DDS_CONFIG_MODE_CHOICES = ("unitree", "no_trace", "simple", "autodetermine")
-DEFAULT_DDS_CONFIG_MODE = "unitree"
+DEFAULT_DDS_CONFIG_MODE = "no_trace"
 
 SIMPLE_DDS_CONFIG_HAS_INTERFACE = """<?xml version="1.0" encoding="UTF-8" ?>
 <CycloneDDS>
@@ -354,9 +354,11 @@ class UnitreeSdk2Context:
                 f"Selected domain: {domain_id}\n"
                 f"DDS config mode: {dds_config_mode}\n"
                 f"CycloneDDS log file: {log_report['log_file']}\n"
+                "Unitree DDS config mode is known to SIGABRT on this machine. "
+                "Use --dds-config-mode no_trace.\n"
                 "Try:\n"
                 f"  ip route get {robot_ip or '<robot_ip>'}\n"
-                f"  uv run loco {robot_ip or '<robot_ip>'} stop_move --interface <dev>\n"
+                f"  uv run loco {robot_ip or '<robot_ip>'} stop_move --interface <dev> --dds-config-mode no_trace\n"
                 f"  uv run loco --diagnose {robot_ip or '<robot_ip>'}\n"
                 f"  rm -f /tmp/cdds.LOG"
             ) from exc
@@ -388,10 +390,12 @@ def g1_loco_init_error(
         f"1. Unitree firmware/service-name mismatch for DDS topic {topic}.\n"
         "2. CycloneDDS topic/type conflict on the Unitree RPC request topic.\n"
         "3. unitree_sdk2py checkout/version mismatch with this repo or the robot firmware.\n\n"
+        "Unitree DDS config mode is known to SIGABRT on this machine. Use --dds-config-mode no_trace.\n\n"
         "Try:\n"
         f"  ip route get {robot}\n"
         f"  uv run loco --diagnose {robot}\n"
         f"  uv run loco --smoke-loco {robot} --interface {network_interface} --loco-service-name {loco_service_name}\n"
+        f"  uv run loco {robot} stop_move --interface {network_interface} --loco-service-name {loco_service_name} --dds-config-mode no_trace\n"
         f"{suggestion}\n"
         f"DDS domain: {domain_id}\n"
         f"DDS interface: {network_interface}\n"
