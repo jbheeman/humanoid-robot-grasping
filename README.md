@@ -207,6 +207,44 @@ Diagnosis rules:
 - `3104`: timeout/discovery or service unavailable.
 - Server-side fails but robot-local succeeds: do not send Unitree DDS from the server; run a robot-side motion daemon and send HTTP/WebSocket commands over Wi-Fi.
 
+### Server-to-robot command path
+
+If `scripts/dds_discovery_probe.py` shows no DDS discovery output on the server interfaces, direct server-side Unitree SDK2 DDS is not reaching the robot. In that state, `probe_loco`, `check_motion_mode`, and `stop_move` from the server will return `3102` because no robot RPC participant is discovered.
+
+Use the robot-side HTTP bridge instead. It keeps DDS local to the robot and lets the external server send ordinary HTTP JSON over Wi-Fi.
+
+On the robot:
+
+```bash
+cd ~/humanoid-robot-grasping
+git pull
+PYTHONPATH=$PWD/src python3 scripts/unitree_motion_bridge.py \
+  --host 0.0.0.0 \
+  --port 8765 \
+  --interface wlan0 \
+  --loco-service-name sport \
+  --dds-config-mode no_trace
+```
+
+From the server:
+
+```bash
+curl http://192.168.0.212:8765/health
+curl http://192.168.0.212:8765/check_motion_mode
+curl http://192.168.0.212:8765/probe_loco
+curl -X POST http://192.168.0.212:8765/stop_move
+```
+
+If `wlan0` does not work inside the bridge, restart it with `--interface eth0`. The server still talks to `192.168.0.212:8765`; only the robot-local DDS interface changes.
+
+Movement endpoints are disabled by default. To enable guarded motion tests, start the bridge with `--allow-movement`, then use:
+
+```bash
+curl -X POST http://192.168.0.212:8765/smoke_move \
+  -H 'Content-Type: application/json' \
+  -d '{"i_understand_this_moves_the_robot": true}'
+```
+
 Only use robot-local checks to isolate low-level robot networking after server-side tests are exhausted:
 
 ```bash

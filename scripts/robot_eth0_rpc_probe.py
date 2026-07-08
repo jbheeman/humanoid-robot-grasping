@@ -30,7 +30,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--domain-id", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--control-peer", default="192.168.123.1")
-    parser.add_argument("--python", default=sys.executable)
+    parser.add_argument(
+        "--python",
+        default=None,
+        help="Python executable for child SDK probes. Default: .venv/bin/python3 if present, else this interpreter.",
+    )
     parser.add_argument("--skip-ping", action="store_true")
     return parser
 
@@ -63,6 +67,13 @@ def run_command(command: list[str], timeout_s: float = 20.0, env: dict[str, str]
     except Exception:
         pass
     return report
+
+
+def default_child_python(repo_root: pathlib.Path) -> str:
+    venv_python = repo_root / ".venv" / "bin" / "python3"
+    if venv_python.exists():
+        return str(venv_python)
+    return sys.executable
 
 
 def collect_codes(value: object) -> list[int]:
@@ -147,6 +158,7 @@ def main() -> int:
     args = build_parser().parse_args()
     script = pathlib.Path(__file__).resolve().with_name("g1_loco.py")
     repo_root = script.parents[1]
+    child_python = args.python or default_child_python(repo_root)
     src_path = repo_root / "src"
     child_env = os.environ.copy()
     existing_pythonpath = child_env.get("PYTHONPATH")
@@ -165,11 +177,12 @@ def main() -> int:
         "interfaces": interfaces,
         "ping_ips": ping_ips,
         "domain_id": args.domain_id,
-        "python": args.python,
+        "python": child_python,
+        "parent_python": sys.executable,
         "repo_root": str(repo_root),
         "child_pythonpath": child_env["PYTHONPATH"],
         "imports": import_report(),
-        "repo_import_check": repo_import_check(args.python, child_env),
+        "repo_import_check": repo_import_check(child_python, child_env),
         "route": run_command(["ip", "route"], timeout_s=5.0),
         "addr": run_command(["ip", "-br", "addr"], timeout_s=5.0),
         "interface_results": {},
@@ -190,7 +203,7 @@ def main() -> int:
     probe_timeout = max(args.timeout + 10.0, 20.0)
     for interface in interfaces:
         base_loco = [
-            args.python,
+            child_python,
             str(script),
             "--interface",
             interface,

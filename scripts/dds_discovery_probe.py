@@ -123,7 +123,11 @@ def main() -> int:
     report["diagnosis"] = (
         f"DDS discovery visible on: {', '.join(ok_interfaces)}"
         if ok_interfaces
-        else "No DDS discovery output on tested interfaces."
+        else (
+            "No DDS discovery output on tested interfaces. Direct Unitree SDK2 DDS from this server "
+            "will not reach robot RPC services on the current network; run a robot-side motion bridge "
+            "and send HTTP commands from the server."
+        )
     )
     print(json.dumps(report, indent=2, sort_keys=True))
     return 0 if report["ok"] else 1
