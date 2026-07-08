@@ -3,16 +3,15 @@ from __future__ import annotations
 import argparse
 import os
 import subprocess
+import sys
 from dataclasses import dataclass
 import time
 
 
 try:
     from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-    from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
 except Exception as exc:  # pragma: no cover - surfaced as runtime error when dependency missing
     ChannelFactoryInitialize = None
-    LocoClient = None
     _SDK2_IMPORT_ERROR = exc
 else:  # pragma: no cover
     _SDK2_IMPORT_ERROR = None
@@ -257,13 +256,6 @@ class G1LocoSdk2Client:
         timeout_s: float = 15.0,
         domain_id: int = 0,
     ) -> None:
-        if LocoClient is None:
-            detail = str(_SDK2_IMPORT_ERROR) if _SDK2_IMPORT_ERROR is not None else "missing imports"
-            raise UnitreeG1Error(
-                "Could not import unitree-sdk2 Python package. Install dependencies with: `uv sync`.\n"
-                f"Original error: {detail}"
-            )
-
         self.network_interface = UnitreeSdk2Context.initialize(
             robot_ip=robot_ip,
             network_interface=network_interface,
@@ -272,6 +264,15 @@ class G1LocoSdk2Client:
         self.timeout_s = timeout_s
         self.domain_id = domain_id
 
+        try:
+            from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
+        except Exception as exc:
+            raise UnitreeG1Error(
+                "Could not import Unitree G1 LocoClient. Install dependencies with: `uv sync`.\n"
+                f"Original error: {exc}"
+            ) from exc
+
+        print("Constructing G1 LocoClient", file=sys.stderr)
         try:
             self._client = LocoClient()
         except Exception as exc:
@@ -424,6 +425,46 @@ class G1LocoSdk2Client:
         except KeyError as exc:
             choices = ", ".join(sorted(commands))
             raise UnitreeG1Error(f"Unsupported G1 command {name!r}. Use one of: {choices}") from exc
+
+
+class Go2SportSdk2Client(G1LocoSdk2Client):
+    """Explicit lazy Go2 sport backend for debugging only."""
+
+    def __init__(
+        self,
+        network_interface: str | None = None,
+        robot_ip: str | None = None,
+        timeout_s: float = 15.0,
+        domain_id: int = 0,
+    ) -> None:
+        self.network_interface = UnitreeSdk2Context.initialize(
+            robot_ip=robot_ip,
+            network_interface=network_interface,
+            domain_id=domain_id,
+        )
+        self.timeout_s = timeout_s
+        self.domain_id = domain_id
+        self._arm_low_state = None
+
+        try:
+            from unitree_sdk2py.go2.sport.sport_client import SportClient
+        except Exception as exc:
+            raise UnitreeG1Error(
+                "Could not import Unitree Go2 SportClient. This backend is only for explicit debugging.\n"
+                f"Original error: {exc}"
+            ) from exc
+
+        print("Constructing Go2 SportClient", file=sys.stderr)
+        try:
+            self._client = SportClient()
+        except Exception as exc:
+            raise UnitreeG1Error(
+                "Failed to initialize explicit Go2 SportClient backend. "
+                "Do not use this backend for G1 unless intentionally debugging SDK topic behavior.\n"
+                f"Original error: {exc}"
+            ) from exc
+        self._client.Init()
+        self._client.SetTimeout(timeout_s)
 
 
 def parse_velocity(value: str) -> tuple[float, float, float, float | None]:

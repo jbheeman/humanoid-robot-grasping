@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib.metadata
 import os
+import pathlib
 import platform
 import json
 import subprocess
@@ -10,6 +11,7 @@ import sys
 
 from object_tracking.unitree_g1 import (
     G1LocoSdk2Client,
+    Go2SportSdk2Client,
     UnitreeG1Error,
     UnitreeSdk2Context,
     normalize_network_interface,
@@ -44,6 +46,12 @@ def build_parser() -> argparse.ArgumentParser:
         type=float,
         default=15.0,
         help="Timeout in seconds for each SDK command.",
+    )
+    parser.add_argument(
+        "--backend",
+        choices=("g1_loco", "g1_loco_minimal", "go2_sport"),
+        default="g1_loco",
+        help="Unitree SDK backend. g1_loco is default; go2_sport is explicit debugging only.",
     )
     parser.add_argument(
         "command",
@@ -132,6 +140,47 @@ def _module_info(module_name: str) -> dict[str, object]:
     return {
         "available": True,
         "file": getattr(module, "__file__", None),
+    }
+
+
+def _sdk_path_report() -> dict[str, object]:
+    imported_file: str | None = None
+    try:
+        import unitree_sdk2py
+
+        imported_file = getattr(unitree_sdk2py, "__file__", None)
+    except Exception:
+        imported_file = None
+
+    sys_path_unitree = [entry for entry in sys.path if "unitree" in entry.lower()]
+    candidates: list[str] = []
+    for entry in sys.path:
+        if not entry:
+            continue
+        candidate = pathlib.Path(entry) / "unitree_sdk2py"
+        if candidate.exists():
+            candidates.append(str(candidate.resolve()))
+
+    home_checkout = pathlib.Path.home() / "unitree_sdk2_python" / "unitree_sdk2py"
+    if home_checkout.exists():
+        candidates.append(str(home_checkout.resolve()))
+
+    if imported_file:
+        imported_path = pathlib.Path(imported_file).resolve().parent
+        candidates.append(str(imported_path))
+
+    unique_candidates = sorted(set(candidates))
+    return {
+        "imported_file": imported_file,
+        "metadata": _package_version("unitree-sdk2py", "unitree-sdk2"),
+        "sys_path_entries_containing_unitree": sys_path_unitree,
+        "candidate_sdk_paths": unique_candidates,
+        "multiple_sdk_copies_detected": len(unique_candidates) > 1,
+        "warning": (
+            "Multiple unitree_sdk2py copies are visible; remove duplicate installs or sys.path entries."
+            if len(unique_candidates) > 1
+            else None
+        ),
     }
 
 
@@ -229,6 +278,48 @@ def _dds_probe(
     )
 
 
+def _construct_g1_loco_minimal(
+    robot_ip: str | None,
+    network_interface: str | None,
+    domain_id: int,
+) -> None:
+    resolved_interface = UnitreeSdk2Context.initialize(
+        robot_ip=robot_ip,
+        network_interface=network_interface,
+        domain_id=domain_id,
+    )
+    try:
+        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
+    except Exception as exc:
+        raise UnitreeG1Error(f"Could not import G1 LocoClient: {exc}") from exc
+
+    print("Constructing G1 LocoClient", file=sys.stderr)
+    try:
+        LocoClient()
+    except Exception as exc:
+        raise UnitreeG1Error(
+            "Minimal G1 LocoClient construction failed. This bypasses the project movement wrapper, "
+            "so fix the Unitree SDK/CycloneDDS/Python environment first.\n"
+            f"DDS domain: {domain_id}\n"
+            f"DDS interface: {resolved_interface}\n"
+            f"Original error: {exc}"
+        ) from exc
+
+    print(
+        json.dumps(
+            {
+                "ok": True,
+                "backend": "g1_loco_minimal",
+                "domain_id": domain_id,
+                "resolved_interface": resolved_interface,
+                "sdk_paths": _sdk_path_report(),
+            },
+            indent=2,
+            sort_keys=True,
+        )
+    )
+
+
 def _diagnose_client(
     robot_ip: str | None,
     network_interface: str | None,
@@ -273,6 +364,19 @@ def _diagnose_client(
             "cyclonedds": _module_info("cyclonedds"),
         },
         "g1_loco": _g1_loco_info(),
+        "sdk_paths": _sdk_path_report(),
+        "topic_creation_plan": {
+            "g1_loco": [
+                "Constructing G1 LocoClient",
+                "G1 LocoClient creates rt/api/sport/request through unitree_api.msg.dds_.Request_",
+                "G1 LocoClient creates rt/api/sport/response through unitree_api.msg.dds_.Response_",
+            ],
+            "go2_sport": [
+                "Constructing Go2 SportClient",
+                "Go2 SportClient also uses rt/api/sport/request; only constructed with --backend go2_sport",
+            ],
+            "project_default": "Only g1_loco is constructed for stop_move unless --backend is changed.",
+        },
     }
     print(json.dumps(report, indent=2, sort_keys=True))
 
@@ -298,6 +402,19 @@ def main() -> None:
         )
         return
 
+    if args.backend == "g1_loco_minimal":
+        try:
+            _construct_g1_loco_minimal(
+                robot_ip=robot_ip,
+                network_interface=args.network_interface,
+                domain_id=args.domain_id,
+            )
+        except UnitreeG1Error as exc:
+            print(f"Command failed: {exc}", file=sys.stderr)
+            print("Tip: run `uv run python scripts/unitree_loco_minimal.py --interface <dev>` for a project-free check.", file=sys.stderr)
+            raise SystemExit(1) from exc
+        return
+
     if args.command is None:
         print(
             "Missing command. Use one of: stand_up, balance_stand, stop_move, damp, move, move_arms_up.",
@@ -320,7 +437,8 @@ def main() -> None:
             raise SystemExit(1)
 
     try:
-        client = G1LocoSdk2Client(
+        client_cls = Go2SportSdk2Client if args.backend == "go2_sport" else G1LocoSdk2Client
+        client = client_cls(
             network_interface=args.network_interface,
             robot_ip=robot_ip,
             timeout_s=args.timeout,

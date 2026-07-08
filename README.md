@@ -107,3 +107,23 @@ If `LocoClient` fails during DDS topic creation, probe the specific DDS topics w
 uv run loco --dds-probe 192.168.0.4
 uv run loco --dds-probe 192.168.0.4 --interface eno1
 ```
+
+### Unitree DDS troubleshooting
+
+If `LocoClient` fails while creating a CycloneDDS topic, first run the project-free minimal constructor test:
+
+```bash
+uv run python scripts/unitree_loco_minimal.py --robot-ip 192.168.0.4
+uv run python scripts/unitree_loco_minimal.py --interface eno1
+```
+
+If the minimal script fails, the problem is below this project: fix the Unitree SDK checkout, CycloneDDS/Python environment, DDS domain/interface, or robot firmware/SDK compatibility. Inspect `sys.path`, remove duplicate SDK installs, and reinstall exactly one `unitree_sdk2py` source cleanly.
+
+If the minimal script passes but `uv run loco ...` fails, look for mixed-client imports or fallback construction in this repo. The default backend is `g1_loco`; `go2_sport` is only constructed when explicitly requested:
+
+```bash
+uv run loco 192.168.0.4 stop_move --backend g1_loco
+uv run loco 192.168.0.4 --backend g1_loco_minimal
+```
+
+During a normal `stop_move`, stderr should contain exactly one Unitree client construction line: `Constructing G1 LocoClient`.
