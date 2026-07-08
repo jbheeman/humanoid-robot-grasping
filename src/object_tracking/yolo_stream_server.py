@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import subprocess
 import threading
 import time
 from dataclasses import dataclass, field
@@ -49,6 +51,7 @@ class SharedState:
     encode_fps: float = 0.0
     stream_fps_limit: float = 0.0
     camera_pipeline: str = DEFAULT_PIPELINE
+    capture_backend: str = ""
     model_name: str = "yolov8n.pt"
     opencv_threads: int = 0
     torch_threads: int = 0
@@ -74,6 +77,72 @@ def opencv_gstreamer_enabled() -> bool:
         if line.strip().startswith("GStreamer:"):
             return "YES" in line.upper()
     return False
+
+
+def _pipeline_dimension(pipeline: str, name: str, default: int) -> int:
+    match = re.search(rf"{name}=\(int\)(\d+)|{name}=(\d+)", pipeline)
+    if match is None:
+        return default
+    value = match.group(1) or match.group(2)
+    return int(value)
+
+
+def _strip_appsink(pipeline: str) -> str:
+    return re.sub(r"\s*!\s*appsink(?:\s+[^!]*)?$", "", pipeline).strip()
+
+
+class GstLaunchCapture:
+    def __init__(self, pipeline: str) -> None:
+        self.pipeline = pipeline
+        self.width = _pipeline_dimension(pipeline, "width", 640)
+        self.height = _pipeline_dimension(pipeline, "height", 360)
+        self.frame_size = self.width * self.height * 3
+        self.command = f"gst-launch-1.0 -q {_strip_appsink(pipeline)} ! fdsink fd=1"
+        self.proc = subprocess.Popen(
+            self.command,
+            shell=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+        )
+
+    def isOpened(self) -> bool:
+        return self.proc.poll() is None and self.proc.stdout is not None
+
+    def read(self) -> tuple[bool, np.ndarray | None]:
+        if self.proc.stdout is None:
+            return False, None
+
+        chunks = []
+        remaining = self.frame_size
+        while remaining > 0:
+            chunk = self.proc.stdout.read(remaining)
+            if not chunk:
+                return False, None
+            chunks.append(chunk)
+            remaining -= len(chunk)
+
+        frame = np.frombuffer(b"".join(chunks), dtype=np.uint8)
+        return True, frame.reshape((self.height, self.width, 3)).copy()
+
+    def release(self) -> None:
+        if self.proc.poll() is None:
+            self.proc.terminate()
+            try:
+                self.proc.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                self.proc.kill()
+
+
+def open_capture(pipeline: str) -> tuple[Any, str]:
+    if opencv_gstreamer_enabled():
+        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        if cap.isOpened():
+            return cap, "opencv-gstreamer"
+        cap.release()
+
+    print("OpenCV GStreamer is unavailable; falling back to gst-launch-1.0 raw frame pipe.")
+    cap = GstLaunchCapture(pipeline)
+    return cap, "gst-launch"
 
 
 def draw_fps(frame: np.ndarray, fps: float, yolo_fps: float) -> None:
@@ -168,12 +237,16 @@ def camera_loop(pipeline: str) -> None:
     with state.lock:
         state.camera_pipeline = pipeline
 
-    cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+    cap, backend = open_capture(pipeline)
+    with state.lock:
+        state.capture_backend = backend
+    print("Capture backend:", backend)
+
     if not cap.isOpened():
         with frame_ready:
-            state.last_error = "Could not open GStreamer camera pipeline"
+            state.last_error = f"Could not open GStreamer camera pipeline with {backend}"
             frame_ready.notify_all()
-        print("ERROR: Could not open GStreamer camera pipeline")
+        print(f"ERROR: Could not open GStreamer camera pipeline with {backend}")
         return
 
     last_fps_time = time.time()
@@ -380,6 +453,7 @@ def health() -> dict[str, object]:
             "last_error": state.last_error,
             "opencv": cv2.__version__,
             "opencv_gstreamer": opencv_gstreamer_enabled(),
+            "capture_backend": state.capture_backend,
             "torch_cuda": torch.cuda.is_available(),
             "stream_fps_limit": state.stream_fps_limit,
             "model_name": state.model_name,
