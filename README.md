@@ -124,15 +124,25 @@ You can also run the same smoke test through the main CLI without sending moveme
 ```bash
 uv run loco --smoke-loco 192.168.0.4 --interface eno1 --loco-service-name ai_sport
 uv run loco --smoke-loco-subprocess 192.168.0.4 --interface eno1 --loco-service-name ai_sport
+uv run loco --smoke-loco-config-sweep 192.168.0.4 --interface eno1 --loco-service-name ai_sport
 ```
 
 Prefer `--smoke-loco-subprocess` when debugging native crashes such as `*** buffer overflow detected ***`; it reports whether the child process exited normally or was killed by a native signal.
+Use `--smoke-loco-config-sweep` when the subprocess dies during `ChannelFactoryInitialize`. It tests `unitree`, `no_trace`, `simple`, and `autodetermine` DDS config modes in separate child processes.
 
 The Unitree SDK config can try to write CycloneDDS tracing to `/tmp/cdds.LOG`. This CLI patches that path to `/tmp/unitree_cdds_<uid>_<pid>.log` before DDS initialization. To choose a specific writable file:
 
 ```bash
 uv run loco --smoke-loco-subprocess 192.168.0.4 --interface eno1 --loco-service-name ai_sport --cyclonedds-log-file /tmp/ucdds.log
 ```
+
+If one config mode passes, use it for later commands:
+
+```bash
+uv run loco 192.168.0.4 stop_move --interface eno1 --loco-service-name ai_sport --dds-config-mode simple
+```
+
+If every config mode exits with `SIGABRT` before `Constructing G1 LocoClient`, the failure is in CycloneDDS domain initialization, not in the repo movement wrapper or G1 service name patch. Rebuild or reinstall the native CycloneDDS and `unitree_sdk2py` stack before trying robot movement again.
 
 If the minimal script fails, the problem is below this project: fix the Unitree SDK checkout, CycloneDDS/Python environment, DDS domain/interface, or robot firmware/SDK compatibility. Inspect `sys.path`, remove duplicate SDK installs, and reinstall exactly one `unitree_sdk2py` source cleanly.
 

@@ -12,6 +12,42 @@ import sys
 import traceback
 
 
+DDS_CONFIG_MODE_CHOICES = ("unitree", "no_trace", "simple", "autodetermine")
+
+SIMPLE_DDS_CONFIG_HAS_INTERFACE = """<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS>
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="$__IF_NAME__$"/>
+      </Interfaces>
+    </General>
+  </Domain>
+</CycloneDDS>"""
+
+NO_TRACE_DDS_CONFIG_HAS_INTERFACE = """<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS>
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="$__IF_NAME__$" priority="default" multicast="default"/>
+      </Interfaces>
+    </General>
+  </Domain>
+</CycloneDDS>"""
+
+SIMPLE_DDS_CONFIG_AUTO_DETERMINE = """<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS>
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface autodetermine="true"/>
+      </Interfaces>
+    </General>
+  </Domain>
+</CycloneDDS>"""
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         description="Minimal Unitree G1 LocoClient constructor smoke test with no project imports."
@@ -29,6 +65,12 @@ def build_parser() -> argparse.ArgumentParser:
         "--cyclonedds-log-file",
         default=None,
         help="Writable CycloneDDS trace log path. Default: /tmp/unitree_cdds_<uid>_<pid>.log.",
+    )
+    parser.add_argument(
+        "--dds-config-mode",
+        choices=DDS_CONFIG_MODE_CHOICES,
+        default="unitree",
+        help="CycloneDDS config patch mode for isolating native SDK crashes.",
     )
     return parser
 
@@ -67,7 +109,7 @@ def default_cyclonedds_log_file() -> str:
     return str(pathlib.Path("/tmp") / f"unitree_cdds_{uid}_{os.getpid()}.log")
 
 
-def patch_unitree_cyclonedds_log_file(log_file: str | None) -> dict[str, object]:
+def patch_unitree_cyclonedds_config(log_file: str | None, dds_config_mode: str) -> dict[str, object]:
     target = log_file or default_cyclonedds_log_file()
     target_path = pathlib.Path(target).expanduser()
     if not target_path.is_absolute():
@@ -83,6 +125,7 @@ def patch_unitree_cyclonedds_log_file(log_file: str | None) -> dict[str, object]
             "available": False,
             "error": repr(exc),
             "replacements": {},
+            "dds_config_mode": dds_config_mode,
         }
     replacements: dict[str, bool] = {}
     for module in (config_module, channel_module):
@@ -92,11 +135,31 @@ def patch_unitree_cyclonedds_log_file(log_file: str | None) -> dict[str, object]
             value = getattr(module, attr)
             if not isinstance(value, str):
                 continue
-            updated = value.replace("/tmp/cdds.LOG", str(target_path))
+            if dds_config_mode == "simple":
+                updated = (
+                    SIMPLE_DDS_CONFIG_HAS_INTERFACE
+                    if attr == "ChannelConfigHasInterface"
+                    else SIMPLE_DDS_CONFIG_AUTO_DETERMINE
+                )
+            elif dds_config_mode == "no_trace":
+                updated = (
+                    NO_TRACE_DDS_CONFIG_HAS_INTERFACE
+                    if attr == "ChannelConfigHasInterface"
+                    else SIMPLE_DDS_CONFIG_AUTO_DETERMINE
+                )
+            elif dds_config_mode == "autodetermine":
+                updated = SIMPLE_DDS_CONFIG_AUTO_DETERMINE
+            else:
+                updated = value.replace("/tmp/cdds.LOG", str(target_path))
             setattr(module, attr, updated)
             replacements[f"{module.__name__}.{attr}"] = updated != value
 
-    return {"log_file": str(target_path), "available": True, "replacements": replacements}
+    return {
+        "log_file": str(target_path),
+        "available": True,
+        "dds_config_mode": dds_config_mode,
+        "replacements": replacements,
+    }
 
 
 def package_version(*names: str) -> dict[str, object]:
@@ -186,14 +249,15 @@ def main() -> int:
         "requested_loco_service_name": args.loco_service_name,
         "effective_loco_service_name": effective_loco_service_name(args.loco_service_name),
         "loco_rpc_request_topic": loco_rpc_request_topic(effective_loco_service_name(args.loco_service_name)),
-        "cyclonedds_log": patch_unitree_cyclonedds_log_file(args.cyclonedds_log_file),
+        "cyclonedds_config": patch_unitree_cyclonedds_config(args.cyclonedds_log_file, args.dds_config_mode),
+        "dds_config_mode": args.dds_config_mode,
         "requested_interface": args.network_interface,
         "robot_ip": args.robot_ip,
         "route": route,
         "resolved_interface": interface,
         "sdk_paths": sdk_path_report(),
     }
-    print(json.dumps(report, indent=2, sort_keys=True))
+    print(json.dumps(report, indent=2, sort_keys=True), flush=True)
 
     if not interface:
         print("ERROR: pass --interface or --robot-ip so the local DDS interface can be resolved", file=sys.stderr)
@@ -202,10 +266,12 @@ def main() -> int:
     try:
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 
-        log_report = patch_unitree_cyclonedds_log_file(args.cyclonedds_log_file)
-        print(f"using CycloneDDS log file {log_report['log_file']}", file=sys.stderr)
-        print(f"initializing DDS domain={args.domain_id} interface={interface}", file=sys.stderr)
-        ChannelFactoryInitialize(args.domain_id, str(interface))
+        config_report = patch_unitree_cyclonedds_config(args.cyclonedds_log_file, args.dds_config_mode)
+        init_interface = None if args.dds_config_mode == "autodetermine" else str(interface)
+        print(f"using CycloneDDS log file {config_report['log_file']}", file=sys.stderr, flush=True)
+        print(f"using DDS config mode {args.dds_config_mode}", file=sys.stderr, flush=True)
+        print(f"initializing DDS domain={args.domain_id} interface={init_interface}", file=sys.stderr, flush=True)
+        ChannelFactoryInitialize(args.domain_id, init_interface)
 
         service_report = patch_loco_service_name(args.loco_service_name)
         client_module = importlib.import_module("unitree_sdk2py.g1.loco.g1_loco_client")
@@ -214,6 +280,7 @@ def main() -> int:
             f"Constructing G1 LocoClient service={service_report['effective_service_name']} "
             f"topic={service_report['rpc_request_topic']}",
             file=sys.stderr,
+            flush=True,
         )
         LocoClient()
     except Exception as exc:
@@ -222,7 +289,7 @@ def main() -> int:
         traceback.print_exc()
         return 1
 
-    print("SUCCESS: minimal G1 LocoClient constructed")
+    print("SUCCESS: minimal G1 LocoClient constructed", flush=True)
     return 0
 
 

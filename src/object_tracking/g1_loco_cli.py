@@ -11,6 +11,8 @@ import subprocess
 import sys
 
 from object_tracking.unitree_g1 import (
+    DDS_CONFIG_MODE_CHOICES,
+    DEFAULT_DDS_CONFIG_MODE,
     G1LocoSdk2Client,
     Go2SportSdk2Client,
     LOCO_SERVICE_CHOICES,
@@ -21,7 +23,7 @@ from object_tracking.unitree_g1 import (
     loco_rpc_request_topic,
     normalize_network_interface,
     patch_g1_loco_service_name,
-    patch_unitree_cyclonedds_log_file,
+    patch_unitree_cyclonedds_config,
 )
 
 
@@ -72,6 +74,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Writable CycloneDDS trace log path. Default: /tmp/unitree_cdds_<uid>_<pid>.log.",
     )
     parser.add_argument(
+        "--dds-config-mode",
+        choices=DDS_CONFIG_MODE_CHOICES,
+        default=DEFAULT_DDS_CONFIG_MODE,
+        help="CycloneDDS config patch mode. Use subprocess smoke tests before changing movement commands.",
+    )
+    parser.add_argument(
         "command",
         nargs="?",
         choices=("stand_up", "balance_stand", "stop_move", "damp", "move", "move_arms_up"),
@@ -102,6 +110,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--smoke-loco-subprocess",
         action="store_true",
         help="Run the project-free LocoClient smoke test in a subprocess so native aborts are reported.",
+    )
+    parser.add_argument(
+        "--smoke-loco-config-sweep",
+        action="store_true",
+        help="Run subprocess smoke tests once per DDS config mode.",
     )
     return parser
 
@@ -259,6 +272,7 @@ def _dds_probe(
     domain_id: int,
     loco_service_name: str,
     cyclonedds_log_file: str | None,
+    dds_config_mode: str,
 ) -> None:
     if robot_ip is None and normalize_network_interface(network_interface) is None:
         print("Pass robot_ip/--robot-ip or --interface/--network-interface for DDS probe.", file=sys.stderr)
@@ -270,6 +284,7 @@ def _dds_probe(
             network_interface=network_interface,
             domain_id=domain_id,
             cyclonedds_log_file=cyclonedds_log_file,
+            dds_config_mode=dds_config_mode,
         )
     except UnitreeG1Error as exc:
         report = {
@@ -278,6 +293,7 @@ def _dds_probe(
             "robot_ip": robot_ip,
             "requested_interface": network_interface or "auto",
             "domain_id": domain_id,
+            "dds_config_mode": dds_config_mode,
             "error": str(exc),
         }
         print(json.dumps(report, indent=2, sort_keys=True))
@@ -325,12 +341,14 @@ def _construct_g1_loco_minimal(
     domain_id: int,
     loco_service_name: str,
     cyclonedds_log_file: str | None,
+    dds_config_mode: str,
 ) -> None:
     resolved_interface = UnitreeSdk2Context.initialize(
         robot_ip=robot_ip,
         network_interface=network_interface,
         domain_id=domain_id,
         cyclonedds_log_file=cyclonedds_log_file,
+        dds_config_mode=dds_config_mode,
     )
     try:
         LocoClient, service_report = patch_g1_loco_service_name(loco_service_name)
@@ -386,8 +404,9 @@ def _smoke_loco_subprocess(
     domain_id: int,
     loco_service_name: str,
     cyclonedds_log_file: str | None,
+    dds_config_mode: str,
     timeout_s: float,
-) -> None:
+) -> dict[str, object]:
     script = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "unitree_loco_minimal.py"
     if not script.exists():
         print(f"Minimal smoke script not found: {script}", file=sys.stderr)
@@ -403,6 +422,8 @@ def _smoke_loco_subprocess(
         loco_service_name,
         "--cyclonedds-log-file",
         log_file,
+        "--dds-config-mode",
+        dds_config_mode,
     ]
     if robot_ip:
         command.extend(["--robot-ip", robot_ip])
@@ -422,20 +443,16 @@ def _smoke_loco_subprocess(
             timeout=max(timeout_s, 5.0) + 5.0,
         )
     except subprocess.TimeoutExpired as exc:
-        print(
-            json.dumps(
-                {
-                    "ok": False,
-                    "stage": "subprocess_timeout",
-                    "command": command,
-                    "timeout_s": exc.timeout,
-                    "stdout": exc.stdout or "",
-                    "stderr": exc.stderr or "",
-                },
-                indent=2,
-                sort_keys=True,
-            )
-        )
+        report = {
+            "ok": False,
+            "stage": "subprocess_timeout",
+            "command": command,
+            "timeout_s": exc.timeout,
+            "dds_config_mode": dds_config_mode,
+            "stdout": exc.stdout or "",
+            "stderr": exc.stderr or "",
+        }
+        print(json.dumps(report, indent=2, sort_keys=True))
         raise SystemExit(1) from exc
 
     report = {
@@ -444,18 +461,54 @@ def _smoke_loco_subprocess(
         "command": command,
         "returncode": completed.returncode,
         "signal": _signal_name(completed.returncode),
+        "dds_config_mode": dds_config_mode,
         "cyclonedds_log_file": log_file,
         "stdout": completed.stdout,
         "stderr": completed.stderr,
     }
+    return report
+
+
+def _print_subprocess_smoke_report(report: dict[str, object]) -> None:
     print(json.dumps(report, indent=2, sort_keys=True))
-    if completed.returncode != 0:
-        if completed.returncode < 0:
+    returncode = int(report.get("returncode", 0) or 0)
+    if returncode != 0:
+        if returncode < 0:
             print(
                 "Subprocess was terminated by native code before Python could catch an exception. "
                 "That points below this repo: CycloneDDS, unitree_sdk2py, or the linked C layer.",
                 file=sys.stderr,
             )
+        raise SystemExit(1)
+
+
+def _smoke_loco_config_sweep(
+    robot_ip: str | None,
+    network_interface: str | None,
+    domain_id: int,
+    loco_service_name: str,
+    cyclonedds_log_file: str | None,
+    timeout_s: float,
+) -> None:
+    reports = []
+    for mode in DDS_CONFIG_MODE_CHOICES:
+        log_file = cyclonedds_log_file
+        if log_file is None:
+            uid = os.getuid() if hasattr(os, "getuid") else "user"
+            log_file = f"/tmp/unitree_cdds_{uid}_{os.getpid()}_{mode}.log"
+        reports.append(
+            _smoke_loco_subprocess(
+                robot_ip=robot_ip,
+                network_interface=network_interface,
+                domain_id=domain_id,
+                loco_service_name=loco_service_name,
+                cyclonedds_log_file=log_file,
+                dds_config_mode=mode,
+                timeout_s=timeout_s,
+            )
+        )
+    print(json.dumps({"ok": all(item["ok"] for item in reports), "reports": reports}, indent=2, sort_keys=True))
+    if not all(item["ok"] for item in reports):
         raise SystemExit(1)
 
 
@@ -466,6 +519,7 @@ def _diagnose_client(
     domain_id: int,
     loco_service_name: str,
     cyclonedds_log_file: str | None,
+    dds_config_mode: str,
 ) -> None:
     if robot_ip is None and network_interface is None:
         print("Pass robot_ip/--robot-ip or --network-interface to run diagnostics.", file=sys.stderr)
@@ -478,16 +532,17 @@ def _diagnose_client(
         resolved_interface = route["interface"]
 
     effective_service = effective_loco_service_name(loco_service_name)
-    log_report = patch_unitree_cyclonedds_log_file(cyclonedds_log_file)
+    config_report = patch_unitree_cyclonedds_config(cyclonedds_log_file, dds_config_mode)
     report = {
         "backend": "g1_loco",
         "robot_ip": robot_ip,
         "timeout_s": timeout_s,
         "domain_id": domain_id,
+        "dds_config_mode": dds_config_mode,
         "requested_loco_service_name": loco_service_name,
         "effective_loco_service_name": effective_service,
         "loco_rpc_request_topic": loco_rpc_request_topic(effective_service),
-        "cyclonedds_log": log_report,
+        "cyclonedds_config": config_report,
         "requested_interface": network_interface or "auto",
         "resolved_interface": resolved_interface,
         "route": route,
@@ -540,6 +595,7 @@ def main() -> None:
             domain_id=args.domain_id,
             loco_service_name=args.loco_service_name,
             cyclonedds_log_file=args.cyclonedds_log_file,
+            dds_config_mode=args.dds_config_mode,
         )
         return
 
@@ -551,6 +607,7 @@ def main() -> None:
                 domain_id=args.domain_id,
                 loco_service_name=args.loco_service_name,
                 cyclonedds_log_file=args.cyclonedds_log_file,
+                dds_config_mode=args.dds_config_mode,
             )
         except UnitreeG1Error as exc:
             print(f"Command failed: {exc}", file=sys.stderr)
@@ -561,14 +618,28 @@ def main() -> None:
             raise SystemExit(1) from exc
         return
 
-    if args.smoke_loco_subprocess:
-        _smoke_loco_subprocess(
+    if args.smoke_loco_config_sweep:
+        _smoke_loco_config_sweep(
             robot_ip=robot_ip,
             network_interface=args.network_interface,
             domain_id=args.domain_id,
             loco_service_name=args.loco_service_name,
             cyclonedds_log_file=args.cyclonedds_log_file,
             timeout_s=args.timeout,
+        )
+        return
+
+    if args.smoke_loco_subprocess:
+        _print_subprocess_smoke_report(
+            _smoke_loco_subprocess(
+                robot_ip=robot_ip,
+                network_interface=args.network_interface,
+                domain_id=args.domain_id,
+                loco_service_name=args.loco_service_name,
+                cyclonedds_log_file=args.cyclonedds_log_file,
+                dds_config_mode=args.dds_config_mode,
+                timeout_s=args.timeout,
+            )
         )
         return
 
@@ -579,6 +650,7 @@ def main() -> None:
             domain_id=args.domain_id,
             loco_service_name=args.loco_service_name,
             cyclonedds_log_file=args.cyclonedds_log_file,
+            dds_config_mode=args.dds_config_mode,
         )
         return
 
@@ -590,6 +662,7 @@ def main() -> None:
                 domain_id=args.domain_id,
                 loco_service_name=args.loco_service_name,
                 cyclonedds_log_file=args.cyclonedds_log_file,
+                dds_config_mode=args.dds_config_mode,
             )
         except UnitreeG1Error as exc:
             print(f"Command failed: {exc}", file=sys.stderr)
@@ -626,6 +699,7 @@ def main() -> None:
                 timeout_s=args.timeout,
                 domain_id=args.domain_id,
                 cyclonedds_log_file=args.cyclonedds_log_file,
+                dds_config_mode=args.dds_config_mode,
             )
         else:
             client = G1LocoSdk2Client(
@@ -635,6 +709,7 @@ def main() -> None:
                 domain_id=args.domain_id,
                 loco_service_name=args.loco_service_name,
                 cyclonedds_log_file=args.cyclonedds_log_file,
+                dds_config_mode=args.dds_config_mode,
             )
         if args.command == "move":
             result = client.move(vx, vy, omega, duration)

@@ -166,6 +166,42 @@ def normalize_network_interface(network_interface: str | None) -> str | None:
 
 LOCO_SERVICE_CHOICES = ("auto", "sport", "ai_sport")
 DEFAULT_G1_LOCO_SERVICE_NAME = "ai_sport"
+DDS_CONFIG_MODE_CHOICES = ("unitree", "no_trace", "simple", "autodetermine")
+DEFAULT_DDS_CONFIG_MODE = "unitree"
+
+SIMPLE_DDS_CONFIG_HAS_INTERFACE = """<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS>
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="$__IF_NAME__$"/>
+      </Interfaces>
+    </General>
+  </Domain>
+</CycloneDDS>"""
+
+NO_TRACE_DDS_CONFIG_HAS_INTERFACE = """<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS>
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface name="$__IF_NAME__$" priority="default" multicast="default"/>
+      </Interfaces>
+    </General>
+  </Domain>
+</CycloneDDS>"""
+
+SIMPLE_DDS_CONFIG_AUTO_DETERMINE = """<?xml version="1.0" encoding="UTF-8" ?>
+<CycloneDDS>
+  <Domain Id="any">
+    <General>
+      <Interfaces>
+        <NetworkInterface autodetermine="true"/>
+      </Interfaces>
+    </General>
+  </Domain>
+</CycloneDDS>"""
+
 
 def effective_loco_service_name(loco_service_name: str | None) -> str:
     value = (loco_service_name or "auto").strip()
@@ -205,7 +241,14 @@ def default_cyclonedds_log_file() -> str:
     return str(Path("/tmp") / f"unitree_cdds_{uid}_{os.getpid()}.log")
 
 
-def patch_unitree_cyclonedds_log_file(log_file: str | None = None) -> dict[str, object]:
+def patch_unitree_cyclonedds_config(
+    log_file: str | None = None,
+    dds_config_mode: str = DEFAULT_DDS_CONFIG_MODE,
+) -> dict[str, object]:
+    if dds_config_mode not in DDS_CONFIG_MODE_CHOICES:
+        choices = ", ".join(DDS_CONFIG_MODE_CHOICES)
+        raise UnitreeG1Error(f"Unsupported DDS config mode {dds_config_mode!r}. Use one of: {choices}")
+
     target = log_file or os.environ.get("UNITREE_CYCLONEDDS_LOG_FILE") or default_cyclonedds_log_file()
     target_path = Path(target).expanduser()
     if not target_path.is_absolute():
@@ -221,6 +264,7 @@ def patch_unitree_cyclonedds_log_file(log_file: str | None = None) -> dict[str, 
             "available": False,
             "error": repr(exc),
             "replacements": {},
+            "dds_config_mode": dds_config_mode,
         }
     replacements: dict[str, bool] = {}
     for module in (config_module, channel_module):
@@ -230,15 +274,35 @@ def patch_unitree_cyclonedds_log_file(log_file: str | None = None) -> dict[str, 
             value = getattr(module, attr)
             if not isinstance(value, str):
                 continue
-            updated = value.replace("/tmp/cdds.LOG", str(target_path))
+            if dds_config_mode == "simple":
+                updated = (
+                    SIMPLE_DDS_CONFIG_HAS_INTERFACE
+                    if attr == "ChannelConfigHasInterface"
+                    else SIMPLE_DDS_CONFIG_AUTO_DETERMINE
+                )
+            elif dds_config_mode == "no_trace":
+                updated = (
+                    NO_TRACE_DDS_CONFIG_HAS_INTERFACE
+                    if attr == "ChannelConfigHasInterface"
+                    else SIMPLE_DDS_CONFIG_AUTO_DETERMINE
+                )
+            elif dds_config_mode == "autodetermine":
+                updated = SIMPLE_DDS_CONFIG_AUTO_DETERMINE
+            else:
+                updated = value.replace("/tmp/cdds.LOG", str(target_path))
             setattr(module, attr, updated)
             replacements[f"{module.__name__}.{attr}"] = updated != value
 
     return {
         "log_file": str(target_path),
         "available": True,
+        "dds_config_mode": dds_config_mode,
         "replacements": replacements,
     }
+
+
+def patch_unitree_cyclonedds_log_file(log_file: str | None = None) -> dict[str, object]:
+    return patch_unitree_cyclonedds_config(log_file=log_file)
 
 
 class UnitreeSdk2Context:
@@ -253,6 +317,7 @@ class UnitreeSdk2Context:
         network_interface: str | None = None,
         domain_id: int = 0,
         cyclonedds_log_file: str | None = None,
+        dds_config_mode: str = DEFAULT_DDS_CONFIG_MODE,
     ) -> str:
         if ChannelFactoryInitialize is None:
             detail = str(_SDK2_IMPORT_ERROR) if _SDK2_IMPORT_ERROR is not None else "missing imports"
@@ -277,15 +342,17 @@ class UnitreeSdk2Context:
                 )
             return resolved_interface
 
-        log_report = patch_unitree_cyclonedds_log_file(cyclonedds_log_file)
+        log_report = patch_unitree_cyclonedds_config(cyclonedds_log_file, dds_config_mode)
 
         try:
-            ChannelFactoryInitialize(domain_id, resolved_interface)
+            init_interface = None if dds_config_mode == "autodetermine" else resolved_interface
+            ChannelFactoryInitialize(domain_id, init_interface)
         except Exception as exc:
             raise UnitreeG1Error(
                 "Failed to initialize Unitree SDK2 DDS.\n"
                 f"Selected interface: {resolved_interface}\n"
                 f"Selected domain: {domain_id}\n"
+                f"DDS config mode: {dds_config_mode}\n"
                 f"CycloneDDS log file: {log_report['log_file']}\n"
                 "Try:\n"
                 f"  ip route get {robot_ip or '<robot_ip>'}\n"
@@ -357,12 +424,14 @@ class G1LocoSdk2Client:
         domain_id: int = 0,
         loco_service_name: str = "auto",
         cyclonedds_log_file: str | None = None,
+        dds_config_mode: str = DEFAULT_DDS_CONFIG_MODE,
     ) -> None:
         self.network_interface = UnitreeSdk2Context.initialize(
             robot_ip=robot_ip,
             network_interface=network_interface,
             domain_id=domain_id,
             cyclonedds_log_file=cyclonedds_log_file,
+            dds_config_mode=dds_config_mode,
         )
         self.timeout_s = timeout_s
         self.domain_id = domain_id
@@ -546,12 +615,14 @@ class Go2SportSdk2Client(G1LocoSdk2Client):
         timeout_s: float = 15.0,
         domain_id: int = 0,
         cyclonedds_log_file: str | None = None,
+        dds_config_mode: str = DEFAULT_DDS_CONFIG_MODE,
     ) -> None:
         self.network_interface = UnitreeSdk2Context.initialize(
             robot_ip=robot_ip,
             network_interface=network_interface,
             domain_id=domain_id,
             cyclonedds_log_file=cyclonedds_log_file,
+            dds_config_mode=dds_config_mode,
         )
         self.timeout_s = timeout_s
         self.domain_id = domain_id
