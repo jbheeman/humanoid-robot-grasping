@@ -121,6 +121,11 @@ G1_ARM_FORWARD_TARGETS = {
 }
 
 
+def smoothstep(value: float) -> float:
+    clamped = min(max(value, 0.0), 1.0)
+    return clamped * clamped * (3.0 - 2.0 * clamped)
+
+
 @dataclass(frozen=True)
 class UnitreeCommandResult:
     command: list[str]
@@ -771,6 +776,55 @@ class G1LocoSdk2Client:
 
         return result
 
+    def smooth_move(
+        self,
+        vx: float,
+        vy: float,
+        omega: float,
+        duration: float = 0.5,
+        ramp_s: float = 0.25,
+    ) -> UnitreeCommandResult:
+        if duration <= 0.0:
+            raise UnitreeG1Error("smooth_move duration must be > 0.0.")
+        if ramp_s <= 0.0:
+            raise UnitreeG1Error("smooth_move ramp_s must be > 0.0.")
+
+        control_dt = 0.05
+        ramp_s = min(ramp_s, duration / 2.0)
+        started_at = time.monotonic()
+        try:
+            while True:
+                elapsed = time.monotonic() - started_at
+                if elapsed >= duration:
+                    break
+                if elapsed < ramp_s:
+                    scale = smoothstep(elapsed / ramp_s)
+                elif elapsed > duration - ramp_s:
+                    scale = smoothstep((duration - elapsed) / ramp_s)
+                else:
+                    scale = 1.0
+                self._call("Move", vx * scale, vy * scale, omega * scale)
+                time.sleep(control_dt)
+        finally:
+            self.stop_move()
+
+        report = {
+            "ok": True,
+            "command": "smooth_move",
+            "vx": vx,
+            "vy": vy,
+            "omega": omega,
+            "duration": duration,
+            "ramp_s": ramp_s,
+            "easing": "smoothstep",
+        }
+        return UnitreeCommandResult(
+            command=["loco", "smooth_move"],
+            returncode=0,
+            stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
+            stderr="",
+        )
+
     def _low_state_handler(self, msg: object) -> None:
         self._arm_low_state = msg
 
@@ -832,6 +886,7 @@ class G1LocoSdk2Client:
             while True:
                 elapsed = time.monotonic() - started_at
                 ratio = min(max(elapsed / ramp_s, 0.0), 1.0)
+                eased_ratio = smoothstep(ratio)
                 if hold_s is not None and elapsed >= ramp_s + hold_s:
                     report = {
                         "ok": True,
@@ -839,6 +894,7 @@ class G1LocoSdk2Client:
                         "scale": scale,
                         "ramp_s": ramp_s,
                         "hold_s": hold_s,
+                        "easing": "smoothstep",
                         "joint_targets": target_q,
                     }
                     return UnitreeCommandResult(
@@ -854,7 +910,7 @@ class G1LocoSdk2Client:
                     motor = low_cmd.motor_cmd[joint_id]
                     motor.mode = 1
                     motor.tau = 0.0
-                    motor.q = (1.0 - ratio) * start_q[joint_id] + ratio * target_q[joint_id]
+                    motor.q = (1.0 - eased_ratio) * start_q[joint_id] + eased_ratio * target_q[joint_id]
                     motor.dq = 0.0
                     motor.kp = 25.0
                     motor.kd = 1.0

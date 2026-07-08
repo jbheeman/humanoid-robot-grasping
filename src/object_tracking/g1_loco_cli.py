@@ -34,6 +34,7 @@ COMMAND_CHOICES = (
     "stop_move",
     "damp",
     "move",
+    "smooth_move",
     "move_arms_up",
     "probe_loco",
     "check_motion_mode",
@@ -105,7 +106,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--velocity",
         type=str,
         metavar='"VX VY OMEGA [DURATION]"',
-        help="Required for command=move.",
+        help="Required for command=move or smooth_move.",
+    )
+    parser.add_argument(
+        "--move-ramp-s",
+        type=float,
+        default=0.25,
+        help="For smooth_move: seconds to ramp velocity up/down. Default: 0.25.",
     )
     parser.add_argument(
         "--arm-scale",
@@ -782,7 +789,7 @@ def main() -> None:
 
     if args.command is None:
         print(
-            "Missing command. Use one of: stand_up, balance_stand, stop_move, damp, move, move_arms_up, "
+            "Missing command. Use one of: stand_up, balance_stand, stop_move, damp, move, smooth_move, move_arms_up, "
             "probe_loco, check_motion_mode, select_ai_mode, diagnose, smoke_move.",
             file=sys.stderr,
         )
@@ -792,9 +799,9 @@ def main() -> None:
         print("Pass robot_ip/--robot-ip, or --interface/--network-interface.", file=sys.stderr)
         raise SystemExit(1)
 
-    if args.command == "move":
+    if args.command in ("move", "smooth_move"):
         if args.velocity is None:
-            print('move requires --velocity "vx vy omega [duration]"', file=sys.stderr)
+            print(f'{args.command} requires --velocity "vx vy omega [duration]"', file=sys.stderr)
             raise SystemExit(1)
         try:
             vx, vy, omega, duration = _parse_velocity(args.velocity)
@@ -900,6 +907,8 @@ def main() -> None:
             pass
         elif args.command == "move":
             result = client.move(vx, vy, omega, duration)
+        elif args.command == "smooth_move":
+            result = client.smooth_move(vx, vy, omega, duration or 0.5, args.move_ramp_s)
         elif args.command == "move_arms_up":
             if args.arm_hold_s is None:
                 print("Moving arms to the forward test pose. Press Ctrl-C to stop holding.", file=sys.stderr)

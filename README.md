@@ -235,6 +235,15 @@ curl http://192.168.0.212:8765/probe_loco
 curl -X POST http://192.168.0.212:8765/stop_move
 ```
 
+Or use the small command helper from the server:
+
+```bash
+python3 scripts/robot_cmd.py health
+python3 scripts/robot_cmd.py mode
+python3 scripts/robot_cmd.py probe
+python3 scripts/robot_cmd.py stop
+```
+
 If `wlan0` does not work inside the bridge, restart it with `--interface eth0`. The server still talks to `192.168.0.212:8765`; only the robot-local DDS interface changes.
 
 Movement endpoints are disabled by default. To enable guarded motion tests, start the bridge with `--allow-movement`, then use:
@@ -242,18 +251,27 @@ Movement endpoints are disabled by default. To enable guarded motion tests, star
 ```bash
 curl -X POST http://192.168.0.212:8765/smoke_move \
   -H 'Content-Type: application/json' \
-  -d '{"i_understand_this_moves_the_robot": true}'
+  -d '{}'
 ```
 
 Small bounded arm test:
 
 ```bash
-curl -X POST http://192.168.0.212:8765/move_arms_up \
+curl -X POST http://192.168.0.212:8765/arms/up \
   -H 'Content-Type: application/json' \
-  -d '{"i_understand_this_moves_the_robot": true, "scale": 0.2, "ramp_s": 1.0, "hold_s": 1.0}'
+  -d '{"amount": 0.15, "ramp": 1.5, "hold": 1.0}'
 ```
 
-`scale` is the fraction of the forward arm target. Start around `0.1` to `0.2`.
+Equivalent helper commands:
+
+```bash
+python3 scripts/robot_cmd.py arms-up 0.15
+python3 scripts/robot_cmd.py forward 0.05 --duration 0.4 --ramp 0.15
+python3 scripts/robot_cmd.py move --vx 0.05 --vy 0 --omega 0 --duration 0.4 --ramp 0.15
+python3 scripts/robot_cmd.py stop
+```
+
+`amount` is the fraction of the forward arm target. Start around `0.1` to `0.2`. Arm and velocity motion use smoothstep easing so they ease in/out instead of snapping to a linear ramp.
 
 Only use robot-local checks to isolate low-level robot networking after server-side tests are exhausted:
 
