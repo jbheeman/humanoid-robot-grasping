@@ -9,18 +9,23 @@ git switch aarav
 uv sync
 ```
 
-This installs vision dependencies only by default (`opencv-python`). Loco extras are optional:
+This installs vision plus the Unitree SDK2 Python runtime. `uv sync --extra loco` is still accepted for the old workflow, but the SDK is now a normal dependency so plain `uv sync` will not prune it:
 
 ```bash
 uv sync --extra loco
 ```
 
-Loco uses `unitree-sdk2==1.0.1` (package path: `unitree_sdk2`).
+Loco commands are run from the server that is connected to the robot network, not necessarily on the robot itself. Pass the robot LAN IP to `uv run loco`. The local editable `unitree-sdk2py==1.0.1` checkout must exist on that server at `../unitree_sdk2_python` relative to this project. For example, if the server checkout is `/home/neel/humanoid-robot-grasping`, uv expects the SDK at `/home/neel/unitree_sdk2_python`. The robot SSH target (for example `unitree@ubuntu`) is separate from this local Python dependency path.
+
+```bash
+uv sync --extra loco
+uv run loco <robot_lan_ip> stop_move
+```
 
 ## Vision runbook
 
 1) Make sure you know the robot LAN IP.
-2) Use these commands from `/home/aarav/Documents/project`:
+2) Use these commands from the project root on the machine that is connected to the robot network:
 
 Headless snapshot (fastest smoke test, no display needed):
 
