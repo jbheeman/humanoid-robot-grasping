@@ -218,57 +218,39 @@ On the robot:
 ```bash
 cd ~/humanoid-robot-grasping
 git pull
-PYTHONPATH=$PWD/src python3 scripts/unitree_motion_bridge.py \
-  --host 0.0.0.0 \
-  --port 8765 \
-  --interface wlan0 \
-  --loco-service-name sport \
-  --dds-config-mode no_trace
+python3 scripts/robot.py serve
 ```
 
 From the server:
 
 ```bash
-curl http://192.168.0.212:8765/health
-curl http://192.168.0.212:8765/check_motion_mode
-curl http://192.168.0.212:8765/probe_loco
-curl -X POST http://192.168.0.212:8765/stop_move
+python3 scripts/robot.py health
+python3 scripts/robot.py mode
+python3 scripts/robot.py probe
+python3 scripts/robot.py stop
 ```
 
-Or use the small command helper from the server:
+If `wlan0` does not work inside the bridge, restart it with:
 
 ```bash
-python3 scripts/robot_cmd.py health
-python3 scripts/robot_cmd.py mode
-python3 scripts/robot_cmd.py probe
-python3 scripts/robot_cmd.py stop
+python3 scripts/robot.py serve --interface eth0
 ```
 
-If `wlan0` does not work inside the bridge, restart it with `--interface eth0`. The server still talks to `192.168.0.212:8765`; only the robot-local DDS interface changes.
+The server still talks to `192.168.0.212:8765`; only the robot-local DDS interface changes.
 
-Movement endpoints are disabled by default. To enable guarded motion tests, start the bridge with `--allow-movement`, then use:
+Movement is enabled by default for this robot-local bridge. Use `--read-only` when starting the bridge if you want to disable movement endpoints.
 
 ```bash
-curl -X POST http://192.168.0.212:8765/smoke_move \
-  -H 'Content-Type: application/json' \
-  -d '{}'
+python3 scripts/robot.py smoke-move
 ```
 
 Small bounded arm test:
 
 ```bash
-curl -X POST http://192.168.0.212:8765/arms/up \
-  -H 'Content-Type: application/json' \
-  -d '{"amount": 0.15, "ramp": 1.5, "hold": 1.0}'
-```
-
-Equivalent helper commands:
-
-```bash
-python3 scripts/robot_cmd.py arms-up 0.15
-python3 scripts/robot_cmd.py forward 0.05 --duration 0.4 --ramp 0.15
-python3 scripts/robot_cmd.py move --vx 0.05 --vy 0 --omega 0 --duration 0.4 --ramp 0.15
-python3 scripts/robot_cmd.py stop
+python3 scripts/robot.py arms-up 0.15
+python3 scripts/robot.py forward 0.05 --duration 0.4 --ramp 0.15
+python3 scripts/robot.py move --vx 0.05 --vy 0 --omega 0 --duration 0.4 --ramp 0.15
+python3 scripts/robot.py stop
 ```
 
 `amount` is the fraction of the forward arm target. Start around `0.1` to `0.2`. Arm and velocity motion use smoothstep easing so they ease in/out instead of snapping to a linear ramp.
@@ -302,18 +284,21 @@ On the robot:
 cd ~/humanoid-robot-grasping
 git pull
 
-python3 scripts/g1_arms_forward.py \
-  --interface wlan0 \
-  --domain-id 0 \
+python3 scripts/robot.py shoulder-pitch \
   --side both \
   --sign 1 \
   --delta 0.25 \
   --ramp-seconds 3.0 \
-  --hold-seconds 5.0 \
-  --i-understand-this-moves-the-robot
+  --hold-seconds 5.0
 ```
 
-If the shoulder pitch direction is backwards, retry with `--sign -1`. Start with a smaller `--delta 0.1` if you only want a small motion check.
+Dry-run without DDS or movement:
+
+```bash
+python3 scripts/robot.py shoulder-pitch --smoke --side both --sign 1 --delta 0.25
+```
+
+If the shoulder pitch direction is backwards, retry with `--sign -1` or `--direction negative`. If left/right need opposite directions, use `--left-sign 1 --right-sign -1` or the reverse. Start with a smaller `--delta 0.1` if you only want a small motion check.
 
 After a read-only probe returns `ok: true`, a tiny movement smoke test is available but guarded:
 
@@ -321,6 +306,5 @@ After a read-only probe returns `ok: true`, a tiny movement smoke test is availa
 uv run loco 192.168.0.212 smoke_move \
   --interface enP7s7 \
   --loco-service-name sport \
-  --dds-config-mode no_trace \
-  --i-understand-this-moves-the-robot
+  --dds-config-mode no_trace
 ```

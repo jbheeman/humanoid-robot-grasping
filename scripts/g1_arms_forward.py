@@ -8,13 +8,6 @@ import sys
 import threading
 import time
 
-from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
-from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher, ChannelSubscriber
-from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_, unitree_hg_msg_dds__LowState_
-from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
-from unitree_sdk2py.utils.crc import CRC
-
-
 G1_NUM_MOTOR = 29
 
 LeftShoulderPitch = 15
@@ -76,12 +69,20 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hold-seconds", type=float, default=5.0)
     parser.add_argument("--delta", type=float, default=0.25)
     parser.add_argument("--sign", type=int, default=1, choices=(-1, 1))
+    parser.add_argument(
+        "--direction",
+        choices=("positive", "negative"),
+        default=None,
+        help="Alternative to --sign. positive maps to +1; negative maps to -1.",
+    )
+    parser.add_argument("--left-sign", type=int, choices=(-1, 1), default=None)
+    parser.add_argument("--right-sign", type=int, choices=(-1, 1), default=None)
     parser.add_argument("--side", choices=("left", "right", "both"), default="both")
     parser.add_argument("--kp-arm", type=float, default=25.0)
     parser.add_argument("--kd-arm", type=float, default=1.0)
     parser.add_argument("--kp-body", type=float, default=40.0)
     parser.add_argument("--kd-body", type=float, default=1.0)
-    parser.add_argument("--i-understand-this-moves-the-robot", action="store_true", required=True)
+    parser.add_argument("--smoke", action="store_true", help="Print the planned shoulder pitch offsets and exit before DDS.")
     return parser
 
 
@@ -109,7 +110,27 @@ def status_tuple(value: object) -> str:
     return repr(value)
 
 
-def release_motion_mode(timeout_s: float = 10.0) -> None:
+def import_unitree_sdk() -> dict[str, object]:
+    from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
+    from unitree_sdk2py.core.channel import ChannelFactoryInitialize, ChannelPublisher, ChannelSubscriber
+    from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_, unitree_hg_msg_dds__LowState_
+    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
+    from unitree_sdk2py.utils.crc import CRC
+
+    return {
+        "MotionSwitcherClient": MotionSwitcherClient,
+        "ChannelFactoryInitialize": ChannelFactoryInitialize,
+        "ChannelPublisher": ChannelPublisher,
+        "ChannelSubscriber": ChannelSubscriber,
+        "unitree_hg_msg_dds__LowCmd_": unitree_hg_msg_dds__LowCmd_,
+        "unitree_hg_msg_dds__LowState_": unitree_hg_msg_dds__LowState_,
+        "LowCmd_": LowCmd_,
+        "LowState_": LowState_,
+        "CRC": CRC,
+    }
+
+
+def release_motion_mode(MotionSwitcherClient: object, timeout_s: float = 10.0) -> None:
     print("constructing MotionSwitcherClient")
     client = MotionSwitcherClient()
     client.SetTimeout(timeout_s)
@@ -145,6 +166,22 @@ def selected_shoulder_pitch_joints(side: str) -> list[int]:
     return [LeftShoulderPitch, RightShoulderPitch]
 
 
+def base_sign(args: argparse.Namespace) -> int:
+    if args.direction == "positive":
+        return 1
+    if args.direction == "negative":
+        return -1
+    return int(args.sign)
+
+
+def shoulder_pitch_signs(args: argparse.Namespace) -> dict[int, int]:
+    sign = base_sign(args)
+    return {
+        LeftShoulderPitch: args.left_sign if args.left_sign is not None else sign,
+        RightShoulderPitch: args.right_sign if args.right_sign is not None else sign,
+    }
+
+
 def lerp(start: list[float], target: list[float], alpha: float) -> list[float]:
     alpha = min(max(alpha, 0.0), 1.0)
     return [(1.0 - alpha) * a + alpha * b for a, b in zip(start, target, strict=True)]
@@ -158,7 +195,7 @@ def fill_lowcmd(
     kd_body: float,
     kp_arm: float,
     kd_arm: float,
-    crc: CRC,
+    crc: object,
 ) -> None:
     low_cmd.mode_pr = 0
     low_cmd.mode_machine = mode_machine
@@ -231,10 +268,19 @@ def hold_target(
 
 def main() -> int:
     args = build_parser().parse_args()
-    if not args.i_understand_this_moves_the_robot:
-        print("--i-understand-this-moves-the-robot is required.", file=sys.stderr)
-        return 2
     validate_args(args)
+    signs = shoulder_pitch_signs(args)
+
+    selected_joints = selected_shoulder_pitch_joints(args.side)
+    if args.smoke:
+        print("smoke: no DDS initialization and no movement")
+        print(f"interface={args.interface} domain_id={args.domain_id}")
+        print(f"side={args.side} delta={args.delta}")
+        for joint in selected_joints:
+            label = "left" if joint == LeftShoulderPitch else "right"
+            offset = signs[joint] * args.delta
+            print(f"{label} shoulder pitch index={joint} offset={offset:+.6f}")
+        return 0
 
     print(
         "Robot must be physically supported or clear of people. "
@@ -252,9 +298,20 @@ def main() -> int:
     signal.signal(signal.SIGTERM, handle_signal)
 
     print(f"initializing DDS domain={args.domain_id} interface={args.interface}")
+    sdk = import_unitree_sdk()
+    ChannelFactoryInitialize = sdk["ChannelFactoryInitialize"]
+    ChannelPublisher = sdk["ChannelPublisher"]
+    ChannelSubscriber = sdk["ChannelSubscriber"]
+    MotionSwitcherClient = sdk["MotionSwitcherClient"]
+    LowCmd_ = sdk["LowCmd_"]
+    LowState_ = sdk["LowState_"]
+    unitree_hg_msg_dds__LowCmd_ = sdk["unitree_hg_msg_dds__LowCmd_"]
+    unitree_hg_msg_dds__LowState_ = sdk["unitree_hg_msg_dds__LowState_"]
+    CRC = sdk["CRC"]
+
     ChannelFactoryInitialize(args.domain_id, args.interface)
 
-    release_motion_mode()
+    release_motion_mode(MotionSwitcherClient)
 
     state_buffer = LowStateBuffer()
     subscriber = ChannelSubscriber("rt/lowstate", LowState_)
@@ -267,8 +324,8 @@ def main() -> int:
     mode_machine = int(getattr(lowstate, "mode_machine", 0))
     start_q = current_q_from_lowstate(lowstate)
     target_q = start_q.copy()
-    for joint in selected_shoulder_pitch_joints(args.side):
-        target_q[joint] = start_q[joint] + args.sign * args.delta
+    for joint in selected_joints:
+        target_q[joint] = start_q[joint] + signs[joint] * args.delta
 
     print(
         "starting q for shoulders: "

@@ -23,7 +23,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--host", default="0.0.0.0", help="Bind host. Default: 0.0.0.0")
     parser.add_argument("--port", type=int, default=8765, help="Bind port. Default: 8765")
-    parser.add_argument("--interface", required=True, help="Robot-local DDS interface, e.g. wlan0 or eth0.")
+    parser.add_argument("--interface", default="wlan0", help="Robot-local DDS interface. Default: wlan0.")
     parser.add_argument("--domain-id", type=int, default=0)
     parser.add_argument("--timeout", type=float, default=15.0)
     parser.add_argument("--dds-config-mode", default="no_trace")
@@ -32,7 +32,14 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--allow-movement",
         action="store_true",
+        default=True,
         help="Allow endpoints that can move the robot: /move, /move_arms_up, and /smoke_move.",
+    )
+    parser.add_argument(
+        "--read-only",
+        action="store_false",
+        dest="allow_movement",
+        help="Disable endpoints that can move the robot.",
     )
     return parser
 
@@ -152,7 +159,7 @@ class Bridge:
     def movement_allowed(self) -> tuple[bool, dict[str, object] | None]:
         if self.args.allow_movement:
             return True, None
-        return False, {"ok": False, "error": "Start bridge with --allow-movement to send movement commands."}
+        return False, {"ok": False, "error": "Bridge is running read-only. Restart without --read-only to send movement commands."}
 
     def command_stop(self) -> dict[str, object]:
         return self.run_loco(
@@ -219,7 +226,6 @@ class Bridge:
                 "smoke_move",
                 "--loco-service-name",
                 self.args.loco_service_name,
-                "--i-understand-this-moves-the-robot",
             ],
             timeout_extra_s=20.0,
         )

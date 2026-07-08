@@ -157,11 +157,6 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Run subprocess smoke tests once per DDS config mode.",
     )
-    parser.add_argument(
-        "--i-understand-this-moves-the-robot",
-        action="store_true",
-        help="Required for smoke_move. Sends a tiny forward velocity command briefly, then StopMove.",
-    )
     return parser
 
 
@@ -808,14 +803,6 @@ def main() -> None:
         except ValueError as exc:
             print(f"Invalid --velocity: {exc}", file=sys.stderr)
             raise SystemExit(1)
-
-    if args.command == "smoke_move" and not args.i_understand_this_moves_the_robot:
-        print(
-            "smoke_move sends a tiny movement command. Re-run with "
-            "--i-understand-this-moves-the-robot when the robot is physically safe.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
 
     if args.command == "diagnose":
         _runtime_diagnose(
