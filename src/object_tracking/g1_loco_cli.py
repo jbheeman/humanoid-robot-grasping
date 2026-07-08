@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import importlib.metadata
+import os
+import platform
 import json
-import subprocess 
+import subprocess
 import sys
 
-from object_tracking.unitree_g1 import G1LocoSdk2Client, UnitreeG1Error
+from object_tracking.unitree_g1 import (
+    G1LocoSdk2Client,
+    UnitreeG1Error,
+    normalize_network_interface,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,7 +27,16 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--network-interface",
-        help="Override local interface. Usually omit this and pass robot_ip instead.",
+        "--interface",
+        dest="network_interface",
+        default="auto",
+        help="Local DDS interface name, or 'auto' to resolve it from robot_ip. Default: auto.",
+    )
+    parser.add_argument(
+        "--domain-id",
+        type=int,
+        default=0,
+        help="CycloneDDS domain id for Unitree SDK2. Default: 0.",
     )
     parser.add_argument(
         "--timeout",
@@ -92,35 +108,86 @@ def _diagnose_route(robot_ip: str | None) -> dict[str, object]:
     }
 
 
-def _sdk2_python_presence() -> dict[str, object]:
-    try:
-        from importlib.metadata import version
+def _package_version(*names: str) -> dict[str, object]:
+    errors: dict[str, str] = {}
+    for name in names:
+        try:
+            return {"available": True, "package": name, "version": importlib.metadata.version(name)}
+        except Exception as exc:
+            errors[name] = str(exc)
+    return {"available": False, "errors": errors}
 
-        return {"available": True, "module": "unitree-sdk2", "version": version("unitree-sdk2")}
+
+def _module_info(module_name: str) -> dict[str, object]:
+    try:
+        module = __import__(module_name, fromlist=["__name__"])
     except Exception as exc:
-        return {"available": False, "error": str(exc)}
+        return {"available": False, "error": repr(exc)}
+    return {
+        "available": True,
+        "file": getattr(module, "__file__", None),
+    }
+
+
+def _g1_loco_info() -> dict[str, object]:
+    try:
+        from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
+        from unitree_sdk2py.g1.loco.g1_loco_api import LOCO_SERVICE_NAME, LOCO_API_VERSION
+    except Exception as exc:
+        return {"available": False, "error": repr(exc)}
+    return {
+        "available": True,
+        "client": f"{LocoClient.__module__}.{LocoClient.__name__}",
+        "service_name": LOCO_SERVICE_NAME,
+        "api_version": LOCO_API_VERSION,
+        "backend": "g1_loco",
+    }
 
 
 def _diagnose_client(
     robot_ip: str | None,
     network_interface: str | None,
     timeout_s: float,
+    domain_id: int,
 ) -> None:
     if robot_ip is None and network_interface is None:
         print("Pass robot_ip/--robot-ip or --network-interface to run diagnostics.", file=sys.stderr)
         raise SystemExit(1)
 
     route = _diagnose_route(robot_ip)
-    resolved_interface = network_interface
-    if route.get("ok") and route.get("interface") and network_interface is None:
+    explicit_interface = normalize_network_interface(network_interface)
+    resolved_interface = explicit_interface
+    if route.get("ok") and route.get("interface") and explicit_interface is None:
         resolved_interface = route["interface"]
 
     report = {
+        "backend": "g1_loco",
         "robot_ip": robot_ip,
         "timeout_s": timeout_s,
-        "route": route,
+        "domain_id": domain_id,
+        "requested_interface": network_interface or "auto",
         "resolved_interface": resolved_interface,
-        "unitree_sdk2": _sdk2_python_presence(),
+        "route": route,
+        "python": {
+            "executable": sys.executable,
+            "version": sys.version,
+            "platform": platform.platform(),
+        },
+        "environment": {
+            "PYTHONPATH": os.environ.get("PYTHONPATH"),
+            "CYCLONEDDS_URI": os.environ.get("CYCLONEDDS_URI"),
+            "ROS_DOMAIN_ID": os.environ.get("ROS_DOMAIN_ID"),
+            "RMW_IMPLEMENTATION": os.environ.get("RMW_IMPLEMENTATION"),
+        },
+        "packages": {
+            "unitree_sdk2": _package_version("unitree-sdk2", "unitree-sdk2py"),
+            "cyclonedds": _package_version("cyclonedds"),
+        },
+        "modules": {
+            "unitree_sdk2py": _module_info("unitree_sdk2py"),
+            "cyclonedds": _module_info("cyclonedds"),
+        },
+        "g1_loco": _g1_loco_info(),
     }
     print(json.dumps(report, indent=2, sort_keys=True))
 
@@ -134,6 +201,7 @@ def main() -> None:
             robot_ip=robot_ip,
             network_interface=args.network_interface,
             timeout_s=args.timeout,
+            domain_id=args.domain_id,
         )
         return
 
@@ -144,8 +212,8 @@ def main() -> None:
         )
         raise SystemExit(1)
 
-    if robot_ip is None and args.network_interface is None:
-        print("Pass robot_ip/--robot-ip, or --network-interface.", file=sys.stderr)
+    if robot_ip is None and normalize_network_interface(args.network_interface) is None:
+        print("Pass robot_ip/--robot-ip, or --interface/--network-interface.", file=sys.stderr)
         raise SystemExit(1)
 
     if args.command == "move":
@@ -163,6 +231,7 @@ def main() -> None:
             network_interface=args.network_interface,
             robot_ip=robot_ip,
             timeout_s=args.timeout,
+            domain_id=args.domain_id,
         )
         if args.command == "move":
             result = client.move(vx, vy, omega, duration)
@@ -173,7 +242,7 @@ def main() -> None:
             result = client.command(args.command)
     except UnitreeG1Error as exc:
         print(f"Command failed: {exc}", file=sys.stderr)
-        print("Tip: run `uv run loco <ip> --diagnose` to check network + python sdk setup.", file=sys.stderr)
+        print("Tip: run `uv run loco --diagnose <ip>` to check network + Python SDK setup.", file=sys.stderr)
         raise SystemExit(1) from exc
 
     print(result.stdout, end="")

@@ -89,7 +89,14 @@ uv run loco 192.168.0.4 stand_up
 uv run loco 192.168.0.4 balance_stand
 uv run loco 192.168.0.4 move --velocity "0.2 0 0 1.0"
 uv run loco 192.168.0.4 stop_move
-uv run loco 192.168.0.4 --diagnose
+uv run loco --diagnose 192.168.0.4
 ```
 
-`--network-interface` is only needed if route detection fails.
+By default, loco resolves the local DDS interface with `ip route get <robot_ip>`. If DDS picks the wrong NIC, pass it explicitly:
+
+```bash
+uv run loco 192.168.0.4 stop_move --interface eno1
+uv run loco 192.168.0.4 stop_move --network-interface eno1
+```
+
+`--interface auto` is the default. Use `uv run loco --diagnose <robot_ip>` to print the resolved interface, Python paths, Unitree SDK path/version, CycloneDDS path/version, and relevant DDS environment variables.
