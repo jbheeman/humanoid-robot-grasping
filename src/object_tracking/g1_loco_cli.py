@@ -82,7 +82,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "command",
         nargs="?",
-        choices=("stand_up", "balance_stand", "stop_move", "damp", "move", "move_arms_up"),
+        choices=("stand_up", "balance_stand", "stop_move", "damp", "move", "move_arms_up", "probe_loco"),
         help="G1 loco command to send. Omit and pass --diagnose for diagnostics only.",
     )
     parser.add_argument(
@@ -672,7 +672,7 @@ def main() -> None:
 
     if args.command is None:
         print(
-            "Missing command. Use one of: stand_up, balance_stand, stop_move, damp, move, move_arms_up.",
+            "Missing command. Use one of: stand_up, balance_stand, stop_move, damp, move, move_arms_up, probe_loco.",
             file=sys.stderr,
         )
         raise SystemExit(1)

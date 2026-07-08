@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import importlib
+import json
 import os
 from pathlib import Path
 import subprocess
@@ -459,14 +460,26 @@ class G1LocoSdk2Client:
             self._client = LocoClient()
         except Exception as exc:
             raise g1_loco_init_error(exc, robot_ip, self.network_interface, domain_id, self.loco_service_name) from exc
-        self._client.Init()
+        print(f"Setting LocoClient timeout={timeout_s}", file=sys.stderr)
         self._client.SetTimeout(timeout_s)
+        print("Calling LocoClient.Init()", file=sys.stderr)
+        init_result = self._client.Init()
+        print(f"LocoClient.Init() returned {init_result!r}", file=sys.stderr)
         self._arm_low_state = None
 
     def _result(self, command: list[str], code: int) -> UnitreeCommandResult:
         code_int = int(code)
         if code_int != 0:
-            raise UnitreeG1Error(f"unitree-sdk2 command returned non-zero code {code_int}: {command}")
+            topic = loco_rpc_request_topic(self.loco_service_name)
+            raise UnitreeG1Error(
+                f"unitree-sdk2 command returned non-zero code {code_int}: {command}\n\n"
+                "DDS and client construction succeeded, but no robot RPC server responded on "
+                f"{topic}.\n"
+                "Try:\n"
+                "- put robot into high-level sport/ai-sport mode with controller\n"
+                "- test both --loco-service-name ai_sport and --loco-service-name sport\n"
+                "- run probe_loco"
+            )
         return UnitreeCommandResult(command=command, returncode=0, stdout="", stderr="")
 
     def _call(self, method: str, *args: object) -> UnitreeCommandResult:
@@ -500,6 +513,55 @@ class G1LocoSdk2Client:
                 stdout = f"{result[1]}\n"
             return UnitreeCommandResult(command=["loco", "get_fsm_id"], returncode=int(code or 0), stdout=stdout, stderr="")
         raise UnitreeG1Error("get_fsm_id is not implemented by the installed G1 loco client.")
+
+    def probe_loco(self) -> UnitreeCommandResult:
+        methods = []
+        for name in dir(self._client):
+            if name.startswith("_"):
+                continue
+            try:
+                value = getattr(self._client, name)
+            except Exception as exc:
+                methods.append({"name": name, "available": False, "error": repr(exc)})
+                continue
+            if callable(value):
+                methods.append(name)
+
+        read_results: dict[str, object] = {}
+        for method_name in ("GetFsmId", "GetFsmMode", "GetBalanceMode"):
+            if not hasattr(self._client, method_name):
+                read_results[method_name] = {"available": False}
+                continue
+            method = getattr(self._client, method_name)
+            try:
+                read_results[method_name] = {
+                    "available": True,
+                    "ok": True,
+                    "raw": repr(method()),
+                }
+            except Exception as exc:
+                read_results[method_name] = {
+                    "available": True,
+                    "ok": False,
+                    "exception": repr(exc),
+                }
+
+        report = {
+            "ok": True,
+            "loco_service_name": self.loco_service_name,
+            "rpc_request_topic": loco_rpc_request_topic(self.loco_service_name),
+            "timeout_s": self.timeout_s,
+            "domain_id": self.domain_id,
+            "network_interface": self.network_interface,
+            "public_methods": methods,
+            "read_only_calls": read_results,
+        }
+        return UnitreeCommandResult(
+            command=["loco", "probe_loco"],
+            returncode=0,
+            stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
+            stderr="",
+        )
 
     def start(self) -> UnitreeCommandResult:
         return self._call("Start")
@@ -601,6 +663,7 @@ class G1LocoSdk2Client:
             "stop_move": self.stop_move,
             "damp": self.damp,
             "move_arms_up": self.move_arms_up,
+            "probe_loco": self.probe_loco,
         }
         try:
             return commands[name]()
@@ -630,6 +693,7 @@ class Go2SportSdk2Client(G1LocoSdk2Client):
         )
         self.timeout_s = timeout_s
         self.domain_id = domain_id
+        self.loco_service_name = "sport"
         self._arm_low_state = None
 
         try:
@@ -649,8 +713,11 @@ class Go2SportSdk2Client(G1LocoSdk2Client):
                 "Do not use this backend for G1 unless intentionally debugging SDK topic behavior.\n"
                 f"Original error: {exc}"
             ) from exc
-        self._client.Init()
+        print(f"Setting Go2 SportClient timeout={timeout_s}", file=sys.stderr)
         self._client.SetTimeout(timeout_s)
+        print("Calling Go2 SportClient.Init()", file=sys.stderr)
+        init_result = self._client.Init()
+        print(f"Go2 SportClient.Init() returned {init_result!r}", file=sys.stderr)
 
 
 def parse_velocity(value: str) -> tuple[float, float, float, float | None]:

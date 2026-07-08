@@ -90,6 +90,7 @@ uv run loco 192.168.0.4 balance_stand
 uv run loco 192.168.0.4 move --velocity "0.2 0 0 1.0"
 uv run loco 192.168.0.4 stop_move
 uv run loco 192.168.0.212 stop_move --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
+uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
 uv run loco --diagnose 192.168.0.4
 ```
 
@@ -156,3 +157,12 @@ uv run loco 192.168.0.4 --backend g1_loco_minimal
 ```
 
 During a normal `stop_move`, stderr should contain exactly one Unitree client construction line: `Constructing G1 LocoClient`.
+
+If `stop_move` reaches `[ClientStub] send request error`, DDS and `LocoClient` construction have already succeeded. Use the read-only probe before sending more movement commands:
+
+```bash
+uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
+uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name sport --dds-config-mode no_trace
+```
+
+If both probes fail on read-only methods, put the robot into high-level sport/ai-sport mode with the controller and retry. At that point the failure is the robot RPC server not responding on `rt/api/<service>/request`, not DDS initialization.
