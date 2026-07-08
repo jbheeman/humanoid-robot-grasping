@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import importlib
 import os
+from pathlib import Path
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -165,6 +166,7 @@ def normalize_network_interface(network_interface: str | None) -> str | None:
 
 LOCO_SERVICE_CHOICES = ("auto", "sport", "ai_sport")
 DEFAULT_G1_LOCO_SERVICE_NAME = "ai_sport"
+DEFAULT_CYCLONEDDS_LOG_DIR = Path("runs/dds")
 
 
 def effective_loco_service_name(loco_service_name: str | None) -> str:
@@ -200,6 +202,46 @@ def patch_g1_loco_service_name(loco_service_name: str) -> tuple[object, dict[str
     }
 
 
+def default_cyclonedds_log_file() -> str:
+    return str((DEFAULT_CYCLONEDDS_LOG_DIR / f"cdds_{os.getpid()}.log").resolve())
+
+
+def patch_unitree_cyclonedds_log_file(log_file: str | None = None) -> dict[str, object]:
+    target = log_file or os.environ.get("UNITREE_CYCLONEDDS_LOG_FILE") or default_cyclonedds_log_file()
+    target_path = Path(target).expanduser()
+    if not target_path.is_absolute():
+        target_path = Path.cwd() / target_path
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        channel_module = importlib.import_module("unitree_sdk2py.core.channel")
+        config_module = importlib.import_module("unitree_sdk2py.core.channel_config")
+    except Exception as exc:
+        return {
+            "log_file": str(target_path),
+            "available": False,
+            "error": repr(exc),
+            "replacements": {},
+        }
+    replacements: dict[str, bool] = {}
+    for module in (config_module, channel_module):
+        for attr in ("ChannelConfigHasInterface", "ChannelConfigAutoDetermine"):
+            if not hasattr(module, attr):
+                continue
+            value = getattr(module, attr)
+            if not isinstance(value, str):
+                continue
+            updated = value.replace("/tmp/cdds.LOG", str(target_path))
+            setattr(module, attr, updated)
+            replacements[f"{module.__name__}.{attr}"] = updated != value
+
+    return {
+        "log_file": str(target_path),
+        "available": True,
+        "replacements": replacements,
+    }
+
+
 class UnitreeSdk2Context:
     _initialized = False
     _domain_id: int | None = None
@@ -211,6 +253,7 @@ class UnitreeSdk2Context:
         robot_ip: str | None = None,
         network_interface: str | None = None,
         domain_id: int = 0,
+        cyclonedds_log_file: str | None = None,
     ) -> str:
         if ChannelFactoryInitialize is None:
             detail = str(_SDK2_IMPORT_ERROR) if _SDK2_IMPORT_ERROR is not None else "missing imports"
@@ -235,6 +278,8 @@ class UnitreeSdk2Context:
                 )
             return resolved_interface
 
+        log_report = patch_unitree_cyclonedds_log_file(cyclonedds_log_file)
+
         try:
             ChannelFactoryInitialize(domain_id, resolved_interface)
         except Exception as exc:
@@ -242,10 +287,12 @@ class UnitreeSdk2Context:
                 "Failed to initialize Unitree SDK2 DDS.\n"
                 f"Selected interface: {resolved_interface}\n"
                 f"Selected domain: {domain_id}\n"
+                f"CycloneDDS log file: {log_report['log_file']}\n"
                 "Try:\n"
                 f"  ip route get {robot_ip or '<robot_ip>'}\n"
                 f"  uv run loco {robot_ip or '<robot_ip>'} stop_move --interface <dev>\n"
-                f"  uv run loco --diagnose {robot_ip or '<robot_ip>'}"
+                f"  uv run loco --diagnose {robot_ip or '<robot_ip>'}\n"
+                f"  rm -f /tmp/cdds.LOG"
             ) from exc
 
         cls._initialized = True
@@ -310,11 +357,13 @@ class G1LocoSdk2Client:
         timeout_s: float = 15.0,
         domain_id: int = 0,
         loco_service_name: str = "auto",
+        cyclonedds_log_file: str | None = None,
     ) -> None:
         self.network_interface = UnitreeSdk2Context.initialize(
             robot_ip=robot_ip,
             network_interface=network_interface,
             domain_id=domain_id,
+            cyclonedds_log_file=cyclonedds_log_file,
         )
         self.timeout_s = timeout_s
         self.domain_id = domain_id
@@ -497,11 +546,13 @@ class Go2SportSdk2Client(G1LocoSdk2Client):
         robot_ip: str | None = None,
         timeout_s: float = 15.0,
         domain_id: int = 0,
+        cyclonedds_log_file: str | None = None,
     ) -> None:
         self.network_interface = UnitreeSdk2Context.initialize(
             robot_ip=robot_ip,
             network_interface=network_interface,
             domain_id=domain_id,
+            cyclonedds_log_file=cyclonedds_log_file,
         )
         self.timeout_s = timeout_s
         self.domain_id = domain_id

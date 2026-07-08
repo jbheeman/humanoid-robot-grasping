@@ -5,6 +5,7 @@ import argparse
 import importlib
 import importlib.metadata
 import json
+import os
 import pathlib
 import subprocess
 import sys
@@ -23,6 +24,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=("auto", "sport", "ai_sport"),
         default="auto",
         help="G1 loco RPC service name. auto prefers ai_sport.",
+    )
+    parser.add_argument(
+        "--cyclonedds-log-file",
+        default=None,
+        help="Writable CycloneDDS trace log path. Default: runs/dds/cdds_<pid>.log.",
     )
     return parser
 
@@ -54,6 +60,42 @@ def patch_loco_service_name(raw_service_name: str) -> dict[str, object]:
         "detected_client_service_name": detected_client_service,
         "rpc_request_topic": loco_rpc_request_topic(service_name),
     }
+
+
+def default_cyclonedds_log_file() -> str:
+    return str((pathlib.Path.cwd() / "runs" / "dds" / f"cdds_{os.getpid()}.log").resolve())
+
+
+def patch_unitree_cyclonedds_log_file(log_file: str | None) -> dict[str, object]:
+    target = log_file or default_cyclonedds_log_file()
+    target_path = pathlib.Path(target).expanduser()
+    if not target_path.is_absolute():
+        target_path = pathlib.Path.cwd() / target_path
+    target_path.parent.mkdir(parents=True, exist_ok=True)
+
+    try:
+        channel_module = importlib.import_module("unitree_sdk2py.core.channel")
+        config_module = importlib.import_module("unitree_sdk2py.core.channel_config")
+    except Exception as exc:
+        return {
+            "log_file": str(target_path),
+            "available": False,
+            "error": repr(exc),
+            "replacements": {},
+        }
+    replacements: dict[str, bool] = {}
+    for module in (config_module, channel_module):
+        for attr in ("ChannelConfigHasInterface", "ChannelConfigAutoDetermine"):
+            if not hasattr(module, attr):
+                continue
+            value = getattr(module, attr)
+            if not isinstance(value, str):
+                continue
+            updated = value.replace("/tmp/cdds.LOG", str(target_path))
+            setattr(module, attr, updated)
+            replacements[f"{module.__name__}.{attr}"] = updated != value
+
+    return {"log_file": str(target_path), "available": True, "replacements": replacements}
 
 
 def package_version(*names: str) -> dict[str, object]:
@@ -143,6 +185,7 @@ def main() -> int:
         "requested_loco_service_name": args.loco_service_name,
         "effective_loco_service_name": effective_loco_service_name(args.loco_service_name),
         "loco_rpc_request_topic": loco_rpc_request_topic(effective_loco_service_name(args.loco_service_name)),
+        "cyclonedds_log": patch_unitree_cyclonedds_log_file(args.cyclonedds_log_file),
         "requested_interface": args.network_interface,
         "robot_ip": args.robot_ip,
         "route": route,
@@ -158,6 +201,8 @@ def main() -> int:
     try:
         from unitree_sdk2py.core.channel import ChannelFactoryInitialize
 
+        log_report = patch_unitree_cyclonedds_log_file(args.cyclonedds_log_file)
+        print(f"using CycloneDDS log file {log_report['log_file']}", file=sys.stderr)
         print(f"initializing DDS domain={args.domain_id} interface={interface}", file=sys.stderr)
         ChannelFactoryInitialize(args.domain_id, str(interface))
 

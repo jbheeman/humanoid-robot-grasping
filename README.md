@@ -125,6 +125,12 @@ You can also run the same smoke test through the main CLI without sending moveme
 uv run loco --smoke-loco 192.168.0.4 --interface eno1 --loco-service-name ai_sport
 ```
 
+The Unitree SDK config can try to write CycloneDDS tracing to `/tmp/cdds.LOG`. This CLI patches that path to `runs/dds/cdds_<pid>.log` before DDS initialization. To choose a specific writable file:
+
+```bash
+uv run loco --smoke-loco 192.168.0.4 --interface eno1 --loco-service-name ai_sport --cyclonedds-log-file runs/dds/g1_smoke.log
+```
+
 If the minimal script fails, the problem is below this project: fix the Unitree SDK checkout, CycloneDDS/Python environment, DDS domain/interface, or robot firmware/SDK compatibility. Inspect `sys.path`, remove duplicate SDK installs, and reinstall exactly one `unitree_sdk2py` source cleanly.
 
 If the minimal script passes but `uv run loco ...` fails, look for mixed-client imports or fallback construction in this repo. The default backend is `g1_loco`; `go2_sport` is only constructed when explicitly requested:

@@ -19,6 +19,7 @@ from object_tracking.unitree_g1 import (
     loco_rpc_request_topic,
     normalize_network_interface,
     patch_g1_loco_service_name,
+    patch_unitree_cyclonedds_log_file,
 )
 
 
@@ -62,6 +63,11 @@ def build_parser() -> argparse.ArgumentParser:
         choices=LOCO_SERVICE_CHOICES,
         default="auto",
         help="G1 loco RPC service name. auto prefers ai_sport. Use sport only when explicitly needed.",
+    )
+    parser.add_argument(
+        "--cyclonedds-log-file",
+        default=None,
+        help="Writable CycloneDDS trace log path. Default: runs/dds/cdds_<pid>.log.",
     )
     parser.add_argument(
         "command",
@@ -245,6 +251,7 @@ def _dds_probe(
     network_interface: str | None,
     domain_id: int,
     loco_service_name: str,
+    cyclonedds_log_file: str | None,
 ) -> None:
     if robot_ip is None and normalize_network_interface(network_interface) is None:
         print("Pass robot_ip/--robot-ip or --interface/--network-interface for DDS probe.", file=sys.stderr)
@@ -255,6 +262,7 @@ def _dds_probe(
             robot_ip=robot_ip,
             network_interface=network_interface,
             domain_id=domain_id,
+            cyclonedds_log_file=cyclonedds_log_file,
         )
     except UnitreeG1Error as exc:
         report = {
@@ -309,11 +317,13 @@ def _construct_g1_loco_minimal(
     network_interface: str | None,
     domain_id: int,
     loco_service_name: str,
+    cyclonedds_log_file: str | None,
 ) -> None:
     resolved_interface = UnitreeSdk2Context.initialize(
         robot_ip=robot_ip,
         network_interface=network_interface,
         domain_id=domain_id,
+        cyclonedds_log_file=cyclonedds_log_file,
     )
     try:
         LocoClient, service_report = patch_g1_loco_service_name(loco_service_name)
@@ -360,6 +370,7 @@ def _diagnose_client(
     timeout_s: float,
     domain_id: int,
     loco_service_name: str,
+    cyclonedds_log_file: str | None,
 ) -> None:
     if robot_ip is None and network_interface is None:
         print("Pass robot_ip/--robot-ip or --network-interface to run diagnostics.", file=sys.stderr)
@@ -372,6 +383,7 @@ def _diagnose_client(
         resolved_interface = route["interface"]
 
     effective_service = effective_loco_service_name(loco_service_name)
+    log_report = patch_unitree_cyclonedds_log_file(cyclonedds_log_file)
     report = {
         "backend": "g1_loco",
         "robot_ip": robot_ip,
@@ -380,6 +392,7 @@ def _diagnose_client(
         "requested_loco_service_name": loco_service_name,
         "effective_loco_service_name": effective_service,
         "loco_rpc_request_topic": loco_rpc_request_topic(effective_service),
+        "cyclonedds_log": log_report,
         "requested_interface": network_interface or "auto",
         "resolved_interface": resolved_interface,
         "route": route,
@@ -431,6 +444,7 @@ def main() -> None:
             timeout_s=args.timeout,
             domain_id=args.domain_id,
             loco_service_name=args.loco_service_name,
+            cyclonedds_log_file=args.cyclonedds_log_file,
         )
         return
 
@@ -441,6 +455,7 @@ def main() -> None:
                 network_interface=args.network_interface,
                 domain_id=args.domain_id,
                 loco_service_name=args.loco_service_name,
+                cyclonedds_log_file=args.cyclonedds_log_file,
             )
         except UnitreeG1Error as exc:
             print(f"Command failed: {exc}", file=sys.stderr)
@@ -457,6 +472,7 @@ def main() -> None:
             network_interface=args.network_interface,
             domain_id=args.domain_id,
             loco_service_name=args.loco_service_name,
+            cyclonedds_log_file=args.cyclonedds_log_file,
         )
         return
 
@@ -467,6 +483,7 @@ def main() -> None:
                 network_interface=args.network_interface,
                 domain_id=args.domain_id,
                 loco_service_name=args.loco_service_name,
+                cyclonedds_log_file=args.cyclonedds_log_file,
             )
         except UnitreeG1Error as exc:
             print(f"Command failed: {exc}", file=sys.stderr)
@@ -502,6 +519,7 @@ def main() -> None:
                 robot_ip=robot_ip,
                 timeout_s=args.timeout,
                 domain_id=args.domain_id,
+                cyclonedds_log_file=args.cyclonedds_log_file,
             )
         else:
             client = G1LocoSdk2Client(
@@ -510,6 +528,7 @@ def main() -> None:
                 timeout_s=args.timeout,
                 domain_id=args.domain_id,
                 loco_service_name=args.loco_service_name,
+                cyclonedds_log_file=args.cyclonedds_log_file,
             )
         if args.command == "move":
             result = client.move(vx, vy, omega, duration)
