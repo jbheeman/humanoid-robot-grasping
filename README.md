@@ -123,12 +123,15 @@ You can also run the same smoke test through the main CLI without sending moveme
 
 ```bash
 uv run loco --smoke-loco 192.168.0.4 --interface eno1 --loco-service-name ai_sport
+uv run loco --smoke-loco-subprocess 192.168.0.4 --interface eno1 --loco-service-name ai_sport
 ```
 
-The Unitree SDK config can try to write CycloneDDS tracing to `/tmp/cdds.LOG`. This CLI patches that path to `runs/dds/cdds_<pid>.log` before DDS initialization. To choose a specific writable file:
+Prefer `--smoke-loco-subprocess` when debugging native crashes such as `*** buffer overflow detected ***`; it reports whether the child process exited normally or was killed by a native signal.
+
+The Unitree SDK config can try to write CycloneDDS tracing to `/tmp/cdds.LOG`. This CLI patches that path to `/tmp/unitree_cdds_<uid>_<pid>.log` before DDS initialization. To choose a specific writable file:
 
 ```bash
-uv run loco --smoke-loco 192.168.0.4 --interface eno1 --loco-service-name ai_sport --cyclonedds-log-file runs/dds/g1_smoke.log
+uv run loco --smoke-loco-subprocess 192.168.0.4 --interface eno1 --loco-service-name ai_sport --cyclonedds-log-file /tmp/ucdds.log
 ```
 
 If the minimal script fails, the problem is below this project: fix the Unitree SDK checkout, CycloneDDS/Python environment, DDS domain/interface, or robot firmware/SDK compatibility. Inspect `sys.path`, remove duplicate SDK installs, and reinstall exactly one `unitree_sdk2py` source cleanly.

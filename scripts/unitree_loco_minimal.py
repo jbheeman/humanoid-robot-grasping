@@ -28,7 +28,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cyclonedds-log-file",
         default=None,
-        help="Writable CycloneDDS trace log path. Default: runs/dds/cdds_<pid>.log.",
+        help="Writable CycloneDDS trace log path. Default: /tmp/unitree_cdds_<uid>_<pid>.log.",
     )
     return parser
 
@@ -63,7 +63,8 @@ def patch_loco_service_name(raw_service_name: str) -> dict[str, object]:
 
 
 def default_cyclonedds_log_file() -> str:
-    return str((pathlib.Path.cwd() / "runs" / "dds" / f"cdds_{os.getpid()}.log").resolve())
+    uid = os.getuid() if hasattr(os, "getuid") else "user"
+    return str(pathlib.Path("/tmp") / f"unitree_cdds_{uid}_{os.getpid()}.log")
 
 
 def patch_unitree_cyclonedds_log_file(log_file: str | None) -> dict[str, object]:

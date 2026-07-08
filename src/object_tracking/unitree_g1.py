@@ -166,8 +166,6 @@ def normalize_network_interface(network_interface: str | None) -> str | None:
 
 LOCO_SERVICE_CHOICES = ("auto", "sport", "ai_sport")
 DEFAULT_G1_LOCO_SERVICE_NAME = "ai_sport"
-DEFAULT_CYCLONEDDS_LOG_DIR = Path("runs/dds")
-
 
 def effective_loco_service_name(loco_service_name: str | None) -> str:
     value = (loco_service_name or "auto").strip()
@@ -203,7 +201,8 @@ def patch_g1_loco_service_name(loco_service_name: str) -> tuple[object, dict[str
 
 
 def default_cyclonedds_log_file() -> str:
-    return str((DEFAULT_CYCLONEDDS_LOG_DIR / f"cdds_{os.getpid()}.log").resolve())
+    uid = os.getuid() if hasattr(os, "getuid") else "user"
+    return str(Path("/tmp") / f"unitree_cdds_{uid}_{os.getpid()}.log")
 
 
 def patch_unitree_cyclonedds_log_file(log_file: str | None = None) -> dict[str, object]:

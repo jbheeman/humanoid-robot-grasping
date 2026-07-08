@@ -6,6 +6,7 @@ import os
 import pathlib
 import platform
 import json
+import signal
 import subprocess
 import sys
 
@@ -15,6 +16,7 @@ from object_tracking.unitree_g1 import (
     LOCO_SERVICE_CHOICES,
     UnitreeG1Error,
     UnitreeSdk2Context,
+    default_cyclonedds_log_file,
     effective_loco_service_name,
     loco_rpc_request_topic,
     normalize_network_interface,
@@ -67,7 +69,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--cyclonedds-log-file",
         default=None,
-        help="Writable CycloneDDS trace log path. Default: runs/dds/cdds_<pid>.log.",
+        help="Writable CycloneDDS trace log path. Default: /tmp/unitree_cdds_<uid>_<pid>.log.",
     )
     parser.add_argument(
         "command",
@@ -95,6 +97,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--smoke-loco",
         action="store_true",
         help="Initialize DDS, patch the G1 loco service name, construct LocoClient, then exit.",
+    )
+    parser.add_argument(
+        "--smoke-loco-subprocess",
+        action="store_true",
+        help="Run the project-free LocoClient smoke test in a subprocess so native aborts are reported.",
     )
     return parser
 
@@ -364,6 +371,94 @@ def _construct_g1_loco_minimal(
     )
 
 
+def _signal_name(returncode: int) -> str | None:
+    if returncode >= 0:
+        return None
+    try:
+        return signal.Signals(-returncode).name
+    except ValueError:
+        return f"signal {-returncode}"
+
+
+def _smoke_loco_subprocess(
+    robot_ip: str | None,
+    network_interface: str | None,
+    domain_id: int,
+    loco_service_name: str,
+    cyclonedds_log_file: str | None,
+    timeout_s: float,
+) -> None:
+    script = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "unitree_loco_minimal.py"
+    if not script.exists():
+        print(f"Minimal smoke script not found: {script}", file=sys.stderr)
+        raise SystemExit(1)
+
+    log_file = cyclonedds_log_file or default_cyclonedds_log_file()
+    command = [
+        sys.executable,
+        str(script),
+        "--domain-id",
+        str(domain_id),
+        "--loco-service-name",
+        loco_service_name,
+        "--cyclonedds-log-file",
+        log_file,
+    ]
+    if robot_ip:
+        command.extend(["--robot-ip", robot_ip])
+    resolved_interface = normalize_network_interface(network_interface)
+    if resolved_interface is not None:
+        command.extend(["--interface", resolved_interface])
+    elif robot_ip is None:
+        print("Pass robot_ip/--robot-ip or --interface/--network-interface for subprocess smoke test.", file=sys.stderr)
+        raise SystemExit(1)
+
+    try:
+        completed = subprocess.run(
+            command,
+            check=False,
+            capture_output=True,
+            text=True,
+            timeout=max(timeout_s, 5.0) + 5.0,
+        )
+    except subprocess.TimeoutExpired as exc:
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "stage": "subprocess_timeout",
+                    "command": command,
+                    "timeout_s": exc.timeout,
+                    "stdout": exc.stdout or "",
+                    "stderr": exc.stderr or "",
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        raise SystemExit(1) from exc
+
+    report = {
+        "ok": completed.returncode == 0,
+        "stage": "subprocess_smoke_loco",
+        "command": command,
+        "returncode": completed.returncode,
+        "signal": _signal_name(completed.returncode),
+        "cyclonedds_log_file": log_file,
+        "stdout": completed.stdout,
+        "stderr": completed.stderr,
+    }
+    print(json.dumps(report, indent=2, sort_keys=True))
+    if completed.returncode != 0:
+        if completed.returncode < 0:
+            print(
+                "Subprocess was terminated by native code before Python could catch an exception. "
+                "That points below this repo: CycloneDDS, unitree_sdk2py, or the linked C layer.",
+                file=sys.stderr,
+            )
+        raise SystemExit(1)
+
+
 def _diagnose_client(
     robot_ip: str | None,
     network_interface: str | None,
@@ -464,6 +559,17 @@ def main() -> None:
                 file=sys.stderr,
             )
             raise SystemExit(1) from exc
+        return
+
+    if args.smoke_loco_subprocess:
+        _smoke_loco_subprocess(
+            robot_ip=robot_ip,
+            network_interface=args.network_interface,
+            domain_id=args.domain_id,
+            loco_service_name=args.loco_service_name,
+            cyclonedds_log_file=args.cyclonedds_log_file,
+            timeout_s=args.timeout,
+        )
         return
 
     if args.dds_probe:
