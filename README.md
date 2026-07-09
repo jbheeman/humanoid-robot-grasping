@@ -140,6 +140,16 @@ Then start the Unitree G1 30 FPS camera stream servers:
 ./scripts/run_yolo_stream.sh
 ```
 
+If you need a strict OpenCV-only path that uses system `/usr/bin/python3` OpenCV + GStreamer on the robot, use the dedicated path:
+
+```bash
+./scripts/setup_opencv_vision_server.sh
+./scripts/run_opencv_yolo_stream.sh
+```
+
+This keeps the main setup unchanged and writes to `.venv-opencv` instead of `.venv`. It forces
+`--capture-backend opencv` so the stream stays on `cv2.VideoCapture(..., CAP_GSTREAMER)` and does not use the gst-launch fallback.
+
 By default this starts two MJPEG servers:
 
 ```text

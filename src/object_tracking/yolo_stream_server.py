@@ -177,7 +177,22 @@ class GstLaunchCapture:
                 self.proc.kill()
 
 
-def open_capture(pipeline: str) -> tuple[Any, str]:
+def open_capture(pipeline: str, capture_backend: str = "auto") -> tuple[Any, str]:
+    if capture_backend == "gst-launch":
+        return GstLaunchCapture(pipeline), "gst-launch"
+
+    if capture_backend == "opencv":
+        if not opencv_gstreamer_enabled():
+            raise RuntimeError("OpenCV GStreamer backend requested, but cv2 was built without GStreamer.")
+        cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
+        if not cap.isOpened():
+            cap.release()
+            raise RuntimeError("OpenCV GStreamer backend could not open the camera pipeline.")
+        return cap, "opencv-gstreamer"
+
+    if capture_backend != "auto":
+        raise ValueError(f"Unknown capture backend: {capture_backend}")
+
     if opencv_gstreamer_enabled():
         cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         if cap.isOpened():
@@ -185,8 +200,7 @@ def open_capture(pipeline: str) -> tuple[Any, str]:
         cap.release()
 
     print("OpenCV GStreamer is unavailable; falling back to gst-launch-1.0 raw frame pipe.")
-    cap = GstLaunchCapture(pipeline)
-    return cap, "gst-launch"
+    return GstLaunchCapture(pipeline), "gst-launch"
 
 
 def draw_fps(frame: np.ndarray, fps: float, yolo_fps: float) -> None:
@@ -279,18 +293,28 @@ def configure_runtime(opencv_threads: int, torch_threads: int, needs_torch: bool
         print("Torch threads:", torch_threads_actual if torch_threads_actual else "unavailable")
 
 
-def camera_loop(pipeline: str, camera_name: str) -> None:
+def camera_loop(pipeline: str, camera_name: str, capture_backend: str) -> None:
     print("OpenCV:", cv2.__version__)
     print("OpenCV GStreamer enabled:", opencv_gstreamer_enabled())
     print("Camera name:", camera_name)
     print("Opening pipeline:")
     print(pipeline)
+    print("Requested capture backend:", capture_backend)
 
     with state.lock:
         state.camera_pipeline = pipeline
         state.camera_name = camera_name
+        state.capture_backend = capture_backend
 
-    cap, backend = open_capture(pipeline)
+    try:
+        cap, backend = open_capture(pipeline, capture_backend)
+    except (RuntimeError, ValueError) as exc:
+        with frame_ready:
+            state.last_error = str(exc)
+            frame_ready.notify_all()
+        print(f"ERROR: {exc}")
+        return
+
     with state.lock:
         state.capture_backend = backend
     print("Capture backend:", backend)
@@ -668,6 +692,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=0.0,
         help="Maximum MJPEG response FPS. Use 0 for unbounded/latest-frame streaming.",
     )
+    parser.add_argument(
+        "--capture-backend",
+        choices=("auto", "opencv", "gst-launch"),
+        default="auto",
+        help="Capture backend to use for camera read. opencv requires GStreamer-enabled cv2 and does not fallback.",
+    )
     return parser
 
 
@@ -694,7 +724,7 @@ def main() -> None:
 
     camera_worker = threading.Thread(
         target=camera_loop,
-        args=(args.pipeline, args.camera_name),
+        args=(args.pipeline, args.camera_name, args.capture_backend),
         daemon=True,
     )
     jpeg_worker = threading.Thread(
