@@ -6,14 +6,12 @@ From the project root:
 
 ```bash
 git switch aarav
-./scripts/setup_vision_server.sh
+./scripts/setup_gb10_vision_server.sh
 ```
 
-For the headless camera/FastAPI vision server on the G1, prefer `./scripts/setup_vision_server.sh`; it installs the `vision` group without CycloneDDS, Unitree SDK2 Python, Torch, Ultralytics, or CUDA packages. Install the other groups only where needed:
+The GB10 setup installs only the vision and training groups in Python 3.12. The robot does not need a project Python environment for video; it only runs the compressed GStreamer relay. Install locomotion separately where needed:
 
 ```bash
-./scripts/setup_vision_server.sh
-uv sync --only-group train --locked
 ./scripts/ensure_unitree_sdk_path.sh && uv sync --only-group loco --locked
 ```
 
@@ -125,164 +123,75 @@ uv run python scripts/run_manual_tracker.py --camera 0 --output runs/object_manu
 
 ## Vision FastAPI stream
 
-The runtime is split across three machines:
+The camera stays owned by Unitree's `videohub_pc4` task. Video remains compressed until it reaches the GB10:
 
 ```text
-G1 camera processes -> robot capture-only MJPEG -> GB10 YOLO + viewer -> SSH tunnel -> laptop browser
+videohub_pc4 -> RTP multicast 230.1.1.1:1720 -> robot relay -> GB10 UDP 5600
+             -> GStreamer decode -> fine-tuned YOLOv8 -> FastAPI/viewer -> Mac SSH tunnel
 ```
 
-### Robot: capture only
+### Robot: compressed RTP relay
 
-Use the robot's system OpenCV + GStreamer environment. This does not install or run YOLO:
+Do not open `/dev/video4`; `videohub_pc4` already owns it. Relay its multicast RTP packets to the GB10 address:
 
 ```bash
-./scripts/setup_opencv_vision_server.sh
-sudo ./scripts/list_camera_bindings.sh videohub_pc4_ch
-./scripts/run_robot_vision_server.sh
+CLIENT_IP=192.168.0.66 ./scripts/run_robot_vision_server.sh
 ```
 
-The robot launcher defaults to the single available main camera at `/dev/video4`. Its raw endpoint is:
+The default source is multicast `230.1.1.1:1720` on `wlan0`; the default destination port is UDP `5600`. Override `ROBOT_INTERFACE`, `MULTICAST_GROUP`, `MULTICAST_PORT`, or `CLIENT_PORT` only when the robot network differs.
 
-```text
-main:  http://ROBOT_IP:8000/stream.mjpg
-```
+### GB10: verify relay
 
-When a chest camera is available, enable it with `DUAL_STREAMS=1 CHEST_DEVICE=/dev/videoX`.
-
-The OpenCV setup writes `.venv-opencv` and uses `/usr/bin/python3`, preserving Ubuntu's GStreamer-enabled OpenCV. `MODEL=none` keeps CUDA, Torch, and Ultralytics off the robot.
-
-### GB10: inference and viewer
-
-Install the vision and training groups on the GB10:
+Run the one-time GB10 setup:
 
 ```bash
-uv sync --only-group vision --only-group train --locked
+./scripts/setup_gb10_vision_server.sh
 ```
 
-Start both YOLO servers, consuming the robot's MJPEG feeds:
+With the robot relay running, confirm that the GB10 can decode JPEG frames:
 
 ```bash
-ROBOT_HOST=192.168.0.212 \
-MODEL=models/plushie_detector/yolo11x_plushie/weights/best.pt \
+./scripts/test_unitree_relay.sh
+```
+
+Then start inference and the website:
+
+```bash
 ./scripts/run_gb10_vision_server.sh
 ```
 
-The GB10 command defaults to the main feed, serves processed output on port 8000, and starts the viewer on port 8080. Set `ENABLE_CHEST=1` when the robot has a working chest feed.
+The default checkpoint is the fine-tuned plush-animal model:
+
+```text
+models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt
+```
+
+The GB10 uses external `gst-launch-1.0` for decoding, so pip OpenCV does not need GStreamer support. Useful endpoints are:
+
+```text
+http://GB10:8000/stream.mjpg
+http://GB10:8000/snapshot.jpg
+http://GB10:8000/detections
+http://GB10:8000/tracks
+http://GB10:8000/health
+http://GB10:8080/unitree_dual_viewer.html?single=1
+```
 
 ### Laptop: SSH tunnel and browser
 
-From the laptop, forward the viewer and both GB10 inference ports:
+From the Mac, forward the viewer and processed inference stream:
 
 ```bash
 ssh -N \
   -L 8080:127.0.0.1:8080 \
   -L 8000:127.0.0.1:8000 \
-  -L 8001:127.0.0.1:8001 \
   USER@GB10_HOST
 ```
 
 Then open:
 
 ```text
-http://127.0.0.1:8080/unitree_dual_viewer.html
-```
-
-The raw robot server defaults are:
-
-```text
-main camera:  http://0.0.0.0:8000
-chest camera: http://0.0.0.0:8001
-```
-
-Capture defaults:
-
-```text
-main pipeline=v4l2src device=/dev/video4 ... framerate=30/1
-chest pipeline=v4l2src device=/dev/videoX ... framerate=30/1
-model=none
-imgsz=320
-conf=0.35
-infer_every=1
-jpeg_quality=60
-max_det=20
-opencv_threads=16
-torch_threads=16 (only used when MODEL is not none)
-stream_fps=0 (unbounded; sends each new JPEG immediately)
-host=0.0.0.0
-port=8000
-```
-
-Useful overrides:
-
-```bash
-CHEST_PORT=8002 ./scripts/run_yolo_stream.sh
-MAIN_DEVICE=video0 CHEST_DEVICE=video1 ./scripts/run_yolo_stream.sh
-DUAL_STREAMS=0 ./scripts/run_yolo_stream.sh
-PIPELINE="v4l2src device=/dev/video0 ..." ./scripts/run_yolo_stream.sh
-```
-
-Useful endpoints:
-
-```text
-/stream.mjpg
-/snapshot.jpg
-/capture
-/detections
-/tracks
-/health
-```
-
-The viewer can also point to explicit stream URLs:
-
-```bash
-MAIN_STREAM_URL=http://127.0.0.1:8000/stream.mjpg \
-CHEST_STREAM_URL=http://127.0.0.1:8001/stream.mjpg \
-./scripts/run_dual_camera_viewer.sh
-```
-
-If `/snapshot.jpg` returns `503`, the camera loop has not produced a decoded frame yet. Check the GStreamer pipeline and make sure nothing drops RTP/H264 packets before `rtph264depay`.
-
-The setup script uses `uv venv --system-site-packages .venv`, so the project keeps the standard `.venv` name while still seeing Ubuntu's system OpenCV with GStreamer enabled. It also removes pip OpenCV wheels because those usually do not include GStreamer.
-
-### Map camera processes to robot video devices
-
-`videohub_pc4` and `videohub_pc4_ch` are process names, not `/dev` nodes. Inspect the file descriptors held by the chest process:
-
-```bash
-sudo ./scripts/list_camera_bindings.sh videohub_pc4_ch
-```
-
-For a direct one-liner on the robot:
-
-```bash
-for pid in $(pgrep -x videohub_pc4_ch); do echo "PID $pid"; sudo ls -l "/proc/$pid/fd" | grep -E -- '/dev/video[0-9]+'; done
-```
-
-Then bind the discovered node explicitly:
-
-```bash
-MAIN_DEVICE=/dev/video4 CHEST_DEVICE=/dev/videoX ./scripts/run_robot_vision_server.sh
-```
-
-The launch scripts inspect a running videohub process first. They retain `/dev/video4` as the known main-camera fallback, but refuse to guess the chest node.
-
-If YOLO is enabled with `MODEL=...`, trade a little detector update rate for more camera/browser FPS without editing files:
-
-```bash
-INFER_EVERY=2 JPEG_QUALITY=55 ./scripts/run_yolo_stream.sh
-```
-
-If `/dev/video0` is not the RealSense RGB device, find the correct node and override it:
-
-```bash
-v4l2-ctl --list-devices
-DEVICE=/dev/videoX ./scripts/run_realsense_stream.sh
-```
-
-The old Unitree multimedia UDP path is still available, but it is expected to be capped around 15 FPS at this resolution:
-
-```bash
-./scripts/run_unitree_udp_stream.sh
+http://127.0.0.1:8080/unitree_dual_viewer.html?single=1
 ```
 
 ## Plushie detector pipeline
@@ -304,6 +213,7 @@ Training artifacts and pretrained model downloads are intentionally rooted under
 
 ```text
 models/pretrained/yolo11x.pt
+models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt
 models/plushie_detector/yolo11x_plushie/weights/best.pt
 models/plushie_detector/yolo11x_plushie/weights/last.pt
 ```
