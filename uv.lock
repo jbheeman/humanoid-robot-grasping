@@ -708,7 +708,7 @@ requires-dist = [
     { name = "torch", specifier = ">=2.2" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "ultralytics", specifier = ">=8.2" },
-    { name = "unitree-sdk2py", editable = "../unitree_sdk2_python" },
+    { name = "unitree-sdk2py", editable = "../repos/unitree_sdk2_python" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.30" },
 ]
 provides-extras = ["vision-server", "loco"]
@@ -2691,7 +2691,7 @@ wheels = [
 [[package]]
 name = "unitree-sdk2py"
 version = "1.0.1"
-source = { editable = "../unitree_sdk2_python" }
+source = { editable = "../repos/unitree_sdk2_python" }
 dependencies = [
     { name = "cyclonedds" },
     { name = "numpy" },

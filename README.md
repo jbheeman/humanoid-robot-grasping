@@ -13,7 +13,7 @@ This installs the runtime dependencies used by the current branch, including vis
 
 If `uv sync` fails while building `cyclonedds`, install/configure the CycloneDDS system library on the robot-network host first, then rerun `uv sync`. The Python package needs the C library visible through `CYCLONEDDS_HOME` or `CMAKE_PREFIX_PATH`.
 
-Loco commands are run from the server that is connected to the robot network, not necessarily on the robot itself. Pass the robot LAN IP to `uv run loco`. The local editable `unitree-sdk2py==1.0.1` checkout must exist on that server at `../unitree_sdk2_python` relative to this project. For example, if the server checkout is `/home/neel/humanoid-robot-grasping`, uv expects the SDK at `/home/neel/unitree_sdk2_python`. The robot SSH target (for example `unitree@ubuntu`) is separate from this local Python dependency path.
+Loco commands are run from the server that is connected to the robot network, not necessarily on the robot itself. Pass the robot LAN IP to `uv run loco`. The local editable `unitree-sdk2py==1.0.1` checkout must exist on that server at `../repos/unitree_sdk2_python` relative to this project. For example, if the server checkout is `/home/neel/Documents/project`, uv expects the SDK at `/home/neel/Documents/repos/unitree_sdk2_python`. The robot SSH target (for example `unitree@ubuntu`) is separate from this local Python dependency path.
 
 ```bash
 uv sync

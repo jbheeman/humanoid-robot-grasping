@@ -44,4 +44,4 @@ package = true
 default-groups = ["dev", "loco"]
 
 [tool.uv.sources]
-unitree-sdk2py = { path = "../unitree_sdk2_python", editable = true }
+unitree-sdk2py = { path = "../repos/unitree_sdk2_python", editable = true }
