@@ -6,15 +6,15 @@ From the project root:
 
 ```bash
 git switch aarav
-uv sync --group vision --no-sources
+./scripts/setup_vision_server.sh
 ```
 
 For the headless camera/FastAPI vision server on the G1, prefer `./scripts/setup_vision_server.sh`; it installs the `vision` group without CycloneDDS, Unitree SDK2 Python, Torch, Ultralytics, or CUDA packages. Install the other groups only where needed:
 
 ```bash
-uv sync --group vision --no-sources
-uv sync --group train --no-sources
-./scripts/ensure_unitree_sdk_path.sh && uv sync --group loco
+./scripts/setup_vision_server.sh
+uv sync --only-group train --locked
+./scripts/ensure_unitree_sdk_path.sh && uv sync --only-group loco --locked
 ```
 
 If loco setup fails while building `cyclonedds`, install/configure the CycloneDDS system library on the robot-network host first, then rerun the loco sync. The Python package needs the C library visible through `CYCLONEDDS_HOME` or `CMAKE_PREFIX_PATH`.
@@ -23,7 +23,7 @@ Loco commands are run from the server that is connected to the robot network, no
 
 ```bash
 ./scripts/ensure_unitree_sdk_path.sh
-uv sync --group loco
+uv sync --only-group loco --locked
 uv run loco <robot_lan_ip> stop_move
 ```
 
@@ -75,7 +75,7 @@ rsync -av \
 Then run from the remote host (required for G1 UDP/GStreamer):
 
 ```bash
-ssh <robot_ssh_user>@<robot_ssh_host> "cd /home/<robot_ssh_user>/project && uv sync --group vision --no-sources && uv run vision <g1_ip> --no-ssh"
+ssh <robot_ssh_user>@<robot_ssh_host> "cd /home/<robot_ssh_user>/project && ./scripts/setup_vision_server.sh && uv run vision <g1_ip> --no-ssh"
 ```
 
 Optional: track headless for testing:
@@ -125,7 +125,7 @@ uv run python scripts/run_manual_tracker.py --camera 0 --output runs/object_manu
 
 ## Vision FastAPI stream
 
-For low-latency browser preview, use the headless FastAPI MJPEG server instead of Streamlit. By default it reads the direct RealSense/V4L2 color stream, scales to `640x360`, and serves the latest JPEG at `/stream.mjpg`. YOLO inference is optional and requires `uv sync --group vision --group train --no-sources`.
+For low-latency browser preview, use the headless FastAPI MJPEG server instead of Streamlit. By default it reads the direct RealSense/V4L2 color stream, scales to `640x360`, and serves the latest JPEG at `/stream.mjpg`. YOLO inference is optional and requires `uv sync --only-group vision --only-group train --locked`.
 
 On the Ubuntu vision box, run this once:
 

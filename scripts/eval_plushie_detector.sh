@@ -17,7 +17,7 @@ if [[ -x "${VENV_DIR}/bin/yolo" ]]; then
 elif command -v yolo >/dev/null 2>&1; then
   YOLO_BIN="$(command -v yolo)"
 else
-  echo "Could not find the yolo CLI. Run uv sync --group train --no-sources first."
+  echo "Could not find the yolo CLI. Run uv sync --only-group train --locked first."
   exit 1
 fi
 

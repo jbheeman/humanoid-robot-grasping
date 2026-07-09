@@ -621,21 +621,6 @@ dependencies = [
     { name = "tqdm" },
 ]
 
-[package.optional-dependencies]
-loco = [
-    { name = "cyclonedds" },
-    { name = "unitree-sdk2py" },
-]
-train = [
-    { name = "opencv-python" },
-    { name = "torch" },
-    { name = "ultralytics" },
-]
-vision = [
-    { name = "fastapi" },
-    { name = "uvicorn", extra = ["standard"] },
-]
-
 [package.dev-dependencies]
 loco = [
     { name = "cyclonedds" },
@@ -653,19 +638,11 @@ vision = [
 
 [package.metadata]
 requires-dist = [
-    { name = "cyclonedds", marker = "extra == 'loco'", specifier = "==0.10.2" },
-    { name = "fastapi", marker = "extra == 'vision'", specifier = ">=0.111" },
     { name = "numpy", specifier = "<2" },
-    { name = "opencv-python", marker = "extra == 'train'", specifier = ">=4.9" },
     { name = "pillow", specifier = ">=10" },
     { name = "pyyaml", specifier = ">=6" },
-    { name = "torch", marker = "extra == 'train'", specifier = ">=2.2" },
     { name = "tqdm", specifier = ">=4.66" },
-    { name = "ultralytics", marker = "extra == 'train'", specifier = ">=8.2" },
-    { name = "unitree-sdk2py", marker = "extra == 'loco'", editable = ".deps/unitree_sdk2_python" },
-    { name = "uvicorn", extras = ["standard"], marker = "extra == 'vision'", specifier = ">=0.30" },
 ]
-provides-extras = ["vision", "train", "loco"]
 
 [package.metadata.requires-dev]
 dev = []

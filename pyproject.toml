@@ -10,21 +10,6 @@ dependencies = [
     "tqdm>=4.66",
 ]
 
-[project.optional-dependencies]
-vision = [
-    "fastapi>=0.111",
-    "uvicorn[standard]>=0.30",
-]
-train = [
-    "opencv-python>=4.9",
-    "torch>=2.2",
-    "ultralytics>=8.2",
-]
-loco = [
-    "cyclonedds==0.10.2",
-    "unitree-sdk2py==1.0.1",
-]
-
 [dependency-groups]
 dev = []
 vision = [
