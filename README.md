@@ -6,13 +6,15 @@ From the project root:
 
 ```bash
 git switch aarav
-uv sync --extra vision-server --extra vision-streamlit
+uv sync --group vision
 ```
 
-For the headless YOLO/FastAPI vision server, prefer `./scripts/setup_vision_server.sh`; it installs `.[vision-server]` without CycloneDDS or Unitree SDK2 Python. Install loco/DDS dependencies only when you need robot movement or SDK2 video:
+For the headless camera/FastAPI vision server on the G1, prefer `./scripts/setup_vision_server.sh`; it installs the `vision` group without CycloneDDS, Unitree SDK2 Python, Torch, Ultralytics, or CUDA packages. Install the other groups only where needed:
 
 ```bash
-uv sync --extra loco
+uv sync --group vision
+uv sync --group train
+uv sync --group loco
 ```
 
 If loco setup fails while building `cyclonedds`, install/configure the CycloneDDS system library on the robot-network host first, then rerun the loco sync. The Python package needs the C library visible through `CYCLONEDDS_HOME` or `CMAKE_PREFIX_PATH`.
@@ -20,13 +22,13 @@ If loco setup fails while building `cyclonedds`, install/configure the CycloneDD
 Loco commands are run from the server that is connected to the robot network, not necessarily on the robot itself. Pass the robot LAN IP to `uv run loco`. The local editable `unitree-sdk2py==1.0.1` checkout must exist on that server at `../repos/unitree_sdk2_python` relative to this project. For example, if the server checkout is `/home/neel/Documents/project`, uv expects the SDK at `/home/neel/Documents/repos/unitree_sdk2_python`. The robot SSH target (for example `unitree@ubuntu`) is separate from this local Python dependency path.
 
 ```bash
-uv sync --extra loco
+uv sync --group loco
 uv run loco <robot_lan_ip> stop_move
 ```
 
 ## Vision runbook
 
-First try the SDK2 visual frame path from the machine on the robot network. This does not move the robot:
+If you need the SDK2 visual frame path, install the loco group too and run this from the machine on the robot network. This does not move the robot:
 
 ```bash
 uv run vision <g1_ip> --sdk2-video --sdk2-timeout 3
@@ -72,7 +74,7 @@ rsync -av \
 Then run from the remote host (required for G1 UDP/GStreamer):
 
 ```bash
-ssh <robot_ssh_user>@<robot_ssh_host> "cd /home/<robot_ssh_user>/project && uv sync && uv run vision <g1_ip> --no-ssh"
+ssh <robot_ssh_user>@<robot_ssh_host> "cd /home/<robot_ssh_user>/project && uv sync --group vision && uv run vision <g1_ip> --no-ssh"
 ```
 
 Optional: track headless for testing:
@@ -120,9 +122,9 @@ Example local webcam path (non-Robot testing):
 uv run python scripts/run_manual_tracker.py --camera 0 --output runs/object_manual_test
 ```
 
-## YOLO FastAPI stream
+## Vision FastAPI stream
 
-For low-latency browser preview, use the headless FastAPI MJPEG server instead of Streamlit. By default it reads the direct RealSense/V4L2 color stream at `640x480@30`, scales to `640x360`, runs YOLO, draws boxes/tracks, and serves the latest annotated JPEG at `/stream.mjpg`.
+For low-latency browser preview, use the headless FastAPI MJPEG server instead of Streamlit. By default it reads the direct RealSense/V4L2 color stream, scales to `640x360`, and serves the latest JPEG at `/stream.mjpg`. YOLO inference is optional and requires `uv sync --group vision --group train`.
 
 On the Ubuntu vision box, run this once:
 
@@ -137,11 +139,11 @@ Then start the Unitree G1 30 FPS camera stream servers:
 ./scripts/run_yolo_stream.sh
 ```
 
-By default this starts two YOLO MJPEG servers:
+By default this starts two MJPEG servers:
 
 ```text
 main camera:  http://0.0.0.0:8000  device=/dev/videohub_pc4
-chest camera: http://0.0.0.0:8001  device=/dev/videohub_pc4chest
+chest camera: http://0.0.0.0:8001  device=/dev/videohub_pc4_ch
 ```
 
 Open these from the MacBook using the Ubuntu vision box IP, for example:
@@ -155,15 +157,15 @@ The defaults are already set for the current Unitree G1 plan:
 
 ```text
 main pipeline=v4l2src device=/dev/videohub_pc4 ... framerate=30/1
-chest pipeline=v4l2src device=/dev/videohub_pc4chest ... framerate=30/1
-model=yolov8n.pt
+chest pipeline=v4l2src device=/dev/videohub_pc4_ch ... framerate=30/1
+model=none (raw camera stream; set MODEL=... only after installing the train group)
 imgsz=320
 conf=0.35
 infer_every=1
 jpeg_quality=60
 max_det=20
 opencv_threads=16
-torch_threads=16
+torch_threads=16 (only used when MODEL is not none)
 stream_fps=0 (unbounded; sends each new JPEG immediately)
 host=0.0.0.0
 port=8000
@@ -189,11 +191,11 @@ Useful endpoints:
 /health
 ```
 
-If `/snapshot.jpg` returns `503` and the server log never prints `Loading YOLO model`, the camera loop has not produced a decoded frame yet. Check the GStreamer pipeline and make sure nothing drops RTP/H264 packets before `rtph264depay`.
+If `/snapshot.jpg` returns `503`, the camera loop has not produced a decoded frame yet. Check the GStreamer pipeline and make sure nothing drops RTP/H264 packets before `rtph264depay`.
 
 The setup script uses `uv venv --system-site-packages .venv`, so the project keeps the standard `.venv` name while still seeing Ubuntu's system OpenCV with GStreamer enabled. It also removes pip OpenCV wheels because those usually do not include GStreamer.
 
-To trade a little detector update rate for more camera/browser FPS without editing files:
+If YOLO is enabled with `MODEL=...`, trade a little detector update rate for more camera/browser FPS without editing files:
 
 ```bash
 INFER_EVERY=2 JPEG_QUALITY=55 ./scripts/run_yolo_stream.sh

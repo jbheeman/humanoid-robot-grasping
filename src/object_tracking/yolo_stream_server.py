@@ -16,10 +16,8 @@ from typing import Optional
 
 import cv2
 import numpy as np
-import torch
 from fastapi import FastAPI
 from fastapi.responses import HTMLResponse, Response, StreamingResponse
-from ultralytics import YOLO
 
 from object_tracking.simple_tracker import SimpleTracker
 
@@ -70,7 +68,7 @@ class SharedState:
     camera_pipeline: str = DEFAULT_PIPELINE
     camera_name: str = DEFAULT_CAMERA_NAME
     capture_backend: str = ""
-    model_name: str = "yolov8n.pt"
+    model_name: str = "none"
     opencv_threads: int = 0
     torch_threads: int = 0
     capture_session_dir: Optional[Path] = None
@@ -83,6 +81,34 @@ frame_ready = threading.Condition(state.lock)
 jpeg_ready = threading.Condition(state.lock)
 tracker = SimpleTracker()
 app = FastAPI()
+
+
+def yolo_enabled(model_name: str) -> bool:
+    return model_name.strip().lower() not in {"", "none", "off", "disabled"}
+
+
+def optional_torch() -> Any | None:
+    try:
+        import torch
+    except Exception:
+        return None
+    return torch
+
+
+def torch_cuda_available() -> bool:
+    torch = optional_torch()
+    return bool(torch is not None and torch.cuda.is_available())
+
+
+def require_training_stack() -> tuple[Any, Any]:
+    try:
+        import torch
+        from ultralytics import YOLO
+    except Exception as exc:
+        raise SystemExit(
+            "YOLO inference requires the train dependency group. Run: uv sync --group vision --group train"
+        ) from exc
+    return torch, YOLO
 
 
 def opencv_gstreamer_enabled() -> bool:
@@ -228,22 +254,29 @@ def make_detection(
     }
 
 
-def configure_runtime(opencv_threads: int, torch_threads: int) -> None:
+def configure_runtime(opencv_threads: int, torch_threads: int, needs_torch: bool) -> None:
     if opencv_threads > 0:
         cv2.setNumThreads(opencv_threads)
-    if torch_threads > 0:
-        torch.set_num_threads(torch_threads)
-        try:
-            torch.set_num_interop_threads(max(1, min(4, torch_threads)))
-        except RuntimeError:
-            pass
+
+    torch_threads_actual = 0
+    if needs_torch:
+        torch = optional_torch()
+        if torch is not None:
+            if torch_threads > 0:
+                torch.set_num_threads(torch_threads)
+                try:
+                    torch.set_num_interop_threads(max(1, min(4, torch_threads)))
+                except RuntimeError:
+                    pass
+            torch_threads_actual = torch.get_num_threads()
 
     with state.lock:
         state.opencv_threads = cv2.getNumThreads()
-        state.torch_threads = torch.get_num_threads()
+        state.torch_threads = torch_threads_actual
 
     print("OpenCV threads:", cv2.getNumThreads())
-    print("Torch threads:", torch.get_num_threads())
+    if needs_torch:
+        print("Torch threads:", torch_threads_actual if torch_threads_actual else "unavailable")
 
 
 def camera_loop(pipeline: str, camera_name: str) -> None:
@@ -305,6 +338,7 @@ def inference_loop(
     infer_every: int,
     max_det: int,
 ) -> None:
+    torch, YOLO = require_training_stack()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Loading YOLO model:", model_name)
     print("YOLO device:", device)
@@ -432,7 +466,7 @@ def index() -> str:
     return """
     <html>
       <head>
-        <title>Unitree YOLO Stream</title>
+        <title>Unitree G1 Vision Stream</title>
         <style>
           body { font-family: Arial, sans-serif; background: #111; color: #eee; }
           img { max-width: 100%; height: auto; border: 2px solid #444; }
@@ -442,8 +476,8 @@ def index() -> str:
       </head>
       <body>
         <div class="wrap">
-          <h1>Unitree G1 YOLO Stream</h1>
-          <p>Annotated stream from Ubuntu vision server.</p>
+          <h1>Unitree G1 Vision Stream</h1>
+          <p>Camera stream from Ubuntu vision server.</p>
           <img src="/stream.mjpg" />
           <p>
             Snapshot: <a href="/snapshot.jpg">/snapshot.jpg</a><br/>
@@ -476,7 +510,7 @@ def health() -> dict[str, object]:
             "capture_backend": state.capture_backend,
             "camera_name": state.camera_name,
             "camera_pipeline": state.camera_pipeline,
-            "torch_cuda": torch.cuda.is_available(),
+            "torch_cuda": torch_cuda_available(),
             "stream_fps_limit": state.stream_fps_limit,
             "model_name": state.model_name,
             "opencv_threads": state.opencv_threads,
@@ -615,10 +649,10 @@ def stream() -> StreamingResponse:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Serve a low-latency YOLO MJPEG stream from a GStreamer camera source.")
+    parser = argparse.ArgumentParser(description="Serve a low-latency MJPEG stream from a GStreamer camera source.")
     parser.add_argument("--pipeline", default=DEFAULT_PIPELINE)
     parser.add_argument("--camera-name", default=DEFAULT_CAMERA_NAME)
-    parser.add_argument("--model", default="yolov8n.pt")
+    parser.add_argument("--model", default="none", help="YOLO model path/name. Use none to disable detector dependencies.")
     parser.add_argument("--imgsz", type=int, default=320)
     parser.add_argument("--conf", type=float, default=0.35)
     parser.add_argument("--infer-every", type=int, default=1)
@@ -652,7 +686,8 @@ def assert_port_available(host: str, port: int) -> None:
 def main() -> None:
     args = build_parser().parse_args()
     assert_port_available(args.host, args.port)
-    configure_runtime(args.opencv_threads, args.torch_threads)
+    detector_enabled = yolo_enabled(args.model)
+    configure_runtime(args.opencv_threads, args.torch_threads, detector_enabled)
 
     with state.lock:
         state.stream_fps_limit = max(args.stream_fps, 0.0)
@@ -662,24 +697,27 @@ def main() -> None:
         args=(args.pipeline, args.camera_name),
         daemon=True,
     )
-    inference_worker = threading.Thread(
-        target=inference_loop,
-        args=(
-            args.model,
-            args.imgsz,
-            args.conf,
-            args.infer_every,
-            args.max_det,
-        ),
-        daemon=True,
-    )
     jpeg_worker = threading.Thread(
         target=jpeg_loop,
         args=(args.jpeg_quality,),
         daemon=True,
     )
     camera_worker.start()
-    inference_worker.start()
+    if detector_enabled:
+        inference_worker = threading.Thread(
+            target=inference_loop,
+            args=(
+                args.model,
+                args.imgsz,
+                args.conf,
+                args.infer_every,
+                args.max_det,
+            ),
+            daemon=True,
+        )
+        inference_worker.start()
+    else:
+        print("YOLO detector disabled; serving camera frames only.")
     jpeg_worker.start()
 
     import uvicorn

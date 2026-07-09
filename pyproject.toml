@@ -5,21 +5,20 @@ description = "Initial plush object tracking utilities for Unitree G1 project."
 requires-python = ">=3.10"
 dependencies = [
     "numpy<2",
-    "opencv-python>=4.9",
     "pillow>=10",
     "pyyaml>=6",
     "tqdm>=4.66",
 ]
 
 [project.optional-dependencies]
-vision-server = [
+vision = [
     "fastapi>=0.111",
-    "torch>=2.2",
-    "ultralytics>=8.2",
     "uvicorn[standard]>=0.30",
 ]
-vision-streamlit = [
-    "streamlit>=1.36",
+train = [
+    "opencv-python>=4.9",
+    "torch>=2.2",
+    "ultralytics>=8.2",
 ]
 loco = [
     "cyclonedds==0.10.2",
@@ -28,6 +27,15 @@ loco = [
 
 [dependency-groups]
 dev = []
+vision = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+]
+train = [
+    "opencv-python>=4.9",
+    "torch>=2.2",
+    "ultralytics>=8.2",
+]
 loco = [
     "cyclonedds==0.10.2",
     "unitree-sdk2py==1.0.1",

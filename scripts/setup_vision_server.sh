@@ -18,8 +18,8 @@ uv venv --system-site-packages --allow-existing "${VENV_DIR}"
 # shellcheck disable=SC1091
 source "${VENV_DIR}/bin/activate"
 
-echo "Installing FastAPI/YOLO server dependencies"
-uv pip install -e ".[vision-server]"
+echo "Installing vision server dependencies"
+uv sync --group vision --no-default-groups
 
 echo "Removing pip OpenCV wheels so the venv uses Ubuntu system OpenCV/GStreamer"
 uv pip uninstall opencv-python opencv-contrib-python opencv-python-headless || true
@@ -49,14 +49,12 @@ for line in cv2.getBuildInformation().splitlines():
 
 if gstreamer_line is None or "YES" not in gstreamer_line.upper():
     raise SystemExit(
-        "OpenCV imported, but GStreamer is not enabled. The YOLO stream server needs "
+        "OpenCV imported, but GStreamer is not enabled. The vision stream server needs "
         "Ubuntu's GStreamer-enabled OpenCV, not the pip OpenCV wheel."
     )
 
 try:
     import fastapi  # noqa: F401
-    import torch  # noqa: F401
-    import ultralytics  # noqa: F401
     import uvicorn  # noqa: F401
 except Exception as exc:
     raise SystemExit(f"Vision server dependency import failed: {exc}")
