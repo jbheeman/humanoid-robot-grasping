@@ -9,16 +9,12 @@ git switch aarav
 uv sync
 ```
 
-This installs vision plus the Unitree SDK2 Python runtime. `uv sync --extra loco` is still accepted for the old workflow, but the SDK is now a normal dependency so plain `uv sync` will not prune it:
-
-```bash
-uv sync --extra loco
-```
+This installs the runtime dependencies used by the current branch, including OpenCV, CycloneDDS, Unitree SDK2 Python, and the copied SDK examples. `uv sync --extra loco` is still accepted for the old workflow, but it is no longer needed.
 
 Loco commands are run from the server that is connected to the robot network, not necessarily on the robot itself. Pass the robot LAN IP to `uv run loco`. The local editable `unitree-sdk2py==1.0.1` checkout must exist on that server at `../unitree_sdk2_python` relative to this project. For example, if the server checkout is `/home/neel/humanoid-robot-grasping`, uv expects the SDK at `/home/neel/unitree_sdk2_python`. The robot SSH target (for example `unitree@ubuntu`) is separate from this local Python dependency path.
 
 ```bash
-uv sync --extra loco
+uv sync
 uv run loco <robot_lan_ip> stop_move
 ```
 
