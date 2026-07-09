@@ -6,17 +6,21 @@ From the project root:
 
 ```bash
 git switch aarav
-uv sync
+uv sync --extra vision-server --extra vision-streamlit
 ```
 
-This installs the runtime dependencies used by the current branch, including vision, YOLO/FastAPI streaming, training helpers, CycloneDDS, and Unitree SDK2 Python. `uv sync --extra loco` and `uv sync --extra vision-server` are still accepted for old workflows, but they are no longer needed.
+For the headless YOLO/FastAPI vision server, prefer `./scripts/setup_vision_server.sh`; it installs `.[vision-server]` without CycloneDDS or Unitree SDK2 Python. Install loco/DDS dependencies only when you need robot movement or SDK2 video:
 
-If `uv sync` fails while building `cyclonedds`, install/configure the CycloneDDS system library on the robot-network host first, then rerun `uv sync`. The Python package needs the C library visible through `CYCLONEDDS_HOME` or `CMAKE_PREFIX_PATH`.
+```bash
+uv sync --extra loco
+```
+
+If loco setup fails while building `cyclonedds`, install/configure the CycloneDDS system library on the robot-network host first, then rerun the loco sync. The Python package needs the C library visible through `CYCLONEDDS_HOME` or `CMAKE_PREFIX_PATH`.
 
 Loco commands are run from the server that is connected to the robot network, not necessarily on the robot itself. Pass the robot LAN IP to `uv run loco`. The local editable `unitree-sdk2py==1.0.1` checkout must exist on that server at `../repos/unitree_sdk2_python` relative to this project. For example, if the server checkout is `/home/neel/Documents/project`, uv expects the SDK at `/home/neel/Documents/repos/unitree_sdk2_python`. The robot SSH target (for example `unitree@ubuntu`) is separate from this local Python dependency path.
 
 ```bash
-uv sync
+uv sync --extra loco
 uv run loco <robot_lan_ip> stop_move
 ```
 
