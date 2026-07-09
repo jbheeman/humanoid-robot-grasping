@@ -58,4 +58,4 @@ build-backend = "setuptools.build_meta"
 package = true
 
 [tool.uv.sources]
-unitree-sdk2py = { path = "../repos/unitree_sdk2_python", editable = true }
+unitree-sdk2py = { path = ".deps/unitree_sdk2_python", editable = true }

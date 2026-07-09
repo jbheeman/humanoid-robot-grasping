@@ -19,7 +19,7 @@ uv venv --system-site-packages --allow-existing "${VENV_DIR}"
 source "${VENV_DIR}/bin/activate"
 
 echo "Installing vision server dependencies"
-uv sync --group vision --no-default-groups
+uv sync --group vision --no-default-groups --no-sources
 
 echo "Removing pip OpenCV wheels so the venv uses Ubuntu system OpenCV/GStreamer"
 uv pip uninstall opencv-python opencv-contrib-python opencv-python-headless || true

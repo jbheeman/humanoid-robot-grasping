@@ -662,7 +662,7 @@ requires-dist = [
     { name = "torch", marker = "extra == 'train'", specifier = ">=2.2" },
     { name = "tqdm", specifier = ">=4.66" },
     { name = "ultralytics", marker = "extra == 'train'", specifier = ">=8.2" },
-    { name = "unitree-sdk2py", marker = "extra == 'loco'", editable = "../repos/unitree_sdk2_python" },
+    { name = "unitree-sdk2py", marker = "extra == 'loco'", editable = ".deps/unitree_sdk2_python" },
     { name = "uvicorn", extras = ["standard"], marker = "extra == 'vision'", specifier = ">=0.30" },
 ]
 provides-extras = ["vision", "train", "loco"]
@@ -671,7 +671,7 @@ provides-extras = ["vision", "train", "loco"]
 dev = []
 loco = [
     { name = "cyclonedds", specifier = "==0.10.2" },
-    { name = "unitree-sdk2py", editable = "../repos/unitree_sdk2_python" },
+    { name = "unitree-sdk2py", editable = ".deps/unitree_sdk2_python" },
 ]
 train = [
     { name = "opencv-python", specifier = ">=4.9" },
@@ -2009,7 +2009,7 @@ wheels = [
 [[package]]
 name = "unitree-sdk2py"
 version = "1.0.1"
-source = { editable = "../repos/unitree_sdk2_python" }
+source = { editable = ".deps/unitree_sdk2_python" }
 dependencies = [
     { name = "cyclonedds" },
     { name = "numpy" },

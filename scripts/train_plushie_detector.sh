@@ -8,7 +8,7 @@ cd "${ROOT_DIR}"
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
   echo "Missing ${VENV_DIR}. Run this first:"
-  echo "  uv sync --group train"
+  echo "  uv sync --group train --no-sources"
   exit 1
 fi
 

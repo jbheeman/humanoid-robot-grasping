@@ -5,6 +5,7 @@ env/
 __pycache__/
 *.py[cod]
 *.egg-info/
+.deps/
 
 # Local datasets, model artifacts, and training outputs.
 data/
