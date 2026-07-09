@@ -58,12 +58,26 @@ cleanup() {
 }
 trap cleanup EXIT INT TERM
 
+stop_processes() {
+  local pattern="$1"
+  local attempt
+
+  pkill -TERM -f "${pattern}" >/dev/null 2>&1 || true
+  for attempt in {1..20}; do
+    if ! pgrep -f "${pattern}" >/dev/null 2>&1; then
+      return 0
+    fi
+    sleep 0.1
+  done
+  pkill -KILL -f "${pattern}" >/dev/null 2>&1 || true
+}
+
 cd "${ROOT_DIR}"
 
 if [[ "${STOP_EXISTING}" == "1" ]]; then
-  pkill -f "object_tracking.yolo_stream_server" >/dev/null 2>&1 || true
-  pkill -f "http.server ${VIEWER_PORT}.*vision_viewer" >/dev/null 2>&1 || true
-  sleep 0.5
+  stop_processes "[o]bject_tracking.yolo_stream_server"
+  stop_processes "[h]ttp.server ${VIEWER_PORT}.*vision_viewer"
+  stop_processes "[g]st-launch-1.0 -q udpsrc address=0.0.0.0 port=${UDP_PORT}"
 fi
 
 echo "GB10 Unitree receiver: udp://0.0.0.0:${UDP_PORT}"
@@ -86,6 +100,7 @@ echo "Processed stream:      http://${HOST}:${PORT}/stream.mjpg"
   --host "${HOST}" \
   --port "${PORT}" \
   --stream-fps "${STREAM_FPS}" \
+  --expected-fps "${VISION_FPS}" \
   --capture-backend "${CAPTURE_BACKEND}" \
   "$@" &
 server_pid=$!

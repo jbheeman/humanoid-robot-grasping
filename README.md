@@ -140,6 +140,8 @@ CLIENT_IP=192.168.0.66 ./scripts/run_robot_vision_server.sh
 
 The default source is multicast `230.1.1.1:1720` on `wlan0`; the default destination port is UDP `5600`. Override `ROBOT_INTERFACE`, `MULTICAST_GROUP`, `MULTICAST_PORT`, or `CLIENT_PORT` only when the robot network differs.
 
+The relay does not decode, resample, or rewrite frame timing. Camera mode remains owned by `videohub_pc4`; the GB10 `/health` endpoint verifies that the received stream meets the expected 30 FPS target.
+
 ### GB10: verify relay
 
 Run the one-time GB10 setup:
@@ -182,6 +184,8 @@ http://GB10:8000/tracks
 http://GB10:8000/health
 http://GB10:8080/unitree_dual_viewer.html?single=1
 ```
+
+`/health` reports `inference_status` as `warming_up`, `ready`, or `error`, plus measured `fps`, `yolo_fps`, and `fps_target_met`. The 30 FPS health target allows normal timing jitter down to 27 FPS. Wait for inference `ready` and `fps_target_met: true` before evaluating detections; startup performs an explicit CUDA warmup and records any inference-thread exception instead of failing silently.
 
 ### Laptop: SSH tunnel and browser
 

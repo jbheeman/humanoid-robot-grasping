@@ -8,6 +8,7 @@ import socket
 import subprocess
 import threading
 import time
+import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -65,10 +66,14 @@ class SharedState:
     yolo_fps: float = 0.0
     encode_fps: float = 0.0
     stream_fps_limit: float = 0.0
+    expected_fps: float = 0.0
     camera_pipeline: str = DEFAULT_PIPELINE
     camera_name: str = DEFAULT_CAMERA_NAME
     capture_backend: str = ""
     model_name: str = "none"
+    inference_status: str = "disabled"
+    inference_error: Optional[str] = None
+    inference_warmup_seconds: float = 0.0
     opencv_threads: int = 0
     torch_threads: int = 0
     capture_session_dir: Optional[Path] = None
@@ -355,7 +360,7 @@ def camera_loop(pipeline: str, camera_name: str, capture_backend: str) -> None:
             frame_ready.notify_all()
 
 
-def inference_loop(
+def _inference_loop(
     model_name: str,
     imgsz: int,
     conf: float,
@@ -380,6 +385,26 @@ def inference_loop(
         model.fuse()
     except Exception as exc:
         print(f"YOLO fuse skipped: {exc}")
+
+    warmup_started = time.perf_counter()
+    warmup_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
+    print("Warming up YOLO inference...")
+    with torch.inference_mode():
+        model.predict(
+            source=warmup_frame,
+            imgsz=imgsz,
+            conf=conf,
+            verbose=False,
+            device=device,
+            max_det=max_det,
+        )
+    if device == "cuda":
+        torch.cuda.synchronize()
+    warmup_seconds = time.perf_counter() - warmup_started
+    with state.lock:
+        state.inference_status = "ready"
+        state.inference_warmup_seconds = warmup_seconds
+    print(f"YOLO inference ready after {warmup_seconds:.2f}s")
 
     last_processed_frame_id = 0
     last_yolo_time = time.time()
@@ -436,6 +461,28 @@ def inference_loop(
             if yolo_fps is not None:
                 state.yolo_fps = yolo_fps
             frame_ready.notify_all()
+
+
+def inference_loop(
+    model_name: str,
+    imgsz: int,
+    conf: float,
+    infer_every: int,
+    max_det: int,
+) -> None:
+    with state.lock:
+        state.inference_status = "warming_up"
+        state.inference_error = None
+
+    try:
+        _inference_loop(model_name, imgsz, conf, infer_every, max_det)
+    except Exception as exc:
+        error = f"{type(exc).__name__}: {exc}"
+        with state.lock:
+            state.inference_status = "error"
+            state.inference_error = error
+        print(f"ERROR: YOLO inference worker failed: {error}")
+        traceback.print_exc()
 
 
 def jpeg_loop(jpeg_quality: int) -> None:
@@ -519,8 +566,15 @@ def index() -> str:
 @app.get("/health")
 def health() -> dict[str, object]:
     with state.lock:
+        fps_target_met = state.expected_fps <= 0 or (
+            state.fps > 0 and state.fps >= state.expected_fps * 0.9
+        )
         return {
-            "ok": state.jpeg_bytes is not None,
+            "ok": (
+                state.jpeg_bytes is not None
+                and state.inference_status in {"disabled", "ready"}
+                and fps_target_met
+            ),
             "frame_count": state.frame_count,
             "jpeg_frame_id": state.jpeg_frame_id,
             "yolo_count": state.yolo_count,
@@ -536,7 +590,12 @@ def health() -> dict[str, object]:
             "camera_pipeline": state.camera_pipeline,
             "torch_cuda": torch_cuda_available(),
             "stream_fps_limit": state.stream_fps_limit,
+            "expected_fps": state.expected_fps,
+            "fps_target_met": fps_target_met,
             "model_name": state.model_name,
+            "inference_status": state.inference_status,
+            "inference_error": state.inference_error,
+            "inference_warmup_seconds": state.inference_warmup_seconds,
             "opencv_threads": state.opencv_threads,
             "torch_threads": state.torch_threads,
         }
@@ -693,6 +752,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="Maximum MJPEG response FPS. Use 0 for unbounded/latest-frame streaming.",
     )
     parser.add_argument(
+        "--expected-fps",
+        type=float,
+        default=0.0,
+        help="Expected source FPS for health readiness. Allows a 10 percent tolerance; use 0 to disable.",
+    )
+    parser.add_argument(
         "--capture-backend",
         choices=("auto", "opencv", "gst-launch"),
         default="auto",
@@ -721,6 +786,9 @@ def main() -> None:
 
     with state.lock:
         state.stream_fps_limit = max(args.stream_fps, 0.0)
+        state.expected_fps = max(args.expected_fps, 0.0)
+        state.inference_status = "warming_up" if detector_enabled else "disabled"
+        state.inference_error = None
 
     camera_worker = threading.Thread(
         target=camera_loop,
