@@ -55,7 +55,7 @@ if command -v lsof >/dev/null 2>&1; then
       if (pid != "" && cmd != "" && file != "") {
         print "  " cmd " (" pid ") -> " file;
       }
-    }'
+    }' || true
 else
   echo "lsof missing: install lsof for a one-shot owner map"
 fi
