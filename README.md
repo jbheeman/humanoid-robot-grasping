@@ -166,6 +166,12 @@ The default checkpoint is the fine-tuned plush-animal model:
 models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt
 ```
 
+The default tracking profile preserves the robot feed at `1280x720`, processes every frame, and serves the annotated stream at 30 FPS with JPEG quality 75. Override it only when bandwidth or inference load requires it:
+
+```bash
+VISION_WIDTH=640 VISION_HEIGHT=360 VISION_FPS=30 JPEG_QUALITY=60 ./scripts/run_gb10_vision_server.sh
+```
+
 The GB10 uses external `gst-launch-1.0` for decoding, so pip OpenCV does not need GStreamer support. Useful endpoints are:
 
 ```text

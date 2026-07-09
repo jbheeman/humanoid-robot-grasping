@@ -16,14 +16,17 @@ UDP_PORT="${UDP_PORT:-5600}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
 VIEWER_PORT="${VIEWER_PORT:-8080}"
+VISION_WIDTH="${VISION_WIDTH:-1280}"
+VISION_HEIGHT="${VISION_HEIGHT:-720}"
+VISION_FPS="${VISION_FPS:-30}"
 IMGSZ="${IMGSZ:-960}"
 CONF="${CONF:-0.35}"
 INFER_EVERY="${INFER_EVERY:-1}"
-JPEG_QUALITY="${JPEG_QUALITY:-60}"
+JPEG_QUALITY="${JPEG_QUALITY:-75}"
 MAX_DET="${MAX_DET:-20}"
 OPENCV_THREADS="${OPENCV_THREADS:-16}"
 TORCH_THREADS="${TORCH_THREADS:-16}"
-STREAM_FPS="${STREAM_FPS:-0}"
+STREAM_FPS="${STREAM_FPS:-${VISION_FPS}}"
 CAPTURE_BACKEND="${CAPTURE_BACKEND:-gst-launch}"
 STOP_EXISTING="${STOP_EXISTING:-1}"
 
@@ -46,7 +49,7 @@ for plugin in "${required_plugins[@]}"; do
   fi
 done
 
-PIPELINE="${PIPELINE:-udpsrc address=0.0.0.0 port=${UDP_PORT} buffer-size=1048576 ! application/x-rtp,media=video,encoding-name=H264,clock-rate=90000 ! queue ! rtpjitterbuffer latency=20 drop-on-latency=true ! rtph264depay ! h264parse ! avdec_h264 max-threads=8 ! videoconvert ! videoscale ! video/x-raw,width=640,height=360,format=BGR ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! appsink sync=false drop=true max-buffers=1}"
+PIPELINE="${PIPELINE:-udpsrc address=0.0.0.0 port=${UDP_PORT} buffer-size=1048576 ! application/x-rtp,media=video,encoding-name=H264,clock-rate=90000 ! queue ! rtpjitterbuffer latency=20 drop-on-latency=true ! rtph264depay ! h264parse ! avdec_h264 max-threads=8 ! videoconvert ! videoscale ! video/x-raw,width=${VISION_WIDTH},height=${VISION_HEIGHT},format=BGR ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! appsink sync=false drop=true max-buffers=1}"
 
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
@@ -65,7 +68,9 @@ fi
 
 echo "GB10 Unitree receiver: udp://0.0.0.0:${UDP_PORT}"
 echo "YOLO model:            ${MODEL}"
-echo "Input frame rate:       source rate (unthrottled; expected 30 FPS)"
+echo "Tracking profile:       ${VISION_WIDTH}x${VISION_HEIGHT} at ${VISION_FPS} FPS"
+echo "Inference cadence:      every ${INFER_EVERY} frame(s)"
+echo "Browser JPEG quality:   ${JPEG_QUALITY}"
 echo "Processed stream:      http://${HOST}:${PORT}/stream.mjpg"
 "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
   --camera-name main \
