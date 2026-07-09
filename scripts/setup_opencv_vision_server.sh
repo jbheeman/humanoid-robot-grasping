@@ -46,10 +46,21 @@ uv venv --system-site-packages --clear --python "${SYSTEM_PYTHON}" "${VENV_DIR}"
 source "${VENV_DIR}/bin/activate"
 
 echo "Installing minimal vision runtime (no train stack)"
-uv pip install \
-  "fastapi>=0.111,<0.112" \
-  "uvicorn[standard]>=0.30,<0.31" \
+PYTHON_MAJOR="$(${SYSTEM_PYTHON} -c 'import sys; print(sys.version_info.major)')"
+PYTHON_MINOR="$(${SYSTEM_PYTHON} -c 'import sys; print(sys.version_info.minor)')"
+
+dependencies=(
+  "fastapi>=0.111,<0.112"
+  "uvicorn[standard]>=0.30,<0.31"
   "numpy<2"
+)
+
+if [[ "${PYTHON_MAJOR}" -lt 3 || ( "${PYTHON_MAJOR}" -eq 3 && "${PYTHON_MINOR}" -lt 10 ) ]]; then
+  # FastAPI/Pydantic evaluate forward references; old Python runtimes need this helper package.
+  dependencies+=("eval-type-backport")
+fi
+
+uv pip install "${dependencies[@]}"
 
 echo "Validating runtime imports"
 "${VENV_DIR}/bin/python" - <<'PY'
