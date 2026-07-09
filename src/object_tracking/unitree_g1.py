@@ -120,10 +120,29 @@ G1_ARM_FORWARD_TARGETS = {
     G1JointIndex.RightWristRoll: 0.0,
 }
 
+G1_ARM_JOINT_NAMES = {
+    G1JointIndex.LeftShoulderPitch: "left_shoulder_pitch",
+    G1JointIndex.LeftShoulderRoll: "left_shoulder_roll",
+    G1JointIndex.LeftShoulderYaw: "left_shoulder_yaw",
+    G1JointIndex.LeftElbow: "left_elbow",
+    G1JointIndex.LeftWristRoll: "left_wrist_roll",
+    G1JointIndex.RightShoulderPitch: "right_shoulder_pitch",
+    G1JointIndex.RightShoulderRoll: "right_shoulder_roll",
+    G1JointIndex.RightShoulderYaw: "right_shoulder_yaw",
+    G1JointIndex.RightElbow: "right_elbow",
+    G1JointIndex.RightWristRoll: "right_wrist_roll",
+}
+
+G1_ARM_SDK_ENABLE_INDEX = 29
+
 
 def smoothstep(value: float) -> float:
     clamped = min(max(value, 0.0), 1.0)
     return clamped * clamped * (3.0 - 2.0 * clamped)
+
+
+def clamp(value: float, low: float, high: float) -> float:
+    return min(max(value, low), high)
 
 
 @dataclass(frozen=True)
@@ -833,6 +852,13 @@ class G1LocoSdk2Client:
         hold_s: float | None = None,
         scale: float = 1.0,
         ramp_s: float = 2.0,
+        joint_targets: dict[int, float] | None = None,
+        kp: float = 25.0,
+        kd: float = 1.0,
+        max_step: float = 0.04,
+        error_tolerance: float = 0.03,
+        settle_s: float = 0.25,
+        command_name: str = "move_arms_up",
     ) -> UnitreeCommandResult:
         if scale <= 0.0 or scale > 1.0:
             raise UnitreeG1Error("move_arms_up scale must be > 0.0 and <= 1.0.")
@@ -840,6 +866,16 @@ class G1LocoSdk2Client:
             raise UnitreeG1Error("move_arms_up ramp_s must be > 0.0.")
         if hold_s is not None and hold_s < 0.0:
             raise UnitreeG1Error("move_arms_up hold_s must be >= 0.0.")
+        if kp <= 0.0:
+            raise UnitreeG1Error("arm calibration kp must be > 0.0.")
+        if kd < 0.0:
+            raise UnitreeG1Error("arm calibration kd must be >= 0.0.")
+        if max_step <= 0.0:
+            raise UnitreeG1Error("arm calibration max_step must be > 0.0.")
+        if error_tolerance <= 0.0:
+            raise UnitreeG1Error("arm calibration error_tolerance must be > 0.0.")
+        if settle_s < 0.0:
+            raise UnitreeG1Error("arm calibration settle_s must be >= 0.0.")
 
         if (
             ChannelPublisher is None
@@ -856,7 +892,7 @@ class G1LocoSdk2Client:
             )
             raise UnitreeG1Error(f"Could not import SDK2 low-level G1 DDS APIs.\nOriginal error: {detail}")
 
-        publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
+        publisher = ChannelPublisher("rt/arm_sdk", LowCmd_)
         publisher.Init()
         subscriber = ChannelSubscriber("rt/lowstate", LowState_)
         subscriber.Init(self._low_state_handler, 10)
@@ -868,58 +904,172 @@ class G1LocoSdk2Client:
             time.sleep(0.01)
 
         low_cmd = unitree_hg_msg_dds__LowCmd_()
+        motor_state_len = len(self._arm_low_state.motor_state)
+        motor_cmd_len = len(low_cmd.motor_cmd)
+        if G1_ARM_SDK_ENABLE_INDEX >= motor_cmd_len:
+            raise UnitreeG1Error(
+                f"Arm SDK enable index {G1_ARM_SDK_ENABLE_INDEX} is outside low-level command range {motor_cmd_len}."
+            )
         crc = CRC()
-        arm_joint_ids = sorted(G1_ARM_FORWARD_TARGETS)
+        base_joint_ids = sorted(G1_ARM_FORWARD_TARGETS)
+        calibration_targets = dict(joint_targets or {})
+        for joint_id in sorted(set(base_joint_ids) | set(calibration_targets)):
+            if joint_id < 0 or joint_id >= motor_state_len or joint_id >= motor_cmd_len:
+                raise UnitreeG1Error(
+                    f"Joint id {joint_id} is outside low-level motor range "
+                    f"(state={motor_state_len}, command={motor_cmd_len})."
+                )
+        controlled_joint_ids = sorted(set(base_joint_ids) | set(calibration_targets))
         start_q = {
             joint_id: float(self._arm_low_state.motor_state[joint_id].q)
-            for joint_id in arm_joint_ids
+            for joint_id in controlled_joint_ids
         }
         target_q = {
             joint_id: start_q[joint_id] + (G1_ARM_FORWARD_TARGETS[joint_id] - start_q[joint_id]) * scale
-            for joint_id in arm_joint_ids
+            for joint_id in base_joint_ids
         }
+        target_q.update(calibration_targets)
 
         control_dt = 0.02
         started_at = time.monotonic()
+        settled_since: float | None = None
+        final_errors: dict[int, float] = {}
+
+        def release_arm_sdk() -> None:
+            low_cmd.motor_cmd[G1_ARM_SDK_ENABLE_INDEX].q = 0.0
+            low_cmd.crc = crc.Crc(low_cmd)
+            for _ in range(10):
+                publisher.Write(low_cmd)
+                time.sleep(control_dt)
 
         try:
             while True:
                 elapsed = time.monotonic() - started_at
                 ratio = min(max(elapsed / ramp_s, 0.0), 1.0)
                 eased_ratio = smoothstep(ratio)
-                if hold_s is not None and elapsed >= ramp_s + hold_s:
+                current_q = {
+                    joint_id: float(self._arm_low_state.motor_state[joint_id].q)
+                    for joint_id in controlled_joint_ids
+                }
+                desired_q = {
+                    joint_id: (1.0 - eased_ratio) * start_q[joint_id] + eased_ratio * target_q[joint_id]
+                    for joint_id in controlled_joint_ids
+                }
+                final_errors = {
+                    joint_id: target_q[joint_id] - current_q[joint_id]
+                    for joint_id in controlled_joint_ids
+                }
+                max_abs_error = max((abs(error) for error in final_errors.values()), default=0.0)
+                if ratio >= 1.0 and max_abs_error <= error_tolerance:
+                    if settled_since is None:
+                        settled_since = time.monotonic()
+                else:
+                    settled_since = None
+
+                done_by_hold = hold_s is not None and elapsed >= ramp_s + hold_s
+                done_by_settle = hold_s is not None and settled_since is not None and time.monotonic() - settled_since >= settle_s
+                if done_by_hold or done_by_settle:
+                    release_arm_sdk()
                     report = {
                         "ok": True,
-                        "command": "move_arms_up",
+                        "command": command_name,
                         "scale": scale,
                         "ramp_s": ramp_s,
                         "hold_s": hold_s,
+                        "kp": kp,
+                        "kd": kd,
+                        "max_step": max_step,
+                        "error_tolerance": error_tolerance,
+                        "settle_s": settle_s,
                         "easing": "smoothstep",
-                        "joint_targets": target_q,
+                        "joint_targets": {
+                            str(joint_id): target_q[joint_id]
+                            for joint_id in controlled_joint_ids
+                        },
+                        "joint_names": {
+                            str(joint_id): G1_ARM_JOINT_NAMES.get(joint_id, f"joint_{joint_id}")
+                            for joint_id in controlled_joint_ids
+                        },
+                        "publisher_topic": "rt/arm_sdk",
+                        "arm_sdk_enable_index": G1_ARM_SDK_ENABLE_INDEX,
+                        "final_joint_positions": {
+                            str(joint_id): current_q[joint_id]
+                            for joint_id in controlled_joint_ids
+                        },
+                        "final_errors": {
+                            str(joint_id): final_errors[joint_id]
+                            for joint_id in controlled_joint_ids
+                        },
+                        "max_abs_error": max_abs_error,
+                        "finished_by": "settled" if done_by_settle else "hold_time",
                     }
                     return UnitreeCommandResult(
-                        command=["loco", "move_arms_up"],
+                        command=["loco", command_name],
                         returncode=0,
                         stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
                         stderr="",
                     )
                 low_cmd.mode_pr = 0
                 low_cmd.mode_machine = int(getattr(self._arm_low_state, "mode_machine", 0))
+                low_cmd.motor_cmd[G1_ARM_SDK_ENABLE_INDEX].q = 1.0
 
-                for joint_id in arm_joint_ids:
+                for joint_id in controlled_joint_ids:
+                    error = desired_q[joint_id] - current_q[joint_id]
                     motor = low_cmd.motor_cmd[joint_id]
                     motor.mode = 1
                     motor.tau = 0.0
-                    motor.q = (1.0 - eased_ratio) * start_q[joint_id] + eased_ratio * target_q[joint_id]
+                    motor.q = current_q[joint_id] + clamp(error, -max_step, max_step)
                     motor.dq = 0.0
-                    motor.kp = 25.0
-                    motor.kd = 1.0
+                    motor.kp = kp
+                    motor.kd = kd
 
                 low_cmd.crc = crc.Crc(low_cmd)
                 publisher.Write(low_cmd)
                 time.sleep(control_dt)
         except KeyboardInterrupt:
-            return UnitreeCommandResult(command=["loco", "move_arms_up"], returncode=0, stdout="", stderr="")
+            release_arm_sdk()
+            report = {
+                "ok": True,
+                "command": command_name,
+                "interrupted": True,
+                "publisher_topic": "rt/arm_sdk",
+                "arm_sdk_enable_index": G1_ARM_SDK_ENABLE_INDEX,
+                "final_errors": {
+                    str(joint_id): final_errors[joint_id]
+                    for joint_id in sorted(final_errors)
+                },
+            }
+            return UnitreeCommandResult(
+                command=["loco", command_name],
+                returncode=0,
+                stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
+                stderr="",
+            )
+
+    def calibrate_arms(
+        self,
+        hold_s: float | None = 1.0,
+        scale: float = 0.5,
+        ramp_s: float = 2.0,
+        joint_targets: dict[int, float] | None = None,
+        kp: float = 18.0,
+        kd: float = 1.2,
+        max_step: float = 0.025,
+        error_tolerance: float = 0.025,
+        settle_s: float = 0.4,
+    ) -> UnitreeCommandResult:
+        return self.move_arms_up(
+            hold_s=hold_s,
+            scale=scale,
+            ramp_s=ramp_s,
+            joint_targets=joint_targets,
+            kp=kp,
+            kd=kd,
+            max_step=max_step,
+            error_tolerance=error_tolerance,
+            settle_s=settle_s,
+            command_name="calibrate_arms",
+        )
 
     def command(self, name: str) -> UnitreeCommandResult:
         commands = {
@@ -928,6 +1078,7 @@ class G1LocoSdk2Client:
             "stop_move": self.stop_move,
             "damp": self.damp,
             "move_arms_up": self.move_arms_up,
+            "calibrate_arms": self.calibrate_arms,
             "probe_loco": self.probe_loco,
         }
         try:

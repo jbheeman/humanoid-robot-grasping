@@ -36,6 +36,7 @@ COMMAND_CHOICES = (
     "move",
     "smooth_move",
     "move_arms_up",
+    "calibrate_arms",
     "probe_loco",
     "check_motion_mode",
     "select_ai_mode",
@@ -133,6 +134,43 @@ def build_parser() -> argparse.ArgumentParser:
         help="For move_arms_up: seconds to hold target before returning. Default: hold until Ctrl-C.",
     )
     parser.add_argument(
+        "--arm-kp",
+        type=float,
+        default=None,
+        help="For move_arms_up/calibrate_arms: low-level position gain.",
+    )
+    parser.add_argument(
+        "--arm-kd",
+        type=float,
+        default=None,
+        help="For move_arms_up/calibrate_arms: low-level damping gain.",
+    )
+    parser.add_argument(
+        "--arm-max-step",
+        type=float,
+        default=None,
+        help="For move_arms_up/calibrate_arms: max radians to move each controlled joint per control tick.",
+    )
+    parser.add_argument(
+        "--arm-error-tolerance",
+        type=float,
+        default=None,
+        help="For move_arms_up/calibrate_arms: target error threshold in radians for early settle.",
+    )
+    parser.add_argument(
+        "--arm-settle-s",
+        type=float,
+        default=None,
+        help="For move_arms_up/calibrate_arms: seconds inside tolerance before returning when hold_s is set.",
+    )
+    parser.add_argument(
+        "--joint-target",
+        action="append",
+        default=[],
+        metavar="JOINT_ID:RAD",
+        help="For calibration: absolute low-level joint target in radians. Repeat for fingers or arm overrides.",
+    )
+    parser.add_argument(
         "--diagnose",
         action="store_true",
         help="Print SDK route/proxy diagnostics and exit.",
@@ -167,6 +205,21 @@ def _parse_velocity(raw: str) -> tuple[float, float, float, float | None]:
     vx, vy, omega = (float(part) for part in parts[:3])
     duration = float(parts[3]) if len(parts) == 4 else None
     return vx, vy, omega, duration
+
+
+def _parse_joint_targets(raw_targets: list[str]) -> dict[int, float]:
+    targets: dict[int, float] = {}
+    for raw in raw_targets:
+        if ":" not in raw:
+            raise ValueError(f"Expected joint target as JOINT_ID:RAD, got {raw!r}.")
+        raw_joint, raw_value = raw.split(":", 1)
+        try:
+            joint_id = int(raw_joint.strip())
+            value = float(raw_value.strip())
+        except ValueError as exc:
+            raise ValueError(f"Invalid joint target {raw!r}; expected integer id and float radians.") from exc
+        targets[joint_id] = value
+    return targets
 
 
 def _diagnose_route(robot_ip: str | None) -> dict[str, object]:
@@ -785,7 +838,7 @@ def main() -> None:
     if args.command is None:
         print(
             "Missing command. Use one of: stand_up, balance_stand, stop_move, damp, move, smooth_move, move_arms_up, "
-            "probe_loco, check_motion_mode, select_ai_mode, diagnose, smoke_move.",
+            "calibrate_arms, probe_loco, check_motion_mode, select_ai_mode, diagnose, smoke_move.",
             file=sys.stderr,
         )
         raise SystemExit(1)
@@ -803,6 +856,12 @@ def main() -> None:
         except ValueError as exc:
             print(f"Invalid --velocity: {exc}", file=sys.stderr)
             raise SystemExit(1)
+
+    try:
+        joint_targets = _parse_joint_targets(args.joint_target)
+    except ValueError as exc:
+        print(f"Invalid --joint-target: {exc}", file=sys.stderr)
+        raise SystemExit(1)
 
     if args.command == "diagnose":
         _runtime_diagnose(
@@ -896,19 +955,42 @@ def main() -> None:
             result = client.move(vx, vy, omega, duration)
         elif args.command == "smooth_move":
             result = client.smooth_move(vx, vy, omega, duration or 0.5, args.move_ramp_s)
-        elif args.command == "move_arms_up":
+        elif args.command in ("move_arms_up", "calibrate_arms"):
             if args.arm_hold_s is None:
-                print("Moving arms to the forward test pose. Press Ctrl-C to stop holding.", file=sys.stderr)
-            else:
                 print(
-                    f"Moving arms with scale={args.arm_scale}, ramp_s={args.arm_ramp_s}, hold_s={args.arm_hold_s}.",
+                    f"Running {args.command}. Press Ctrl-C to stop holding.",
                     file=sys.stderr,
                 )
-            result = client.move_arms_up(
-                hold_s=args.arm_hold_s,
-                scale=args.arm_scale,
-                ramp_s=args.arm_ramp_s,
-            )
+            else:
+                print(
+                    f"Running {args.command} with scale={args.arm_scale}, "
+                    f"ramp_s={args.arm_ramp_s}, hold_s={args.arm_hold_s}.",
+                    file=sys.stderr,
+                )
+            if args.command == "calibrate_arms":
+                result = client.calibrate_arms(
+                    hold_s=1.0 if args.arm_hold_s is None else args.arm_hold_s,
+                    scale=args.arm_scale,
+                    ramp_s=args.arm_ramp_s,
+                    joint_targets=joint_targets,
+                    kp=18.0 if args.arm_kp is None else args.arm_kp,
+                    kd=1.2 if args.arm_kd is None else args.arm_kd,
+                    max_step=0.025 if args.arm_max_step is None else args.arm_max_step,
+                    error_tolerance=0.025 if args.arm_error_tolerance is None else args.arm_error_tolerance,
+                    settle_s=0.4 if args.arm_settle_s is None else args.arm_settle_s,
+                )
+            else:
+                result = client.move_arms_up(
+                    hold_s=args.arm_hold_s,
+                    scale=args.arm_scale,
+                    ramp_s=args.arm_ramp_s,
+                    joint_targets=joint_targets,
+                    kp=25.0 if args.arm_kp is None else args.arm_kp,
+                    kd=1.0 if args.arm_kd is None else args.arm_kd,
+                    max_step=0.04 if args.arm_max_step is None else args.arm_max_step,
+                    error_tolerance=0.03 if args.arm_error_tolerance is None else args.arm_error_tolerance,
+                    settle_s=0.25 if args.arm_settle_s is None else args.arm_settle_s,
+                )
         else:
             result = client.command(args.command)
     except UnitreeG1Error as exc:
