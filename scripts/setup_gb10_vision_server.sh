@@ -40,4 +40,4 @@ PY
 
 echo
 echo "GB10 vision environment is ready."
-echo "Next: ./scripts/test_unitree_relay.sh"
+echo "Next: ./scripts/run_gb10_vision_server.sh"

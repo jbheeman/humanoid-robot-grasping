@@ -65,6 +65,7 @@ fi
 
 echo "GB10 Unitree receiver: udp://0.0.0.0:${UDP_PORT}"
 echo "YOLO model:            ${MODEL}"
+echo "Input frame rate:       source rate (unthrottled; expected 30 FPS)"
 echo "Processed stream:      http://${HOST}:${PORT}/stream.mjpg"
 "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
   --camera-name main \

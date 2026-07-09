@@ -148,7 +148,7 @@ Run the one-time GB10 setup:
 ./scripts/setup_gb10_vision_server.sh
 ```
 
-With the robot relay running, confirm that the GB10 can decode JPEG frames:
+Optionally confirm that the GB10 can decode the live stream to a headless sink. This writes no frames to disk:
 
 ```bash
 ./scripts/test_unitree_relay.sh
