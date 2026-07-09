@@ -512,13 +512,7 @@ python3 scripts/robot.py move --vx 0.05 --vy 0 --omega 0 --duration 0.4 --ramp 0
 python3 scripts/robot.py stop
 ```
 
-For interactive testing from the server:
-
-```bash
-python3 scripts/robot.py drive
-```
-
-Keys: `w/s` forward/back, `a/d` strafe, `q/e` turn, Space or `x` stop, Ctrl-C sends stop and exits. This is a software stop path over Wi-Fi, not a replacement for the robot/controller hardware e-stop.
+Avoid interactive keyboard control for now. Use one bounded command at a time (`forward`, `move`, `arms-up`, SDK examples), then send `stop` before the next test.
 
 Unitree SDK example actions can also be listed and run through the same bridge:
 
