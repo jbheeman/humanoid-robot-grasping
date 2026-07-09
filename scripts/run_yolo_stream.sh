@@ -14,6 +14,11 @@ cd "${ROOT_DIR}"
 
 MODEL="${MODEL:-yolov8n.pt}"
 PIPELINE="${PIPELINE:-}"
+DUAL_STREAMS="${DUAL_STREAMS:-1}"
+MAIN_CAMERA_NAME="${MAIN_CAMERA_NAME:-main}"
+CHEST_CAMERA_NAME="${CHEST_CAMERA_NAME:-chest}"
+MAIN_DEVICE="${MAIN_DEVICE:-videohub_pc4}"
+CHEST_DEVICE="${CHEST_DEVICE:-videohub_pc4chest}"
 IMGSZ="${IMGSZ:-320}"
 CONF="${CONF:-0.35}"
 INFER_EVERY="${INFER_EVERY:-1}"
@@ -23,6 +28,8 @@ OPENCV_THREADS="${OPENCV_THREADS:-16}"
 TORCH_THREADS="${TORCH_THREADS:-16}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
+MAIN_PORT="${MAIN_PORT:-${PORT}}"
+CHEST_PORT="${CHEST_PORT:-8001}"
 STREAM_FPS="${STREAM_FPS:-0}"
 STOP_EXISTING="${STOP_EXISTING:-1}"
 
@@ -39,8 +46,7 @@ if [[ -n "${PIPELINE}" ]]; then
   args+=(--pipeline "${PIPELINE}")
 fi
 
-exec "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
-  "${args[@]}" \
+common_args=(
   --model "${MODEL}" \
   --imgsz "${IMGSZ}" \
   --conf "${CONF}" \
@@ -50,6 +56,43 @@ exec "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
   --opencv-threads "${OPENCV_THREADS}" \
   --torch-threads "${TORCH_THREADS}" \
   --host "${HOST}" \
-  --port "${PORT}" \
   --stream-fps "${STREAM_FPS}" \
+)
+
+run_stream() {
+  local camera_name="$1"
+  local device="$2"
+  local port="$3"
+  shift 3
+
+  G1_CAMERA_NAME="${camera_name}" G1_CAMERA_DEVICE="${device}" \
+    exec "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
+      --camera-name "${camera_name}" \
+      --port "${port}" \
+      "${args[@]}" \
+      "${common_args[@]}" \
+      "$@"
+}
+
+if [[ "${DUAL_STREAMS}" == "1" && -z "${PIPELINE}" ]]; then
+  echo "Starting Unitree G1 main camera stream on http://${HOST}:${MAIN_PORT} (${MAIN_DEVICE})"
+  G1_CAMERA_NAME="${MAIN_CAMERA_NAME}" G1_CAMERA_DEVICE="${MAIN_DEVICE}" \
+    "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
+      --camera-name "${MAIN_CAMERA_NAME}" \
+      --port "${MAIN_PORT}" \
+      "${common_args[@]}" \
+      "$@" &
+  main_pid=$!
+
+  echo "Starting Unitree G1 chest camera stream on http://${HOST}:${CHEST_PORT} (${CHEST_DEVICE})"
+  trap 'kill "${main_pid}" >/dev/null 2>&1 || true' EXIT INT TERM
+  G1_CAMERA_NAME="${CHEST_CAMERA_NAME}" G1_CAMERA_DEVICE="${CHEST_DEVICE}" \
+    exec "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
+      --camera-name "${CHEST_CAMERA_NAME}" \
+      --port "${CHEST_PORT}" \
+      "${common_args[@]}" \
+      "$@"
+fi
+
+run_stream "${MAIN_CAMERA_NAME}" "${MAIN_DEVICE}" "${PORT}" \
   "$@"

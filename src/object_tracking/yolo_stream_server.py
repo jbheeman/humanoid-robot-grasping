@@ -24,6 +24,18 @@ from ultralytics import YOLO
 from object_tracking.simple_tracker import SimpleTracker
 
 
+def unitree_g1_videohub_pipeline(device: str, width: int = 1280, height: int = 720, out_width: int = 640, out_height: int = 360) -> str:
+    device_path = device if device.startswith("/") else f"/dev/{device}"
+    return (
+        f"v4l2src device={device_path} io-mode=2 do-timestamp=true ! "
+        f"image/jpeg,width={width},height={height},framerate=30/1 ! "
+        "jpegdec ! videoconvert ! videoscale ! "
+        f"video/x-raw,width={out_width},height={out_height},format=BGR ! "
+        "queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! "
+        "appsink sync=false drop=true max-buffers=1"
+    )
+
+
 UNITREE_UDP_PIPELINE = (
     "udpsrc port=5600 buffer-size=1048576 ! "
     "application/x-rtp,media=video,encoding-name=H264,clock-rate=90000 ! "
@@ -34,13 +46,9 @@ UNITREE_UDP_PIPELINE = (
     "appsink sync=false drop=true max-buffers=1"
 )
 
-DEFAULT_PIPELINE = (
-    "v4l2src device=/dev/video0 io-mode=2 ! "
-    "image/jpeg,width=640,height=480,framerate=30/1 ! jpegdec ! videoconvert ! videoscale ! "
-    "video/x-raw,width=640,height=360,format=BGR ! "
-    "queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! "
-    "appsink sync=false drop=true max-buffers=1"
-)
+DEFAULT_CAMERA_NAME = os.environ.get("G1_CAMERA_NAME", "main")
+DEFAULT_CAMERA_DEVICE = os.environ.get("G1_CAMERA_DEVICE", "videohub_pc4")
+DEFAULT_PIPELINE = os.environ.get("G1_CAMERA_PIPELINE") or unitree_g1_videohub_pipeline(DEFAULT_CAMERA_DEVICE)
 
 
 @dataclass
@@ -60,6 +68,7 @@ class SharedState:
     encode_fps: float = 0.0
     stream_fps_limit: float = 0.0
     camera_pipeline: str = DEFAULT_PIPELINE
+    camera_name: str = DEFAULT_CAMERA_NAME
     capture_backend: str = ""
     model_name: str = "yolov8n.pt"
     opencv_threads: int = 0
@@ -237,14 +246,16 @@ def configure_runtime(opencv_threads: int, torch_threads: int) -> None:
     print("Torch threads:", torch.get_num_threads())
 
 
-def camera_loop(pipeline: str) -> None:
+def camera_loop(pipeline: str, camera_name: str) -> None:
     print("OpenCV:", cv2.__version__)
     print("OpenCV GStreamer enabled:", opencv_gstreamer_enabled())
+    print("Camera name:", camera_name)
     print("Opening pipeline:")
     print(pipeline)
 
     with state.lock:
         state.camera_pipeline = pipeline
+        state.camera_name = camera_name
 
     cap, backend = open_capture(pipeline)
     with state.lock:
@@ -463,6 +474,8 @@ def health() -> dict[str, object]:
             "opencv": cv2.__version__,
             "opencv_gstreamer": opencv_gstreamer_enabled(),
             "capture_backend": state.capture_backend,
+            "camera_name": state.camera_name,
+            "camera_pipeline": state.camera_pipeline,
             "torch_cuda": torch.cuda.is_available(),
             "stream_fps_limit": state.stream_fps_limit,
             "model_name": state.model_name,
@@ -528,6 +541,7 @@ def capture(note: str = "") -> dict[str, Any]:
         capture_count = state.capture_count
         frame_number = state.frame_count
         pipeline = state.camera_pipeline
+        camera_name = state.camera_name
         frame = state.raw_frame.copy()
 
     frame_name = f"frame_{capture_count:06d}.jpg"
@@ -542,6 +556,7 @@ def capture(note: str = "") -> dict[str, Any]:
     metadata = {
         "timestamp": time.time(),
         "source": "unitree_g1",
+        "camera_name": camera_name,
         "frame_number": frame_number,
         "frame_path": str(Path("images") / frame_name),
         "camera_pipeline": pipeline,
@@ -602,6 +617,7 @@ def stream() -> StreamingResponse:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description="Serve a low-latency YOLO MJPEG stream from a GStreamer camera source.")
     parser.add_argument("--pipeline", default=DEFAULT_PIPELINE)
+    parser.add_argument("--camera-name", default=DEFAULT_CAMERA_NAME)
     parser.add_argument("--model", default="yolov8n.pt")
     parser.add_argument("--imgsz", type=int, default=320)
     parser.add_argument("--conf", type=float, default=0.35)
@@ -643,7 +659,7 @@ def main() -> None:
 
     camera_worker = threading.Thread(
         target=camera_loop,
-        args=(args.pipeline,),
+        args=(args.pipeline, args.camera_name),
         daemon=True,
     )
     inference_worker = threading.Thread(

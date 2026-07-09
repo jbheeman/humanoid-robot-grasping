@@ -11,6 +11,8 @@ uv sync
 
 This installs the runtime dependencies used by the current branch, including vision, YOLO/FastAPI streaming, training helpers, CycloneDDS, and Unitree SDK2 Python. `uv sync --extra loco` and `uv sync --extra vision-server` are still accepted for old workflows, but they are no longer needed.
 
+If `uv sync` fails while building `cyclonedds`, install/configure the CycloneDDS system library on the robot-network host first, then rerun `uv sync`. The Python package needs the C library visible through `CYCLONEDDS_HOME` or `CMAKE_PREFIX_PATH`.
+
 Loco commands are run from the server that is connected to the robot network, not necessarily on the robot itself. Pass the robot LAN IP to `uv run loco`. The local editable `unitree-sdk2py==1.0.1` checkout must exist on that server at `../unitree_sdk2_python` relative to this project. For example, if the server checkout is `/home/neel/humanoid-robot-grasping`, uv expects the SDK at `/home/neel/unitree_sdk2_python`. The robot SSH target (for example `unitree@ubuntu`) is separate from this local Python dependency path.
 
 ```bash
@@ -125,16 +127,31 @@ cd ~/Documents/project
 ./scripts/setup_vision_server.sh
 ```
 
-Then start the 30 FPS direct-camera stream server:
+Then start the Unitree G1 30 FPS camera stream servers:
 
 ```bash
 ./scripts/run_yolo_stream.sh
 ```
 
-The defaults are already set for the current plan:
+By default this starts two YOLO MJPEG servers:
 
 ```text
-pipeline=v4l2src device=/dev/video0 ... framerate=30/1
+main camera:  http://0.0.0.0:8000  device=/dev/videohub_pc4
+chest camera: http://0.0.0.0:8001  device=/dev/videohub_pc4chest
+```
+
+Open these from the MacBook using the Ubuntu vision box IP, for example:
+
+```text
+http://192.168.0.122:8000
+http://192.168.0.122:8001
+```
+
+The defaults are already set for the current Unitree G1 plan:
+
+```text
+main pipeline=v4l2src device=/dev/videohub_pc4 ... framerate=30/1
+chest pipeline=v4l2src device=/dev/videohub_pc4chest ... framerate=30/1
 model=yolov8n.pt
 imgsz=320
 conf=0.35
@@ -148,10 +165,13 @@ host=0.0.0.0
 port=8000
 ```
 
-Then open this from the MacBook:
+Useful overrides:
 
-```text
-http://192.168.0.122:8000
+```bash
+CHEST_PORT=8002 ./scripts/run_yolo_stream.sh
+MAIN_DEVICE=video0 CHEST_DEVICE=video1 ./scripts/run_yolo_stream.sh
+DUAL_STREAMS=0 ./scripts/run_yolo_stream.sh
+PIPELINE="v4l2src device=/dev/video0 ..." ./scripts/run_yolo_stream.sh
 ```
 
 Useful endpoints:
