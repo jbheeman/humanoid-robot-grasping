@@ -38,6 +38,14 @@
       }
     }
 
+    .single-camera .chest-only {
+      display: none;
+    }
+
+    .single-camera .row {
+      grid-template-columns: 1fr;
+    }
+
     .panel {
       border: 1px solid #2f2f2f;
       border-radius: 8px;
@@ -139,14 +147,14 @@
 </head>
 <body>
   <div class="top">
-    <h1>Unitree G1 Dual Camera Viewer</h1>
-    <p class="small-note">Verifies both /stream.mjpg endpoints are producing frames.</p>
+    <h1 id="pageTitle">Unitree G1 Camera Viewer</h1>
+    <p class="small-note">Displays the processed camera stream and detection output.</p>
     <div>
       <span class="pill">
         <span id="mainStatus" class="dot"></span>
         <span>Main status</span>
       </span>
-      <span class="pill">
+      <span class="pill chest-only">
         <span id="chestStatus" class="dot"></span>
         <span>Chest status</span>
       </span>
@@ -168,7 +176,7 @@
       </div>
     </section>
 
-    <section class="panel">
+    <section class="panel chest-only">
       <h2>Chest camera</h2>
       <div class="streams">
         <img id="chestStream" class="stream" src="" alt="chest camera stream" />
@@ -187,8 +195,8 @@
     <div class="controls">
       <label for="mainInput">Main stream URL</label>
       <input id="mainInput" type="text" placeholder="http://127.0.0.1:8000/stream.mjpg" />
-      <label for="chestInput">Chest stream URL</label>
-      <input id="chestInput" type="text" placeholder="http://127.0.0.1:8001/stream.mjpg" />
+      <label class="chest-only" for="chestInput">Chest stream URL</label>
+      <input class="chest-only" id="chestInput" type="text" placeholder="http://127.0.0.1:8001/stream.mjpg" />
       <button id="applyBtn" type="button">Apply URLs</button>
     </div>
   </div>
@@ -210,6 +218,11 @@
     }
 
     const params = new URLSearchParams(window.location.search);
+    const singleCamera = params.get("single") === "1";
+    document.body.classList.toggle("single-camera", singleCamera);
+    document.getElementById("pageTitle").textContent = singleCamera
+      ? "Unitree G1 Main Camera Viewer"
+      : "Unitree G1 Dual Camera Viewer";
     const hostFromQuery = params.get("host") || window.location.hostname || "127.0.0.1";
     const mainDefault = params.get("main") || `http://${hostFromQuery}:8000/stream.mjpg`;
     const chestDefault = params.get("chest") || `http://${hostFromQuery}:8001/stream.mjpg`;
@@ -261,7 +274,9 @@
       chestStreamEl.onerror = () => applyStreamStatus(chestStatus, false);
 
       mainStreamEl.src = cacheBusted(currentMain);
-      chestStreamEl.src = cacheBusted(currentChest);
+      if (!singleCamera) {
+        chestStreamEl.src = cacheBusted(currentChest);
+      }
 
       const mainAux = buildAuxLinks(currentMain);
       const chestAux = buildAuxLinks(currentChest);

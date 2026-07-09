@@ -26,6 +26,7 @@ fi
 
 ROBOT_MAIN_PORT="${ROBOT_MAIN_PORT:-8000}"
 ROBOT_CHEST_PORT="${ROBOT_CHEST_PORT:-8001}"
+ENABLE_CHEST="${ENABLE_CHEST:-0}"
 MAIN_INPUT_URL="${MAIN_INPUT_URL:-http://${ROBOT_HOST}:${ROBOT_MAIN_PORT}/stream.mjpg}"
 CHEST_INPUT_URL="${CHEST_INPUT_URL:-http://${ROBOT_HOST}:${ROBOT_CHEST_PORT}/stream.mjpg}"
 HOST="${HOST:-0.0.0.0}"
@@ -92,12 +93,22 @@ echo "GB10 main inference:  ${MAIN_INPUT_URL} -> http://${HOST}:${MAIN_PORT}"
 run_server main "${MAIN_INPUT_URL}" "${MAIN_PORT}" "$@" &
 main_pid=$!
 
-echo "GB10 chest inference: ${CHEST_INPUT_URL} -> http://${HOST}:${CHEST_PORT}"
-run_server chest "${CHEST_INPUT_URL}" "${CHEST_PORT}" "$@" &
-chest_pid=$!
+wait_pids=("${main_pid}")
 
-echo "GB10 viewer:          http://${HOST}:${VIEWER_PORT}/unitree_dual_viewer.html"
+if [[ "${ENABLE_CHEST}" == "1" ]]; then
+  echo "GB10 chest inference: ${CHEST_INPUT_URL} -> http://${HOST}:${CHEST_PORT}"
+  run_server chest "${CHEST_INPUT_URL}" "${CHEST_PORT}" "$@" &
+  chest_pid=$!
+  wait_pids+=("${chest_pid}")
+  viewer_path="unitree_dual_viewer.html"
+else
+  echo "GB10 chest inference: disabled (set ENABLE_CHEST=1 when a chest camera is available)"
+  viewer_path="unitree_dual_viewer.html?single=1"
+fi
+
+echo "GB10 viewer:          http://${HOST}:${VIEWER_PORT}/${viewer_path}"
 "${VENV_DIR}/bin/python" -m http.server "${VIEWER_PORT}" --bind "${HOST}" --directory "${VIEWER_DIR}" &
 viewer_pid=$!
+wait_pids+=("${viewer_pid}")
 
-wait -n "${main_pid}" "${chest_pid}" "${viewer_pid}"
+wait -n "${wait_pids[@]}"

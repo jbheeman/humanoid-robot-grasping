@@ -138,15 +138,16 @@ Use the robot's system OpenCV + GStreamer environment. This does not install or 
 ```bash
 ./scripts/setup_opencv_vision_server.sh
 sudo ./scripts/list_camera_bindings.sh videohub_pc4_ch
-MAIN_DEVICE=/dev/video4 CHEST_DEVICE=/dev/videoX ./scripts/run_robot_vision_server.sh
+./scripts/run_robot_vision_server.sh
 ```
 
-Replace `/dev/videoX` with the device shown for the `videohub_pc4_ch` process. The two raw robot endpoints are:
+The robot launcher defaults to the single available main camera at `/dev/video4`. Its raw endpoint is:
 
 ```text
 main:  http://ROBOT_IP:8000/stream.mjpg
-chest: http://ROBOT_IP:8001/stream.mjpg
 ```
+
+When a chest camera is available, enable it with `DUAL_STREAMS=1 CHEST_DEVICE=/dev/videoX`.
 
 The OpenCV setup writes `.venv-opencv` and uses `/usr/bin/python3`, preserving Ubuntu's GStreamer-enabled OpenCV. `MODEL=none` keeps CUDA, Torch, and Ultralytics off the robot.
 
@@ -166,7 +167,7 @@ MODEL=models/plushie_detector/yolo11x_plushie/weights/best.pt \
 ./scripts/run_gb10_vision_server.sh
 ```
 
-The GB10 command serves processed streams and detections on ports 8000 and 8001 and starts the dual viewer on port 8080.
+The GB10 command defaults to the main feed, serves processed output on port 8000, and starts the viewer on port 8080. Set `ENABLE_CHEST=1` when the robot has a working chest feed.
 
 ### Laptop: SSH tunnel and browser
 
