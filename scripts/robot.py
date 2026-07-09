@@ -6,8 +6,6 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-import termios
-import tty
 from urllib import request
 from urllib.error import HTTPError, URLError
 
@@ -19,7 +17,7 @@ DEFAULT_INTERFACE = "wlan0"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Unified Unitree G1 command helper.")
+    parser = argparse.ArgumentParser(description="Unitree G1 command helper for bridge, SDK examples, and bounded tests.")
     parser.add_argument("--host", default=DEFAULT_ROBOT_HOST, help=f"Robot Wi-Fi IP. Default: {DEFAULT_ROBOT_HOST}")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
 
@@ -33,12 +31,12 @@ def build_parser() -> argparse.ArgumentParser:
     serve.add_argument("--dds-config-mode", default="no_trace")
     serve.add_argument("--read-only", action="store_true")
 
-    subparsers.add_parser("health")
-    subparsers.add_parser("probe")
-    subparsers.add_parser("mode")
-    subparsers.add_parser("stop")
-    subparsers.add_parser("estop")
-    subparsers.add_parser("smoke-move")
+    subparsers.add_parser("health", help="Check whether the robot-local HTTP bridge is reachable.")
+    subparsers.add_parser("probe", help="Run read-only loco RPC probes through the bridge.")
+    subparsers.add_parser("mode", help="Read the Unitree motion-switcher mode through the bridge.")
+    subparsers.add_parser("stop", help="Send StopMove through the bridge.")
+    subparsers.add_parser("estop", help="Alias for stop. This is software stop, not hardware e-stop.")
+    subparsers.add_parser("smoke-move", help="Run the smallest guarded forward movement test.")
     subparsers.add_parser("sdk-examples", help="List allowlisted Unitree SDK example actions exposed by the bridge.")
 
     sdk_example = subparsers.add_parser("sdk-example", help="Run an allowlisted Unitree SDK example action via the bridge.")
@@ -61,28 +59,22 @@ def build_parser() -> argparse.ArgumentParser:
     vendor_example.add_argument("--interface", default=DEFAULT_INTERFACE)
     vendor_example.add_argument("--no-interface-arg", action="store_true")
 
-    arms = subparsers.add_parser("arms-up", help="Move arms through the HTTP bridge high-level arm command.")
+    arms = subparsers.add_parser("arms-up", help="Run a bounded arm raise through the bridge.")
     arms.add_argument("amount", nargs="?", type=float, default=0.15)
     arms.add_argument("--ramp", type=float, default=1.5)
     arms.add_argument("--hold", type=float, default=1.0)
 
-    forward = subparsers.add_parser("forward")
+    forward = subparsers.add_parser("forward", help="Run one small forward movement through the bridge.")
     forward.add_argument("speed", nargs="?", type=float, default=0.05)
     forward.add_argument("--duration", type=float, default=0.4)
     forward.add_argument("--ramp", type=float, default=0.15)
 
-    move = subparsers.add_parser("move")
+    move = subparsers.add_parser("move", help="Run one bounded velocity command through the bridge.")
     move.add_argument("--vx", type=float, default=0.0)
     move.add_argument("--vy", type=float, default=0.0)
     move.add_argument("--omega", "--wz", dest="omega", type=float, default=0.0)
     move.add_argument("--duration", type=float, default=0.4)
     move.add_argument("--ramp", type=float, default=0.15)
-
-    drive = subparsers.add_parser("drive", help="Interactive server-side control. Space/x/Ctrl-C sends stop.")
-    drive.add_argument("--speed", type=float, default=0.05)
-    drive.add_argument("--turn", type=float, default=0.12)
-    drive.add_argument("--duration", type=float, default=0.25)
-    drive.add_argument("--ramp", type=float, default=0.08)
 
     shoulder = subparsers.add_parser(
         "shoulder-pitch",
@@ -228,58 +220,6 @@ def send_command(host: str, port: int, payload: dict[str, object]) -> int:
     return print_response(*send_json(bridge_url(host, port, "/cmd"), payload))
 
 
-def read_key() -> str:
-    fd = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(fd)
-    try:
-        tty.setcbreak(fd)
-        return sys.stdin.read(1)
-    finally:
-        termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
-
-
-def drive(args: argparse.Namespace) -> int:
-    print("Interactive drive mode")
-    print("w/s: forward/back  a/d: strafe  q/e: turn  space/x: stop  Ctrl-C: stop+exit")
-    print("This is a software stop path, not a hardware e-stop.")
-    try:
-        while True:
-            key = read_key().lower()
-            payload: dict[str, object] | None = None
-            if key == "w":
-                payload = {"command": "move", "vx": args.speed, "vy": 0.0, "omega": 0.0}
-            elif key == "s":
-                payload = {"command": "move", "vx": -args.speed, "vy": 0.0, "omega": 0.0}
-            elif key == "a":
-                payload = {"command": "move", "vx": 0.0, "vy": args.speed, "omega": 0.0}
-            elif key == "d":
-                payload = {"command": "move", "vx": 0.0, "vy": -args.speed, "omega": 0.0}
-            elif key == "q":
-                payload = {"command": "move", "vx": 0.0, "vy": 0.0, "omega": args.turn}
-            elif key == "e":
-                payload = {"command": "move", "vx": 0.0, "vy": 0.0, "omega": -args.turn}
-            elif key in (" ", "x"):
-                payload = {"command": "stop"}
-            elif key in ("\x03", "\x04"):
-                send_command(args.host, args.port, {"command": "stop"})
-                return 130
-            else:
-                continue
-
-            if payload.get("command") == "move":
-                payload["duration"] = args.duration
-                payload["ramp"] = args.ramp
-            status, body = send_json(bridge_url(args.host, args.port, "/cmd"), payload)
-            ok = 200 <= status < 300
-            print(("ok" if ok else f"error {status}") + f": {payload}")
-            if not ok:
-                print(body)
-    except KeyboardInterrupt:
-        print("\nCtrl-C: sending stop")
-        send_command(args.host, args.port, {"command": "stop"})
-        return 130
-
-
 def main() -> int:
     args = build_parser().parse_args()
 
@@ -307,9 +247,6 @@ def main() -> int:
             "smoke": args.smoke,
         }
         return print_response(*send_json(bridge_url(args.host, args.port, "/sdk/example"), payload))
-    if args.command == "drive":
-        return drive(args)
-
     try:
         return send_command(args.host, args.port, command_payload(args.command, args))
     except KeyboardInterrupt:
