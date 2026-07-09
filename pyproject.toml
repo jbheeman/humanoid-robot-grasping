@@ -8,25 +8,23 @@ dependencies = [
     "opencv-python>=4.9",
     "streamlit>=1.36",
     "cyclonedds==0.10.2",
+    "fastapi>=0.111",
+    "pillow>=10",
+    "pyyaml>=6",
+    "torch>=2.2",
+    "tqdm>=4.66",
+    "ultralytics>=8.2",
     "unitree-sdk2py==1.0.1",
+    "uvicorn[standard]>=0.30",
 ]
 
 [project.optional-dependencies]
-vision-server = [
-    "fastapi>=0.111",
-    "pillow>=10",
-    "tqdm>=4.66",
-    "ultralytics>=8.2",
-    "uvicorn[standard]>=0.30",
-]
+vision-server = []
 loco = []
 
 [dependency-groups]
 dev = []
-loco = [
-    "cyclonedds==0.10.2",
-    "unitree-sdk2py==1.0.1",
-]
+loco = []
 
 [project.scripts]
 object-manual-tracker = "object_tracking.manual_tracker:main"
