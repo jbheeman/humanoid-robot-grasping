@@ -7,10 +7,20 @@ if [[ -n "${PROCESS_NAME}" ]]; then
   echo "Video devices opened by process '${PROCESS_NAME}':"
   found_process=0
   found_device=0
+  found_configured_device=0
   while read -r pid; do
     [[ -n "${pid}" ]] || continue
     found_process=1
     echo "  PID ${pid}: $(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+    while read -r configured_device; do
+      [[ -n "${configured_device}" ]] || continue
+      found_configured_device=1
+      if [[ -e "${configured_device}" ]]; then
+        echo "    configured argument -> ${configured_device} (exists)"
+      else
+        echo "    configured argument -> ${configured_device} (MISSING)"
+      fi
+    done < <(tr '\0' '\n' < "/proc/${pid}/cmdline" 2>/dev/null | grep -E '^/dev/video[0-9]+$' || true)
     for fd in "/proc/${pid}/fd/"*; do
       [[ -e "${fd}" ]] || continue
       target="$(readlink -f "${fd}" 2>/dev/null || true)"
@@ -24,8 +34,13 @@ if [[ -n "${PROCESS_NAME}" ]]; then
   if [[ "${found_process}" == "0" ]]; then
     echo "  No exact process named '${PROCESS_NAME}' is running."
   elif [[ "${found_device}" == "0" ]]; then
-    echo "  No readable /dev/video* file descriptor found. Try with sudo:"
-    echo "    sudo ./scripts/list_camera_bindings.sh ${PROCESS_NAME}"
+    echo "  No open /dev/video* file descriptor found."
+    if [[ "${EUID}" != "0" ]]; then
+      echo "  Retry with sudo to rule out /proc permission restrictions:"
+      echo "    sudo ./scripts/list_camera_bindings.sh ${PROCESS_NAME}"
+    elif [[ "${found_configured_device}" == "1" ]]; then
+      echo "  The process is not currently using its configured video device."
+    fi
   fi
   echo
 fi

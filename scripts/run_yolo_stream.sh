@@ -44,6 +44,7 @@ resolve_camera_device() {
   local pid
   local fd
   local target
+  local configured_target
   local numeric_suffix
   local candidate
 
@@ -77,6 +78,14 @@ resolve_camera_device() {
           return 0
         fi
       done
+      while read -r configured_target; do
+        [[ -n "${configured_target}" ]] || continue
+        if [[ -e "${configured_target}" ]]; then
+          printf '%s\n' "${configured_target}"
+          return 0
+        fi
+        echo "${requested} is configured for ${configured_target}, but that device does not exist." >&2
+      done < <(tr '\0' '\n' < "/proc/${pid}/cmdline" 2>/dev/null | grep -E '^/dev/video[0-9]+$' || true)
     done < <(pgrep -x "${requested}" 2>/dev/null || true)
   fi
 
