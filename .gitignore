@@ -5,6 +5,21 @@ env/
 __pycache__/
 *.py[cod]
 *.egg-info/
+
+# Local datasets, model artifacts, and training outputs.
+data/
+models/
+*.pt
+*.pth
+*.onnx
+*.engine
+*.tflite
+*.mlmodel
+*.safetensors
+*.ckpt
+*.weights
+*.cache
+*.lock
 runs/*
 !runs/.gitkeep
 data/sources/
