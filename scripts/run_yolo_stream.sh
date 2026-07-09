@@ -19,6 +19,8 @@ MAIN_CAMERA_NAME="${MAIN_CAMERA_NAME:-main}"
 CHEST_CAMERA_NAME="${CHEST_CAMERA_NAME:-chest}"
 MAIN_DEVICE="${MAIN_DEVICE:-videohub_pc4}"
 CHEST_DEVICE="${CHEST_DEVICE:-videohub_pc4_ch}"
+MAIN_STREAM_DEVICE="${MAIN_DEVICE}"
+CHEST_STREAM_DEVICE="${CHEST_DEVICE}"
 IMGSZ="${IMGSZ:-320}"
 CONF="${CONF:-0.35}"
 INFER_EVERY="${INFER_EVERY:-1}"
@@ -35,10 +37,81 @@ STOP_EXISTING="${STOP_EXISTING:-1}"
 
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
+resolve_camera_device() {
+  local label="$1"
+  local requested="$2"
+  local fallback_index="$3"
+  local numeric_suffix
+  local candidate
+
+  if [[ -e "${requested}" ]]; then
+    printf '%s\n' "${requested}"
+    return 0
+  fi
+
+  if [[ "${requested}" == /dev/* ]]; then
+    if [[ -e "${requested}" ]]; then
+      printf '%s\n' "${requested}"
+      return 0
+    fi
+  elif [[ "${requested}" == video* ]]; then
+    if [[ -e "/dev/${requested}" ]]; then
+      printf '/dev/%s\n' "${requested}"
+      return 0
+    fi
+  fi
+
+  # Common Unitree naming pattern:
+  #   videohub_pc4     -> /dev/video4 (main)
+  #   videohub_pc4_ch  -> /dev/video5 (chest)
+  if [[ "${requested}" =~ ([0-9]+) ]]; then
+    numeric_suffix="${BASH_REMATCH[1]}"
+    if [[ "${requested}" == *"_ch"* ]]; then
+      candidate="/dev/video$((numeric_suffix + 1))"
+    else
+      candidate="/dev/video${numeric_suffix}"
+    fi
+    if [[ -e "${candidate}" ]]; then
+      printf '%s\n' "${candidate}"
+      return 0
+    fi
+
+    if [[ "${requested}" == *"_ch"* ]] && [[ -e "/dev/video${numeric_suffix}" ]]; then
+      echo "Could not map chest alias ${requested}; ${candidate} does not exist. Falling back to /dev/video${numeric_suffix}." >&2
+      printf '%s\n' "/dev/video${numeric_suffix}"
+      return 0
+    fi
+  fi
+
+  echo "Could not resolve ${label} camera device: ${requested}" >&2
+
+  mapfile -t camera_devices < <(ls -1 /dev/video* 2>/dev/null | sort -V)
+  if (( ${#camera_devices[@]} == 0 )); then
+    echo "No /dev/video* devices found. Falling back to requested string: ${requested}" >&2
+    echo "${requested}"
+    return 0
+  fi
+
+  if (( fallback_index < ${#camera_devices[@]} )); then
+    printf '%s\n' "${camera_devices[fallback_index]}"
+    return 0
+  fi
+
+  printf '%s\n' "${camera_devices[0]}"
+}
+
 if [[ "${STOP_EXISTING}" == "1" ]]; then
   pkill -f "object_tracking.yolo_stream_server" >/dev/null 2>&1 || true
   pkill -f "gst-launch-1.0 -q .*fdsink fd=1" >/dev/null 2>&1 || true
   sleep 0.5
+fi
+
+if [[ -z "${PIPELINE}" ]]; then
+  MAIN_STREAM_DEVICE="$(resolve_camera_device "main" "${MAIN_DEVICE}" 0)"
+fi
+
+if [[ "${DUAL_STREAMS}" == "1" && -z "${PIPELINE}" ]]; then
+  CHEST_STREAM_DEVICE="$(resolve_camera_device "chest" "${CHEST_DEVICE}" 1)"
 fi
 
 args=()
@@ -75,8 +148,8 @@ run_stream() {
 }
 
 if [[ "${DUAL_STREAMS}" == "1" && -z "${PIPELINE}" ]]; then
-  echo "Starting Unitree G1 main camera stream on http://${HOST}:${MAIN_PORT} (${MAIN_DEVICE})"
-  G1_CAMERA_NAME="${MAIN_CAMERA_NAME}" G1_CAMERA_DEVICE="${MAIN_DEVICE}" \
+  echo "Starting Unitree G1 main camera stream on http://${HOST}:${MAIN_PORT} (${MAIN_STREAM_DEVICE})"
+  G1_CAMERA_NAME="${MAIN_CAMERA_NAME}" G1_CAMERA_DEVICE="${MAIN_STREAM_DEVICE}" \
     "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
       --camera-name "${MAIN_CAMERA_NAME}" \
       --port "${MAIN_PORT}" \
@@ -84,9 +157,9 @@ if [[ "${DUAL_STREAMS}" == "1" && -z "${PIPELINE}" ]]; then
       "$@" &
   main_pid=$!
 
-  echo "Starting Unitree G1 chest camera stream on http://${HOST}:${CHEST_PORT} (${CHEST_DEVICE})"
+  echo "Starting Unitree G1 chest camera stream on http://${HOST}:${CHEST_PORT} (${CHEST_STREAM_DEVICE})"
   trap 'kill "${main_pid}" >/dev/null 2>&1 || true' EXIT INT TERM
-  G1_CAMERA_NAME="${CHEST_CAMERA_NAME}" G1_CAMERA_DEVICE="${CHEST_DEVICE}" \
+  G1_CAMERA_NAME="${CHEST_CAMERA_NAME}" G1_CAMERA_DEVICE="${CHEST_STREAM_DEVICE}" \
     exec "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
       --camera-name "${CHEST_CAMERA_NAME}" \
       --port "${CHEST_PORT}" \
@@ -94,5 +167,5 @@ if [[ "${DUAL_STREAMS}" == "1" && -z "${PIPELINE}" ]]; then
       "$@"
 fi
 
-run_stream "${MAIN_CAMERA_NAME}" "${MAIN_DEVICE}" "${PORT}" \
+run_stream "${MAIN_CAMERA_NAME}" "${MAIN_STREAM_DEVICE}" "${PORT}" \
   "$@"

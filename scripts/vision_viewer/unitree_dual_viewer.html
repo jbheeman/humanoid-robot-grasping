@@ -1,0 +1,285 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Unitree G1 Dual Camera Viewer</title>
+  <style>
+    :root {
+      color-scheme: dark;
+    }
+
+    body {
+      margin: 0;
+      font-family: Arial, Helvetica, sans-serif;
+      background: #111;
+      color: #f0f0f0;
+    }
+
+    .top {
+      padding: 12px 16px;
+      border-bottom: 1px solid #2e2e2e;
+      background: #171717;
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+
+    .row {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 12px;
+      padding: 12px;
+    }
+
+    @media (min-width: 900px) {
+      .row {
+        grid-template-columns: 1fr 1fr;
+      }
+    }
+
+    .panel {
+      border: 1px solid #2f2f2f;
+      border-radius: 8px;
+      padding: 8px;
+      background: #1c1c1c;
+    }
+
+    h1,
+    h2 {
+      margin: 0 0 6px;
+      font-size: 16px;
+      font-weight: 600;
+    }
+
+    .controls {
+      font-size: 13px;
+      color: #cfcfcf;
+      display: grid;
+      grid-template-columns: auto 1fr;
+      gap: 6px 10px;
+      align-items: center;
+    }
+
+    label {
+      opacity: 0.95;
+    }
+
+    input,
+    button {
+      width: 100%;
+      padding: 6px 8px;
+      background: #262626;
+      color: #f6f6f6;
+      border: 1px solid #3c3c3c;
+      border-radius: 6px;
+    }
+
+    button {
+      cursor: pointer;
+      background: #2f5dc6;
+      border-color: #2f5dc6;
+      color: #fff;
+      width: auto;
+      min-width: 120px;
+    }
+
+    button:hover {
+      filter: brightness(1.07);
+    }
+
+    .streams {
+      display: grid;
+      gap: 8px;
+    }
+
+    .stream {
+      width: 100%;
+      height: auto;
+      border: 1px solid #3a3a3a;
+      background: #000;
+      object-fit: contain;
+      aspect-ratio: 16/9;
+    }
+
+    .small-note {
+      color: #9c9c9c;
+      font-size: 12px;
+      margin-top: 4px;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 4px 8px;
+      border: 1px solid #3f3f3f;
+      border-radius: 999px;
+      font-size: 12px;
+      margin-right: 8px;
+    }
+
+    .dot {
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: #f59e0b;
+    }
+
+    .dot.ok {
+      background: #22c55e;
+    }
+
+    .footer {
+      padding: 8px 12px 14px;
+      color: #a7a7a7;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="top">
+    <h1>Unitree G1 Dual Camera Viewer</h1>
+    <p class="small-note">Verifies both /stream.mjpg endpoints are producing frames.</p>
+    <div>
+      <span class="pill">
+        <span id="mainStatus" class="dot"></span>
+        <span>Main status</span>
+      </span>
+      <span class="pill">
+        <span id="chestStatus" class="dot"></span>
+        <span>Chest status</span>
+      </span>
+    </div>
+  </div>
+
+  <div class="row">
+    <section class="panel">
+      <h2>Main camera</h2>
+      <div class="streams">
+        <img id="mainStream" class="stream" src="" alt="main camera stream" />
+      </div>
+      <div class="small-note">
+        Endpoint: <span id="mainEndpoint"></span>
+      </div>
+      <div class="small-note">
+        Health: <span id="mainHealth">Checking...</span> | Snapshot: <a id="mainSnapshot" href="#" target="_blank">/snapshot.jpg</a> |
+        Detections: <a id="mainDetections" href="#" target="_blank">/detections</a>
+      </div>
+    </section>
+
+    <section class="panel">
+      <h2>Chest camera</h2>
+      <div class="streams">
+        <img id="chestStream" class="stream" src="" alt="chest camera stream" />
+      </div>
+      <div class="small-note">
+        Endpoint: <span id="chestEndpoint"></span>
+      </div>
+      <div class="small-note">
+        Health: <span id="chestHealth">Checking...</span> | Snapshot: <a id="chestSnapshot" href="#" target="_blank">/snapshot.jpg</a> |
+        Detections: <a id="chestDetections" href="#" target="_blank">/detections</a>
+      </div>
+    </section>
+  </div>
+
+  <div class="panel footer">
+    <div class="controls">
+      <label for="mainInput">Main stream URL</label>
+      <input id="mainInput" type="text" placeholder="http://127.0.0.1:8000/stream.mjpg" />
+      <label for="chestInput">Chest stream URL</label>
+      <input id="chestInput" type="text" placeholder="http://127.0.0.1:8001/stream.mjpg" />
+      <button id="applyBtn" type="button">Apply URLs</button>
+    </div>
+  </div>
+
+  <script>
+    function cacheBusted(url) {
+      const separator = url.includes("?") ? "&" : "?";
+      return `${url}${separator}ts=${Date.now()}`;
+    }
+
+    function normalizeStreamBase(url) {
+      return url.replace(/\/$/, "");
+    }
+
+    function makeApiBase(streamBase) {
+      return streamBase.endsWith("/stream.mjpg")
+        ? streamBase.replace(/\/stream\.mjpg$/, "")
+        : streamBase.replace(/\/$/, "");
+    }
+
+    const params = new URLSearchParams(window.location.search);
+    const hostFromQuery = params.get("host") || "127.0.0.1";
+    const mainDefault = params.get("main") || `http://${hostFromQuery}:8000/stream.mjpg`;
+    const chestDefault = params.get("chest") || `http://${hostFromQuery}:8001/stream.mjpg`;
+
+    const mainInput = document.getElementById("mainInput");
+    const chestInput = document.getElementById("chestInput");
+    const mainStreamEl = document.getElementById("mainStream");
+    const chestStreamEl = document.getElementById("chestStream");
+    const mainEndpointEl = document.getElementById("mainEndpoint");
+    const chestEndpointEl = document.getElementById("chestEndpoint");
+    const mainHealthEl = document.getElementById("mainHealth");
+    const chestHealthEl = document.getElementById("chestHealth");
+    const mainSnapshot = document.getElementById("mainSnapshot");
+    const chestSnapshot = document.getElementById("chestSnapshot");
+    const mainDetections = document.getElementById("mainDetections");
+    const chestDetections = document.getElementById("chestDetections");
+    const mainStatus = document.getElementById("mainStatus");
+    const chestStatus = document.getElementById("chestStatus");
+    const applyBtn = document.getElementById("applyBtn");
+
+    let currentMain = normalizeStreamBase(mainDefault);
+    let currentChest = normalizeStreamBase(chestDefault);
+
+    function applyStreamStatus(statusEl, value) {
+      const isOnline = value;
+      statusEl.classList.toggle("ok", isOnline);
+    }
+
+    function buildAuxLinks(streamBase) {
+      const apiBase = makeApiBase(streamBase);
+      return {
+        snapshot: `${apiBase}/snapshot.jpg`,
+        detections: `${apiBase}/detections`,
+      };
+    }
+
+    function applyStreams(main, chest) {
+      currentMain = normalizeStreamBase(main);
+      currentChest = normalizeStreamBase(chest);
+
+      mainInput.value = currentMain;
+      chestInput.value = currentChest;
+      mainEndpointEl.textContent = currentMain;
+      chestEndpointEl.textContent = currentChest;
+
+      mainStreamEl.onload = () => applyStreamStatus(mainStatus, true);
+      chestStreamEl.onload = () => applyStreamStatus(chestStatus, true);
+      mainStreamEl.onerror = () => applyStreamStatus(mainStatus, false);
+      chestStreamEl.onerror = () => applyStreamStatus(chestStatus, false);
+
+      mainStreamEl.src = cacheBusted(currentMain);
+      chestStreamEl.src = cacheBusted(currentChest);
+
+      const mainAux = buildAuxLinks(currentMain);
+      const chestAux = buildAuxLinks(currentChest);
+      mainSnapshot.href = mainAux.snapshot;
+      chestSnapshot.href = chestAux.snapshot;
+      mainDetections.href = mainAux.detections;
+      chestDetections.href = chestAux.detections;
+      mainHealthEl.textContent = "stream endpoint set";
+      chestHealthEl.textContent = "stream endpoint set";
+    }
+
+    applyBtn.addEventListener("click", () => {
+      const main = mainInput.value.trim() || currentMain;
+      const chest = chestInput.value.trim() || currentChest;
+      applyStreams(main, chest);
+    });
+
+    applyStreams(currentMain, currentChest);
+  </script>
+</body>
+</html>

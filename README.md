@@ -202,9 +202,63 @@ Useful endpoints:
 /health
 ```
 
+### Quick dual-camera viewer
+
+Use this to verify both camera streams from one web page:
+
+```bash
+MAIN_STREAM_PORT=8000 CHEST_STREAM_PORT=8001 ./scripts/run_dual_camera_viewer.sh
+```
+
+Open:
+
+```text
+http://127.0.0.1:8080/unitree_dual_viewer.html
+```
+
+If the streams are on a different host (for example robot SSH tunnel), pass those host names:
+
+```bash
+VIEW_HOST=192.168.0.122 \
+VIEWER_HOST=0.0.0.0 \
+MAIN_STREAM_PORT=8000 \
+CHEST_STREAM_PORT=8001 \
+./scripts/run_dual_camera_viewer.sh
+```
+
+You can also point to explicit URLs:
+
+```bash
+MAIN_STREAM_URL=http://127.0.0.1:8000/stream.mjpg \
+CHEST_STREAM_URL=http://127.0.0.1:8001/stream.mjpg \
+./scripts/run_dual_camera_viewer.sh
+```
+
 If `/snapshot.jpg` returns `503`, the camera loop has not produced a decoded frame yet. Check the GStreamer pipeline and make sure nothing drops RTP/H264 packets before `rtph264depay`.
 
 The setup script uses `uv venv --system-site-packages .venv`, so the project keeps the standard `.venv` name while still seeing Ubuntu's system OpenCV with GStreamer enabled. It also removes pip OpenCV wheels because those usually do not include GStreamer.
+
+### Map camera devices on the Ubuntu vision box
+
+Use this when stream names like `videohub_pc4` are not present as `/dev` nodes:
+
+```bash
+./scripts/list_camera_bindings.sh
+```
+
+Typical output shows:
+- `/dev/videoN -> device-name`
+- which process holds each `/dev/videoN`
+
+Then start streams by binding directly:
+
+```bash
+MAIN_DEVICE=/dev/video4 CHEST_DEVICE=/dev/video5 ./scripts/run_opencv_yolo_stream.sh
+```
+
+If you still pass `videohub_pc4`/`videohub_pc4_ch`, the scripts now map:
+- `videohub_pc4` → `/dev/video4`
+- `videohub_pc4_ch` → `/dev/video5` (fallbacks to the second available index if that is not present)
 
 If YOLO is enabled with `MODEL=...`, trade a little detector update rate for more camera/browser FPS without editing files:
 
