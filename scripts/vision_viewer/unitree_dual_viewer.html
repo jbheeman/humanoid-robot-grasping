@@ -210,7 +210,7 @@
     }
 
     const params = new URLSearchParams(window.location.search);
-    const hostFromQuery = params.get("host") || "127.0.0.1";
+    const hostFromQuery = params.get("host") || window.location.hostname || "127.0.0.1";
     const mainDefault = params.get("main") || `http://${hostFromQuery}:8000/stream.mjpg`;
     const chestDefault = params.get("chest") || `http://${hostFromQuery}:8001/stream.mjpg`;
 

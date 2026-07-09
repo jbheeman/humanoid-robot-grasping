@@ -41,6 +41,9 @@ resolve_camera_device() {
   local label="$1"
   local requested="$2"
   local fallback_index="$3"
+  local pid
+  local fd
+  local target
   local numeric_suffix
   local candidate
 
@@ -61,29 +64,43 @@ resolve_camera_device() {
     fi
   fi
 
+  # Unitree's videohub names are process names, not device nodes. Prefer the
+  # device actually opened by that process over deriving a video index.
+  if command -v pgrep >/dev/null 2>&1; then
+    while read -r pid; do
+      [[ -n "${pid}" ]] || continue
+      for fd in "/proc/${pid}/fd/"*; do
+        [[ -e "${fd}" ]] || continue
+        target="$(readlink -f "${fd}" 2>/dev/null || true)"
+        if [[ "${target}" =~ ^/dev/video[0-9]+$ ]]; then
+          printf '%s\n' "${target}"
+          return 0
+        fi
+      done
+    done < <(pgrep -x "${requested}" 2>/dev/null || true)
+  fi
+
   # Common Unitree naming pattern:
-  #   videohub_pc4     -> /dev/video4 (main)
-  #   videohub_pc4_ch  -> /dev/video5 (chest)
+  #   videohub_pc4 -> /dev/video4 (main)
+  # The chest process does not have a guaranteed numeric mapping.
   if [[ "${requested}" =~ ([0-9]+) ]]; then
     numeric_suffix="${BASH_REMATCH[1]}"
-    if [[ "${requested}" == *"_ch"* ]]; then
-      candidate="/dev/video$((numeric_suffix + 1))"
-    else
+    if [[ "${requested}" != *"_ch"* ]]; then
       candidate="/dev/video${numeric_suffix}"
-    fi
-    if [[ -e "${candidate}" ]]; then
-      printf '%s\n' "${candidate}"
-      return 0
-    fi
-
-    if [[ "${requested}" == *"_ch"* ]] && [[ -e "/dev/video${numeric_suffix}" ]]; then
-      echo "Could not map chest alias ${requested}; ${candidate} does not exist. Falling back to /dev/video${numeric_suffix}." >&2
-      printf '%s\n' "/dev/video${numeric_suffix}"
-      return 0
+      if [[ -e "${candidate}" ]]; then
+        printf '%s\n' "${candidate}"
+        return 0
+      fi
     fi
   fi
 
   echo "Could not resolve ${label} camera device: ${requested}" >&2
+
+  if [[ "${requested}" == *"_ch"* ]]; then
+    echo "Inspect the process binding, then set CHEST_DEVICE explicitly:" >&2
+    echo "  ./scripts/list_camera_bindings.sh ${requested}" >&2
+    return 1
+  fi
 
   mapfile -t camera_devices < <(ls -1 /dev/video* 2>/dev/null | sort -V)
   if (( ${#camera_devices[@]} == 0 )); then

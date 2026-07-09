@@ -1,6 +1,35 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+PROCESS_NAME="${1:-}"
+
+if [[ -n "${PROCESS_NAME}" ]]; then
+  echo "Video devices opened by process '${PROCESS_NAME}':"
+  found_process=0
+  found_device=0
+  while read -r pid; do
+    [[ -n "${pid}" ]] || continue
+    found_process=1
+    echo "  PID ${pid}: $(tr '\0' ' ' < "/proc/${pid}/cmdline" 2>/dev/null || true)"
+    for fd in "/proc/${pid}/fd/"*; do
+      [[ -e "${fd}" ]] || continue
+      target="$(readlink -f "${fd}" 2>/dev/null || true)"
+      if [[ "${target}" =~ ^/dev/video[0-9]+$ ]]; then
+        echo "    fd $(basename "${fd}") -> ${target}"
+        found_device=1
+      fi
+    done
+  done < <(pgrep -x "${PROCESS_NAME}" 2>/dev/null || true)
+
+  if [[ "${found_process}" == "0" ]]; then
+    echo "  No exact process named '${PROCESS_NAME}' is running."
+  elif [[ "${found_device}" == "0" ]]; then
+    echo "  No readable /dev/video* file descriptor found. Try with sudo:"
+    echo "    sudo ./scripts/list_camera_bindings.sh ${PROCESS_NAME}"
+  fi
+  echo
+fi
+
 echo "Detected /dev/video devices (sysfs):"
 if [[ -d /sys/class/video4linux ]]; then
   for dev in /sys/class/video4linux/video*; do
@@ -63,3 +92,4 @@ fi
 echo
 echo "Tip: when streams fail, compare process bindings:"
 echo "  ps -eo pid,user,cmd | grep -E 'videohub_pc4|run_yolo_stream|yolo_stream_server|gst-launch-1.0' | grep -v grep"
+echo "  sudo ./scripts/list_camera_bindings.sh videohub_pc4_ch"

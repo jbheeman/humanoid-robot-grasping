@@ -125,51 +125,80 @@ uv run python scripts/run_manual_tracker.py --camera 0 --output runs/object_manu
 
 ## Vision FastAPI stream
 
-For low-latency browser preview, use the headless FastAPI MJPEG server instead of Streamlit. By default it reads the direct RealSense/V4L2 color stream, scales to `640x360`, and serves the latest JPEG at `/stream.mjpg`. YOLO inference is optional and requires `uv sync --only-group vision --only-group train --locked`.
+The runtime is split across three machines:
 
-On the Ubuntu vision box, run this once:
-
-```bash
-cd ~/Documents/project
-./scripts/setup_vision_server.sh
+```text
+G1 camera processes -> robot capture-only MJPEG -> GB10 YOLO + viewer -> SSH tunnel -> laptop browser
 ```
 
-Then start the Unitree G1 30 FPS camera stream servers:
+### Robot: capture only
 
-```bash
-./scripts/run_yolo_stream.sh
-```
-
-If you need a strict OpenCV-only path that uses system `/usr/bin/python3` OpenCV + GStreamer on the robot, use the dedicated path:
+Use the robot's system OpenCV + GStreamer environment. This does not install or run YOLO:
 
 ```bash
 ./scripts/setup_opencv_vision_server.sh
-./scripts/run_opencv_yolo_stream.sh
+sudo ./scripts/list_camera_bindings.sh videohub_pc4_ch
+MAIN_DEVICE=/dev/video4 CHEST_DEVICE=/dev/videoX ./scripts/run_robot_vision_server.sh
 ```
 
-This keeps the main setup unchanged and writes to `.venv-opencv` instead of `.venv`. It forces
-`--capture-backend opencv` so the stream stays on `cv2.VideoCapture(..., CAP_GSTREAMER)` and does not use the gst-launch fallback.
-
-By default this starts two MJPEG servers:
+Replace `/dev/videoX` with the device shown for the `videohub_pc4_ch` process. The two raw robot endpoints are:
 
 ```text
-main camera:  http://0.0.0.0:8000  device=/dev/videohub_pc4
-chest camera: http://0.0.0.0:8001  device=/dev/videohub_pc4_ch
+main:  http://ROBOT_IP:8000/stream.mjpg
+chest: http://ROBOT_IP:8001/stream.mjpg
 ```
 
-Open these from the MacBook using the Ubuntu vision box IP, for example:
+The OpenCV setup writes `.venv-opencv` and uses `/usr/bin/python3`, preserving Ubuntu's GStreamer-enabled OpenCV. `MODEL=none` keeps CUDA, Torch, and Ultralytics off the robot.
 
-```text
-http://192.168.0.122:8000
-http://192.168.0.122:8001
+### GB10: inference and viewer
+
+Install the vision and training groups on the GB10:
+
+```bash
+uv sync --only-group vision --only-group train --locked
 ```
 
-The defaults are already set for the current Unitree G1 plan:
+Start both YOLO servers, consuming the robot's MJPEG feeds:
+
+```bash
+ROBOT_HOST=192.168.0.212 \
+MODEL=models/plushie_detector/yolo11x_plushie/weights/best.pt \
+./scripts/run_gb10_vision_server.sh
+```
+
+The GB10 command serves processed streams and detections on ports 8000 and 8001 and starts the dual viewer on port 8080.
+
+### Laptop: SSH tunnel and browser
+
+From the laptop, forward the viewer and both GB10 inference ports:
+
+```bash
+ssh -N \
+  -L 8080:127.0.0.1:8080 \
+  -L 8000:127.0.0.1:8000 \
+  -L 8001:127.0.0.1:8001 \
+  USER@GB10_HOST
+```
+
+Then open:
 
 ```text
-main pipeline=v4l2src device=/dev/videohub_pc4 ... framerate=30/1
-chest pipeline=v4l2src device=/dev/videohub_pc4_ch ... framerate=30/1
-model=none (raw camera stream; set MODEL=... only after installing the train group)
+http://127.0.0.1:8080/unitree_dual_viewer.html
+```
+
+The raw robot server defaults are:
+
+```text
+main camera:  http://0.0.0.0:8000
+chest camera: http://0.0.0.0:8001
+```
+
+Capture defaults:
+
+```text
+main pipeline=v4l2src device=/dev/video4 ... framerate=30/1
+chest pipeline=v4l2src device=/dev/videoX ... framerate=30/1
+model=none
 imgsz=320
 conf=0.35
 infer_every=1
@@ -202,31 +231,7 @@ Useful endpoints:
 /health
 ```
 
-### Quick dual-camera viewer
-
-Use this to verify both camera streams from one web page:
-
-```bash
-MAIN_STREAM_PORT=8000 CHEST_STREAM_PORT=8001 ./scripts/run_dual_camera_viewer.sh
-```
-
-Open:
-
-```text
-http://127.0.0.1:8080/unitree_dual_viewer.html
-```
-
-If the streams are on a different host (for example robot SSH tunnel), pass those host names:
-
-```bash
-VIEW_HOST=192.168.0.122 \
-VIEWER_HOST=0.0.0.0 \
-MAIN_STREAM_PORT=8000 \
-CHEST_STREAM_PORT=8001 \
-./scripts/run_dual_camera_viewer.sh
-```
-
-You can also point to explicit URLs:
+The viewer can also point to explicit stream URLs:
 
 ```bash
 MAIN_STREAM_URL=http://127.0.0.1:8000/stream.mjpg \
@@ -238,27 +243,27 @@ If `/snapshot.jpg` returns `503`, the camera loop has not produced a decoded fra
 
 The setup script uses `uv venv --system-site-packages .venv`, so the project keeps the standard `.venv` name while still seeing Ubuntu's system OpenCV with GStreamer enabled. It also removes pip OpenCV wheels because those usually do not include GStreamer.
 
-### Map camera devices on the Ubuntu vision box
+### Map camera processes to robot video devices
 
-Use this when stream names like `videohub_pc4` are not present as `/dev` nodes:
-
-```bash
-./scripts/list_camera_bindings.sh
-```
-
-Typical output shows:
-- `/dev/videoN -> device-name`
-- which process holds each `/dev/videoN`
-
-Then start streams by binding directly:
+`videohub_pc4` and `videohub_pc4_ch` are process names, not `/dev` nodes. Inspect the file descriptors held by the chest process:
 
 ```bash
-MAIN_DEVICE=/dev/video4 CHEST_DEVICE=/dev/video5 ./scripts/run_opencv_yolo_stream.sh
+sudo ./scripts/list_camera_bindings.sh videohub_pc4_ch
 ```
 
-If you still pass `videohub_pc4`/`videohub_pc4_ch`, the scripts now map:
-- `videohub_pc4` → `/dev/video4`
-- `videohub_pc4_ch` → `/dev/video5` (fallbacks to the second available index if that is not present)
+For a direct one-liner on the robot:
+
+```bash
+for pid in $(pgrep -x videohub_pc4_ch); do echo "PID $pid"; sudo ls -l "/proc/$pid/fd" | grep -E -- '/dev/video[0-9]+'; done
+```
+
+Then bind the discovered node explicitly:
+
+```bash
+MAIN_DEVICE=/dev/video4 CHEST_DEVICE=/dev/videoX ./scripts/run_robot_vision_server.sh
+```
+
+The launch scripts inspect a running videohub process first. They retain `/dev/video4` as the known main-camera fallback, but refuse to guess the chest node.
 
 If YOLO is enabled with `MODEL=...`, trade a little detector update rate for more camera/browser FPS without editing files:
 
