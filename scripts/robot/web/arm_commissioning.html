@@ -116,11 +116,10 @@
       </div>
     </section>
 
-    <section class="setup" aria-label="Connection and operator authorization">
+    <section class="setup" aria-label="Connection">
       <div class="field"><label for="token">Bearer token — held in memory only</label><input id="token" type="password" autocomplete="off" /></div>
       <div class="field"><label for="operator">Operator name</label><input id="operator" autocomplete="name" /></div>
       <div class="field"><label for="clientId">Client ID</label><input id="clientId" value="macbook-browser" /></div>
-      <div class="field" style="grid-column:1/-1"><label for="ack">Type exactly: I HAVE CLEARED THE ROBOT AREA</label><input id="ack" autocomplete="off" /></div>
       <div class="actions" style="grid-column:1/-1">
         <button id="connectBtn">Connect</button>
         <button id="startBtn" class="primary" disabled>Create session</button>
@@ -156,7 +155,7 @@
         <div class="panel-body">
           <div id="safetyKv" class="kv"><div>Bridge</div><div>—</div><div>Stable standing</div><div>—</div><div>Motion mode</div><div>—</div><div>Controller ownership</div><div>—</div><div>Arm weight</div><div>—</div><div>Loop misses</div><div>—</div></div>
           <h3 style="margin-top:18px">Enforced order</h3>
-          <ol class="workflow"><li>Preflight and operator acknowledgment</li><li>Enable at measured pose</li><li>Verify ± direction for each joint</li><li>Teach with 0.01 rad jogs</li><li>Approve each 0.05 rad stage</li><li>Capture and replay candidate twice</li><li>Stop, disarm, then promote</li></ol>
+          <ol class="workflow"><li>Connect and inspect preflight</li><li>Enable at measured pose</li><li>Verify ± direction for each joint</li><li>Teach with 0.01 rad jogs</li><li>Approve each 0.05 rad stage</li><li>Capture and replay candidate twice</li><li>Stop, disarm, then promote</li></ol>
         </div>
       </aside>
     </div>
@@ -165,7 +164,6 @@
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
-    const ACK = "I HAVE CLEARED THE ROBOT AREA";
     let state = null, sessionId = null, sequence = 0, pollTimer = null, heartbeatTimer = null, authToken = "";
     const headers = () => ({"Authorization": `Bearer ${authToken}`, "Content-Type": "application/json"});
     async function api(path, body) {
@@ -215,7 +213,7 @@
     async function post(action, body={}, quiet=false) { try { const result=await api(sessionPath(action), body); render(result); if (!quiet) message(`${action} accepted`); } catch(error) { message(error.message, true); } }
     async function jog(joint_name, direction) { sequence += 1; await post("jogs", {sequence, joint_name, direction, kind: $("signMode").checked ? "sign_check" : "jog"}); }
     $("connectBtn").addEventListener("click", async () => { authToken=$("token").value; await refresh(); if (state) $("token").value=""; clearInterval(pollTimer); pollTimer=setInterval(refresh, 250); });
-    $("startBtn").addEventListener("click", async () => { if ($("ack").value !== ACK) return message("The safety acknowledgment must match exactly.", true); try { const value=await api("/api/v1/commissioning/sessions", {operator_ack: ACK, operator: $("operator").value, client_id: $("clientId").value}); sequence=0; render(value); message("Session created. Enabling will latch the measured pose."); } catch(error) { message(error.message, true); } });
+    $("startBtn").addEventListener("click", async () => { try { const value=await api("/api/v1/commissioning/sessions", {operator: $("operator").value, client_id: $("clientId").value}); sequence=0; render(value); message("Session created. Enabling will latch the measured pose."); } catch(error) { message(error.message, true); } });
     $("enableBtn").addEventListener("click", async () => { await post("enable"); clearInterval(heartbeatTimer); heartbeatTimer=setInterval(() => post("heartbeat", {}, true), 100); });
     $("confirmBtn").addEventListener("click", () => post("confirmations", {sequence: ++sequence, outcome: "accepted"}));
     $("confirmSignBtn").addEventListener("click", () => post("confirmations", {sequence: ++sequence, outcome: "expected"}));

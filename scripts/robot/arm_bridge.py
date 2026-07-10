@@ -122,8 +122,9 @@ def make_handler(
         server_version = "UnitreeArmBridge/1.0"
 
         def log_message(self, fmt: str, *args: object) -> None:
-            # BaseHTTPRequestHandler never receives the Authorization value.
-            print(f"{self.address_string()} - {fmt % args}", file=sys.stderr)
+            # The commissioning page polls state frequently. Keep the robot
+            # terminal readable; failures still reach the browser as JSON.
+            return
 
         def send_json(self, status: int, payload: dict[str, object]) -> None:
             raw = json.dumps(payload, sort_keys=True).encode("utf-8")

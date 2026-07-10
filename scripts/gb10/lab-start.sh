@@ -10,7 +10,7 @@ export MODEL="${MODEL:-${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quali
 export VISION_WIDTH="${VISION_WIDTH:-960}"
 export VISION_HEIGHT="${VISION_HEIGHT:-540}"
 export VISION_FPS="${VISION_FPS:-60}"
-export STREAM_FPS="${STREAM_FPS:-30}"
+export STREAM_FPS="${STREAM_FPS:-60}"
 export JPEG_QUALITY="${JPEG_QUALITY:-60}"
 export ACCESS_LOG="${ACCESS_LOG:-0}"
 

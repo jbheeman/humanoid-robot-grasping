@@ -25,6 +25,9 @@ from .joints import (
 from .visualization import visualization_state
 
 
+# Retained only as a compatibility export for older clients. The explicit
+# movement-capable launch command is the acknowledgement; the browser has no
+# second text gate.
 OPERATOR_ACK = "I HAVE CLEARED THE ROBOT AREA"
 
 
@@ -185,10 +188,6 @@ class CommissioningController:
             }:
                 raise ArmBridgeError(
                     "A commissioning session is already active", code="session_conflict"
-                )
-            if operator_ack != OPERATOR_ACK:
-                raise ArmBridgeError(
-                    "Exact operator safety acknowledgment is required", code="operator_ack_required"
                 )
             operator_name = self._required_text(operator, "operator")
             client = self._required_text(client_id, "client_id")

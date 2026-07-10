@@ -29,8 +29,8 @@ CLIENT_IP=NEW_GB10_IP bash scripts/robot/lab-start.sh
 
 ## GB10
 
-Start the 60 FPS, 960x540 YOLO11 dry-run server with suppressed successful
-HTTP access logs:
+Start the 60 FPS, 960x540 YOLO11 dry-run server with a 60 FPS browser-output
+target and suppressed successful HTTP access logs:
 
 ```bash
 bash scripts/gb10/lab-start.sh
@@ -53,3 +53,23 @@ MODEL=models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt bash scripts/g
 
 Arm commissioning and movement authorization remain intentionally separate;
 see [ARM_COMMISSIONING_RUNBOOK.md](ARM_COMMISSIONING_RUNBOOK.md).
+
+## Arm commissioning
+
+Stop `lab-start.sh` first because commissioning exclusively owns the arm-bridge
+port. Start a read-only preflight with:
+
+```bash
+bash scripts/robot/lab-commission.sh
+```
+
+Only with a cleared area, spotter, and physical e-stop, start the guarded
+movement-capable commissioning server:
+
+```bash
+bash scripts/robot/lab-commission.sh move
+```
+
+That command requires the physical-e-stop acknowledgement to be typed again;
+it does not move the robot on startup. The MacBook wizard creates and enables
+the session before a guarded 0.01-rad test jog is possible.

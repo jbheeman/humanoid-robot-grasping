@@ -11,7 +11,6 @@ EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-}"
 G1_ROBOT_ID="${G1_ROBOT_ID:-}"
 COMMISSIONING_ROOT="${COMMISSIONING_ROOT:-${ROOT_DIR}/runs/research/arm_commissioning}"
 COMMISSIONING_PROFILE="${COMMISSIONING_PROFILE:-${HOME}/.config/g1-grasping/right-arm-home.json}"
-COMMISSIONING_ACK="${COMMISSIONING_ACK:-}"
 
 if [[ ! -x "${ROBOT_PYTHON}" ]]; then
   echo "Missing robot environment: ${ROBOT_PYTHON}" >&2
@@ -33,10 +32,6 @@ fi
 if [[ "${ALLOW_MOVEMENT}" == "1" ]]; then
   if [[ -z "${EXPECTED_MOTION_MODE}" ]]; then
     echo "EXPECTED_MOTION_MODE is required for movement." >&2
-    exit 1
-  fi
-  if [[ "${COMMISSIONING_ACK}" != "I HAVE A SPOTTER AND PHYSICAL E-STOP" ]]; then
-    echo "Set COMMISSIONING_ACK='I HAVE A SPOTTER AND PHYSICAL E-STOP' to authorize startup." >&2
     exit 1
   fi
 fi

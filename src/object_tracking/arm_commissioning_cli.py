@@ -12,7 +12,6 @@ from urllib import request
 from urllib.error import HTTPError, URLError
 
 from .arm_tracking.arm_auth import load_token
-from .arm_tracking.arm_commissioning import OPERATOR_ACK
 from .arm_tracking.joints import RIGHT_ARM_JOINT_NAMES
 
 
@@ -56,7 +55,6 @@ def build_parser() -> argparse.ArgumentParser:
     start = subparsers.add_parser("start")
     start.add_argument("--operator", required=True)
     start.add_argument("--client-id", default=socket.gethostname())
-    start.add_argument("--ack-cleared-area", action="store_true", required=True)
     for command in ("enable", "heartbeat", "stop", "validate-replay", "promote", "watch"):
         child = subparsers.add_parser(command)
         child.add_argument("session_id")
@@ -94,7 +92,6 @@ def main() -> int:
             token,
             "/api/v1/commissioning/sessions",
             body={
-                "operator_ack": OPERATOR_ACK,
                 "operator": args.operator,
                 "client_id": args.client_id,
             },
