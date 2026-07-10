@@ -129,10 +129,10 @@
 
     <div class="grid">
       <section class="panel">
-        <div class="panel-header"><h2>Right-arm joint contract</h2><span id="phase" class="phase">NO SESSION</span></div>
+        <div class="panel-header"><h2>Shoulder controls</h2><span id="phase" class="phase">NO SESSION</span></div>
         <div class="table-wrap"><table>
           <thead><tr><th>Joint</th><th>SDK</th><th>Measured</th><th>From start</th><th>Jog 0.01 rad</th></tr></thead>
-          <tbody id="jointRows"><tr><td colspan="5" class="muted">Connect to load the verified joint contract.</td></tr></tbody>
+          <tbody id="jointRows"><tr><td colspan="5" class="muted">Connect to load the three enabled shoulder joints.</td></tr></tbody>
         </table></div>
         <div class="panel-body">
           <div class="actions">
@@ -195,7 +195,8 @@
       $("replayBtn").disabled = !ready || !value.candidate || !value.candidate.departed;
       $("validateBtn").disabled = !ready || !value.candidate;
       $("promoteBtn").disabled = bridge.state !== "DISARMED" || (value.replay_validations || 0) < 2;
-      const contract = value.joint_contract || [];
+      const movable = new Set(value.movable_joint_names || []);
+      const contract = (value.joint_contract || []).filter((joint) => movable.has(joint.name));
       const measured = value.measured_q || Array(7).fill(null);
       const delta = value.session_delta_q || Array(7).fill(null);
       $("jointRows").replaceChildren(...contract.map((joint, i) => {

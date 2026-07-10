@@ -29,6 +29,7 @@ from .visualization import visualization_state
 # movement-capable launch command is the acknowledgement; the browser has no
 # second text gate.
 OPERATOR_ACK = "I HAVE CLEARED THE ROBOT AREA"
+SHOULDER_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES[:3]
 
 
 class CommissioningPhase(str, Enum):
@@ -51,6 +52,7 @@ class CommissioningConfig:
     settle_dwell_s: float = 0.5
     motion_timeout_s: float = 5.0
     nonselected_drift_rad: float = 0.01
+    movable_joint_names: tuple[str, ...] = SHOULDER_JOINT_NAMES
     research_root: Path = Path("runs/research/arm_commissioning")
     profile_path: Path = Path.home() / ".config/g1-grasping/right-arm-home.json"
 
@@ -224,6 +226,7 @@ class CommissioningController:
                     "stage_limit_rad": self.config.stage_limit_rad,
                     "session_limit_rad_per_joint": self.config.session_limit_rad,
                 },
+                "movable_joint_names": list(self.config.movable_joint_names),
             }
             _atomic_json(directory / "manifest.json", manifest)
             self.session = session
@@ -275,6 +278,11 @@ class CommissioningController:
             name = self._required_text(joint_name, "joint_name")
             if name not in RIGHT_ARM_JOINT_NAMES:
                 raise ArmBridgeError("Unknown right-arm joint", code="unknown_joint")
+            if name not in self.config.movable_joint_names:
+                raise ArmBridgeError(
+                    "Only shoulder joints are enabled for this commissioning run",
+                    code="shoulder_only",
+                )
             if isinstance(direction, bool) or direction not in (-1, 1):
                 raise ArmBridgeError("direction must be -1 or 1", code="invalid_direction")
             if kind not in {"jog", "sign_check", "replay"}:
@@ -592,6 +600,7 @@ class CommissioningController:
                 "phase": session.phase.value,
                 "joint_contract_id": joint_contract_id(),
                 "joint_contract": joint_contract(),
+                "movable_joint_names": list(self.config.movable_joint_names),
                 "baseline_q": None if baseline is None else list(baseline),
                 "stage_baseline_q": None
                 if session.stage_baseline_q is None

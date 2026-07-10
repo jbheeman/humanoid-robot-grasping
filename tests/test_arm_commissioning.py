@@ -65,7 +65,7 @@ class Hardware:
         self.state = replace(self.state, arm_q=arm_q, received_at=self.clock.value)
 
 
-def setup(tmp_path):
+def setup(tmp_path, *, movable_joint_names=RIGHT_ARM_JOINT_NAMES[:3]):
     clock = Clock()
     hardware = Hardware(clock)
     bridge = ArmBridgeController(
@@ -84,6 +84,7 @@ def setup(tmp_path):
     commissioning = CommissioningController(
         bridge,
         CommissioningConfig(
+            movable_joint_names=tuple(movable_joint_names),
             research_root=tmp_path / "runs",
             profile_path=tmp_path / "right-arm-home.json",
         ),
@@ -192,6 +193,20 @@ def test_one_joint_jog_settles_and_requires_confirmation(tmp_path) -> None:
     assert report["measured_q"] == pytest.approx([0.01, 0, 0, 0, 0, 0, 0])
 
 
+def test_commissioning_rejects_non_shoulder_jogs(tmp_path) -> None:
+    clock, _hardware, _bridge, commissioning = setup(tmp_path)
+    session_id = create_and_enable(clock, _hardware, _bridge, commissioning)
+
+    with pytest.raises(ArmBridgeError) as rejected:
+        commissioning.jog(
+            session_id,
+            sequence=1,
+            joint_name="right_elbow_joint",
+            direction=1,
+        )
+
+    assert rejected.value.code == "shoulder_only"
+
 def test_sign_check_requires_matching_encoder_delta(tmp_path) -> None:
     clock, hardware, bridge, commissioning = setup(tmp_path)
     session_id = create_and_enable(clock, hardware, bridge, commissioning)
@@ -265,7 +280,9 @@ def test_left_arm_drift_faults_commissioning(tmp_path) -> None:
 
 
 def test_sign_check_evidence_and_profile_promotion(tmp_path) -> None:
-    clock, hardware, bridge, commissioning = setup(tmp_path)
+    clock, hardware, bridge, commissioning = setup(
+        tmp_path, movable_joint_names=RIGHT_ARM_JOINT_NAMES
+    )
     session_id = create_and_enable(clock, hardware, bridge, commissioning)
     sequence = 0
     for name in RIGHT_ARM_JOINT_NAMES:

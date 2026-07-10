@@ -358,7 +358,11 @@ class ArmBridgeController:
                     "Tracking target rejected in commissioning mode", code="mode_mismatch"
                 )
             if self.state is not ArmState.ARMED:
-                raise ArmBridgeError("Arm must be ARMED before accepting targets", code="not_armed")
+                raise ArmBridgeError(
+                    f"Arm target rejected: bridge state is {self.state.value}; "
+                    "create a session, enable at measured pose, and wait for ARMED",
+                    code="not_armed",
+                )
             if self._required_string(session_id, "session_id") != self.session_id:
                 raise ArmBridgeError(
                     "Target session does not match the enabled session", code="session_mismatch"
@@ -452,7 +456,11 @@ class ArmBridgeController:
             if self.control_mode is not ArmControlMode.COMMISSIONING:
                 raise ArmBridgeError("Heartbeat rejected in tracking mode", code="mode_mismatch")
             if self.state not in (ArmState.ARMING, ArmState.ARMED):
-                raise ArmBridgeError("No active armed commissioning session", code="not_armed")
+                raise ArmBridgeError(
+                    f"Heartbeat rejected: bridge state is {self.state.value} and no "
+                    "commissioning session is armed",
+                    code="not_armed",
+                )
             if self._required_string(session_id, "session_id") != self.session_id:
                 raise ArmBridgeError("Heartbeat session mismatch", code="session_mismatch")
             self.last_target_at = now
