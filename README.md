@@ -4,6 +4,8 @@ The RealSense-guided right-arm pregrasp pipeline is implemented as a disarmed-by
 
 The GB10 startup output prints the exact browser URL and SSH tunnel command for a MacBook. Its research console combines live RGB/depth views with pipeline timing, detections, 3D targets, IK/arm state, rejection diagnostics, and downloadable JSONL telemetry stored under `runs/research/arm_tracking/`.
 
+For the shortest, discoverable command interface, use `uv run g1`. It groups setup, robot services, arm commissioning, streams, tuning, data, and training while preserving the existing host-specific scripts for automation. Start with `uv run g1 --help` and see [docs/COMMANDS.md](docs/COMMANDS.md).
+
 Joint-order validation and movement-free tuning helpers are documented in [docs/TUNING_GUIDE.md](docs/TUNING_GUIDE.md). Use `uv run g1-tune joint-audit`, `uv run g1-tune analyze runs/research/arm_tracking`, and `uv run g1-tune compare runs/research/arm_tracking` to verify the 29-DOF contract and compare controlled dry-run trials.
 
 Before tuning moving-object tracking, use the separate camera-free right-arm commissioning workflow in [docs/ARM_COMMISSIONING_RUNBOOK.md](docs/ARM_COMMISSIONING_RUNBOOK.md). The robot-local wizard and `g1-arm` CLI provide verified 0.01 rad one-joint jogs, 0.05 rad operator-approved stages, a 0.30 rad per-joint session envelope, deadman release, event logs, and explicit promotion of a measured home pose.
