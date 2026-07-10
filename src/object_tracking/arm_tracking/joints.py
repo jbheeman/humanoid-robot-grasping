@@ -21,6 +21,31 @@ LEFT_ARM_JOINT_NAMES = (
 RIGHT_ARM_JOINT_NAMES = tuple(name.replace("left_", "right_") for name in LEFT_ARM_JOINT_NAMES)
 ARM_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + RIGHT_ARM_JOINT_NAMES
 
+# Canonical Unitree G1 29-DOF LowState/LowCmd motor order.  This is deliberately
+# independent of URDF traversal order: SDK messages are positional contracts.
+LEFT_LEG_JOINT_NAMES = (
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+)
+RIGHT_LEG_JOINT_NAMES = tuple(name.replace("left_", "right_") for name in LEFT_LEG_JOINT_NAMES)
+WAIST_JOINT_NAMES = (
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+)
+BODY_JOINT_NAMES = (
+    LEFT_LEG_JOINT_NAMES
+    + RIGHT_LEG_JOINT_NAMES
+    + WAIST_JOINT_NAMES
+    + ARM_JOINT_NAMES
+)
+BODY_JOINT_INDICES = tuple(range(29))
+BODY_MODEL_ID = "unitree-g1-body29-hand14-xr-teleoperate"
+
 # Unitree G1 29-DOF LowState/LowCmd slots. Wrist pitch/yaw do not exist on
 # 23-DOF G1 variants, so the contract must be audited against the actual robot.
 LEFT_ARM_INDICES = (15, 16, 17, 18, 19, 20, 21)

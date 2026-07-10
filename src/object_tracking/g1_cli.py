@@ -40,6 +40,9 @@ class Route:
 
 
 ROUTES: dict[tuple[str, str], Route] = {
+    ("assets", "build"): Route(
+        "module", "object_tracking.g1_asset_builder", "build offline G1 visualization assets"
+    ),
     ("arm", "commissioning"): Route(
         "script", "scripts/robot/commission.sh", "robot-local guarded arm commissioning"
     ),
@@ -162,6 +165,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     subparsers = parser.add_subparsers(dest="group", metavar="GROUP", required=True)
     groups = {
+        "assets": "offline browser visualization assets",
         "arm": "arm commissioning and guarded movement",
         "calibrate": "camera/arm calibration",
         "data": "dataset capture, install, and augmentation",
@@ -332,12 +336,16 @@ def _run(route: Route, args: Sequence[str]) -> int:
 
 
 def main(argv: Sequence[str] | None = None) -> int:
+    raw_args = list(sys.argv[1:] if argv is None else argv)
     parser = build_parser()
-    namespace, extras = parser.parse_known_args(argv)
+    namespace, _extras = parser.parse_known_args(raw_args)
     route = ROUTES.get((namespace.group, namespace.workflow))
     if route is None:  # pragma: no cover - argparse choices make this unreachable.
         parser.error("unknown workflow")
-    return _run(route, [*namespace.args, *extras])
+    # argparse splits unknown option/value pairs around REMAINDER and can
+    # reverse them (``--target all`` became ``all --target``). The first two
+    # tokens are the validated group/workflow; preserve everything after them.
+    return _run(route, raw_args[2:])
 
 
 if __name__ == "__main__":

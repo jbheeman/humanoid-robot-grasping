@@ -22,6 +22,7 @@ from .joints import (
     joint_contract,
     joint_contract_id,
 )
+from .visualization import visualization_state
 
 
 OPERATOR_ACK = "I HAVE CLEARED THE ROBOT AREA"
@@ -81,6 +82,7 @@ class CommissioningSession:
     candidate: dict[str, Any] | None = None
     replay_validations: int = 0
     fault_reason: str | None = None
+    reference_body_q: tuple[float, ...] | None = None
 
 
 def _utc_now() -> str:
@@ -191,11 +193,17 @@ class CommissioningController:
             operator_name = self._required_text(operator, "operator")
             client = self._required_text(client_id, "client_id")
             session_id = secrets.token_urlsafe(18)
+            reference_state = self.bridge.hardware.latest_state()
             session = CommissioningSession(
                 session_id=session_id,
                 client_id=client,
                 operator=operator_name,
                 created_at=_utc_now(),
+                reference_body_q=(
+                    None
+                    if reference_state is None
+                    else tuple(reference_state.body_q)
+                ),
             )
             directory = self.config.research_root / session_id
             directory.mkdir(parents=True, exist_ok=False)
@@ -552,6 +560,31 @@ class CommissioningController:
             baseline = session.baseline_q
             measured_state = self.bridge.hardware.latest_state()
             measured = None if measured_state is None else tuple(measured_state.arm_q[7:])
+            bridge_report = self.bridge.state_report()
+            commanded_arm = bridge_report.get("commanded_arm_q")
+            pending = session.pending
+            selected_joint = (
+                None if pending is None else RIGHT_ARM_JOINT_NAMES[pending.joint_index]
+            )
+            visual = visualization_state(
+                measured_body_q=None if measured_state is None else measured_state.body_q,
+                measured_body_dq=None if measured_state is None else measured_state.body_dq,
+                commanded_arm_q=commanded_arm if isinstance(commanded_arm, list) else None,
+                reference_body_q=session.reference_body_q,
+                received_at=None if measured_state is None else measured_state.received_at,
+                now=self.monotonic(),
+                state_ttl_s=self.bridge.config.state_ttl_s,
+                selected_joint=selected_joint,
+                faulted_joints=(
+                    ()
+                    if measured_state is None
+                    else tuple(
+                        name
+                        for name in RIGHT_ARM_JOINT_NAMES
+                        if any(name in fault for fault in measured_state.motor_faults)
+                    )
+                ),
+            )
             return {
                 "ok": session.phase is not CommissioningPhase.FAULT,
                 "active": session.phase
@@ -576,7 +609,8 @@ class CommissioningController:
                 "candidate": session.candidate,
                 "replay_validations": session.replay_validations,
                 "fault_reason": session.fault_reason,
-                "bridge": self.bridge.state_report(),
+                "bridge": bridge_report,
+                "visualization": visual,
                 "limits": {
                     "jog_step_rad": self.config.jog_step_rad,
                     "stage_limit_rad": self.config.stage_limit_rad,

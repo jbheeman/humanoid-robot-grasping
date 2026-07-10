@@ -25,6 +25,7 @@ from .geometry import (
 from .ik_solver import G1RightArmIK, IKUnavailable, default_urdf_path
 from .protocol import DepthEnvelopeCodec
 from .tracking import PositionVelocityFilter
+from .visualization import visualization_state
 
 
 StatusCallback = Callable[[dict[str, Any], bytes | None], None]
@@ -142,6 +143,9 @@ class ArmTrackingRuntime:
         self.target_sequence = 0
         self.last_target_track: int | None = None
         self.last_process_at = 0.0
+        self.last_arm_poll_at = 0.0
+        self.last_arm_state: dict[str, Any] = {"state": "unreachable"}
+        self.reference_body_q: tuple[float, ...] | None = None
         self.arm_token = self._load_token(config.arm_token_file) if config.execute else None
         self.home_q: tuple[float, ...] | None = None
         if config.arm_home_path is not None:
@@ -260,6 +264,8 @@ class ArmTrackingRuntime:
             "calibration_id": self.calibration.calibration_id,
             "target_sequence": self.target_sequence,
         }
+        arm_state = self._arm_state()
+        base_status["visualization"] = self._visualization_context(arm_state)
         recognized_ids = {
             self.calibration.calibration_id,
             f"factory-{self.calibration.camera_serial}-{frame.z16.shape[1]}x{frame.z16.shape[0]}",
@@ -329,10 +335,26 @@ class ArmTrackingRuntime:
                 "target_xyz_m": target.position.round(5).tolist(),
             }
         )
+        base_status["visualization"].update(
+            {
+                "measured_object_xyz_m": base_status["object_xyz_m"],
+                "predicted_object_xyz_m": base_status["predicted_xyz_m"],
+                "predicted_trajectory_xyz_m": [
+                    base_status["object_xyz_m"],
+                    base_status["predicted_xyz_m"],
+                ],
+                "pregrasp_target_xyz_m": base_status["target_xyz_m"],
+            }
+        )
         if not self.calibration.workspace.contains(target.position):
             self._reject(base_status, "workspace_violation", colormap)
             return
         plane = self._support_plane(aligned, frame.depth_scale)
+        if plane is not None:
+            base_status["visualization"]["support_plane"] = {
+                "normal": plane.normal.tolist(),
+                "offset": float(plane.offset),
+            }
         if plane is None or not has_plane_clearance(target.position, plane):
             self._reject(base_status, "support_plane_clearance", colormap)
             return
@@ -340,7 +362,6 @@ class ArmTrackingRuntime:
             base_status.update({"ik_status": "unavailable", "ik_error": self.ik_error})
             self._reject(base_status, "ik_unavailable", colormap)
             return
-        arm_state = self._arm_state() if self.config.execute else {}
         last_arm = arm_state.get("commanded_arm_q")
         last_q = (
             last_arm[-7:]
@@ -364,6 +385,47 @@ class ArmTrackingRuntime:
         if not ik.ok or ik.q_rad is None:
             self._reject(base_status, f"ik_{ik.reason}", colormap)
             return
+        robot_visual = arm_state.get("visualization") or {}
+        measured_body = robot_visual.get("measured_pose_rad")
+        if isinstance(measured_body, list) and len(measured_body) == 29:
+            left_arm = measured_body[15:22]
+            commanded_arm = [*left_arm, *[float(value) for value in ik.q_rad]]
+            base_status["visualization"] = {
+                **base_status["visualization"],
+                **visualization_state(
+                    measured_body_q=measured_body,
+                    measured_body_dq=robot_visual.get("measured_velocity_rad_s"),
+                    commanded_arm_q=commanded_arm,
+                    reference_body_q=self.reference_body_q,
+                    received_at=robot_visual.get("received_monotonic_s"),
+                    now=(
+                        None
+                        if robot_visual.get("received_monotonic_s") is None
+                        else float(robot_visual["received_monotonic_s"])
+                        + float(robot_visual.get("state_age_ms") or 0.0) / 1000.0
+                    ),
+                    state_ttl_s=0.25,
+                    available=bool(robot_visual.get("available")),
+                    faulted_joints=robot_visual.get("faulted_joints") or (),
+                ),
+                "workspace_bounds": base_status["visualization"]["workspace_bounds"],
+                "camera": base_status["visualization"]["camera"],
+                "support_plane": base_status["visualization"].get("support_plane"),
+                "measured_object_xyz_m": base_status.get("object_xyz_m"),
+                "predicted_object_xyz_m": base_status.get("predicted_xyz_m"),
+                "predicted_trajectory_xyz_m": [
+                    base_status.get("object_xyz_m"),
+                    base_status.get("predicted_xyz_m"),
+                ],
+                "pregrasp_target_xyz_m": base_status.get("target_xyz_m"),
+                "end_effector_xyz_m": base_status.get("target_xyz_m"),
+                "ik_result": {
+                    "ok": True,
+                    "right_arm_q_rad": [float(value) for value in ik.q_rad],
+                    "position_error_m": ik.position_error_m,
+                    "orientation_error_rad": ik.orientation_error_rad,
+                },
+            }
         if self.config.execute:
             if arm_state.get("state") != "ARMED" or not arm_state.get("session_id"):
                 self._reject(base_status, "arm_not_explicitly_enabled", colormap)
@@ -398,13 +460,57 @@ class ArmTrackingRuntime:
             return None
 
     def _arm_state(self) -> dict[str, Any]:
+        now = time.monotonic()
+        if now - self.last_arm_poll_at < 0.1:
+            return self.last_arm_state
+        self.last_arm_poll_at = now
         try:
             with request.urlopen(
                 f"{self.config.arm_url.rstrip('/')}/state", timeout=0.2
             ) as response:
-                return json.loads(response.read())
+                self.last_arm_state = json.loads(response.read())
         except Exception:
-            return {"state": "unreachable"}
+            self.last_arm_state = {"state": "unreachable"}
+        return self.last_arm_state
+
+    def _visualization_context(self, arm_state: dict[str, Any]) -> dict[str, Any]:
+        robot_visual = arm_state.get("visualization")
+        if not isinstance(robot_visual, dict):
+            robot_visual = visualization_state(
+                measured_body_q=None,
+                available=False,
+                state_ttl_s=0.25,
+            )
+        measured = robot_visual.get("measured_pose_rad")
+        if self.reference_body_q is None and isinstance(measured, list) and len(measured) == 29:
+            reference = list(float(value) for value in measured)
+            if self.home_q is not None:
+                reference[22:29] = self.home_q
+            self.reference_body_q = tuple(reference)
+        result = {
+            **robot_visual,
+            "reference_pose_rad": (
+                list(self.reference_body_q)
+                if self.reference_body_q is not None
+                else robot_visual.get("reference_pose_rad")
+            ),
+            "workspace_bounds": {
+                "minimum": self.calibration.workspace.minimum.tolist(),
+                "maximum": self.calibration.workspace.maximum.tolist(),
+            },
+            "camera": {
+                "intrinsics": self.calibration.rgb_intrinsics.to_dict(),
+                "optical_to_torso": self.calibration.optical_to_torso.to_dict(),
+            },
+            "support_plane": None,
+            "measured_object_xyz_m": None,
+            "predicted_object_xyz_m": None,
+            "predicted_trajectory_xyz_m": [],
+            "pregrasp_target_xyz_m": None,
+            "end_effector_xyz_m": None,
+            "ik_result": None,
+        }
+        return result
 
     def _post_arm(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
         raw = json.dumps(payload).encode("utf-8")

@@ -6,6 +6,8 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .deps/
+scripts/robot/web/visual/
+scripts/gb10/web/visual/
 *arm-token*
 *calibration*.yaml
 *calibration*.yml

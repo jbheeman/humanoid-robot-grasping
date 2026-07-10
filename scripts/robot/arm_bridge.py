@@ -142,6 +142,21 @@ def make_handler(
             self.end_headers()
             self.wfile.write(payload)
 
+        def send_static(self, path: Path) -> None:
+            payload = path.read_bytes()
+            content_type = {
+                ".js": "text/javascript; charset=utf-8",
+                ".json": "application/json",
+                ".glb": "model/gltf-binary",
+                ".txt": "text/plain; charset=utf-8",
+            }.get(path.suffix.lower(), "application/octet-stream")
+            self.send_response(200)
+            self.send_header("Content-Type", content_type)
+            self.send_header("Content-Length", str(len(payload)))
+            self.send_header("Cache-Control", "public, max-age=3600")
+            self.end_headers()
+            self.wfile.write(payload)
+
         def send_empty(self, status: int = 204) -> None:
             self.send_response(status)
             self.send_header("Content-Length", "0")
@@ -159,6 +174,13 @@ def make_handler(
                     self.send_json(404, {"ok": False, "error": "wizard_not_found"})
                 else:
                     self.send_html(wizard_path.read_bytes())
+            elif path.startswith("/visual/") and wizard_path is not None:
+                visual_root = (wizard_path.parent / "visual").resolve()
+                asset = (visual_root / path.removeprefix("/visual/")).resolve()
+                if asset.parent != visual_root or not asset.is_file():
+                    self.send_json(404, {"ok": False, "error": "visual_asset_not_found"})
+                else:
+                    self.send_static(asset)
             elif path == "/health":
                 self.send_json(200, controller.health_report())
             elif path == "/state":

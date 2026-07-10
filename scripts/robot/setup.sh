@@ -9,6 +9,9 @@ if ! command -v uv >/dev/null 2>&1; then
   exit 1
 fi
 
+"${ROOT_DIR}/scripts/dev/fetch-arm-assets.sh"
+PYTHONPATH="${ROOT_DIR}/src" python3 -m object_tracking.g1_asset_builder --target robot
+
 uv venv --allow-existing --system-site-packages "${ROBOT_DIR}/.venv"
 UV_PROJECT_ENVIRONMENT="${ROBOT_DIR}/.venv" uv sync --project "${ROBOT_DIR}" --locked
 

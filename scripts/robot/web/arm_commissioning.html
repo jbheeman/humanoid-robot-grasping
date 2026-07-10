@@ -3,6 +3,7 @@
 <head>
   <meta charset="utf-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <link rel="icon" href="data:," />
   <title>G1 Right-Arm Commissioning</title>
   <style>
     :root {
@@ -83,6 +84,15 @@
       .stopbar button { width: 100%; min-height: 44px; }
     }
     @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+    .robot-visual { margin: 12px 0; }
+    .visual-stage { position: relative; height: 480px; min-height: 320px; background: #090d10; }
+    .visual-stage canvas { display: block; width: 100%; height: 100%; }
+    .visual-tools { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:9px 12px; border-top:1px solid var(--line); }
+    .visual-tools label { display:inline-flex; align-items:center; gap:5px; }
+    .visual-message { padding: 10px 12px; color: var(--muted); }
+    .visual-legend { font-size:12px; color:var(--muted); }
+    .visual-legend .measured { color:#32d5e8; } .visual-legend .commanded { color:#f3a62f; }
+    @media (max-width: 700px) { .visual-stage { height: 360px; min-height: 360px; } }
   </style>
 </head>
 <body>
@@ -92,6 +102,19 @@
   </header>
   <main>
     <div class="danger-banner" role="alert"><span>⚠</span><p><strong>Software Stop is not an emergency stop.</strong> Keep a physical e-stop in hand, use a spotter, clear the robot’s full arm envelope, and keep the robot in verified stable standing.</p></div>
+
+    <section class="panel robot-visual" aria-labelledby="robotVisualTitle">
+      <div class="panel-header"><h2 id="robotVisualTitle">Full-body pose monitor</h2><span id="visualStatus" class="phase">ASSETS CHECKING</span></div>
+      <div id="robotVisual" class="visual-stage"><p id="visualRecovery" class="visual-message">Loading read-only 3D view…</p></div>
+      <div class="visual-tools" aria-label="Visualization layers">
+        <label><input id="showReference" type="checkbox" checked /> Reference</label>
+        <label><input id="showMeasured" type="checkbox" checked /> <span class="measured">Measured cyan</span></label>
+        <label><input id="showCommanded" type="checkbox" checked /> <span class="commanded">Commanded amber</span></label>
+        <button id="resetView" type="button">Reset view <span class="muted">(R)</span></button>
+        <label for="visualJointSelect">Inspect joint</label><select id="visualJointSelect"><option value="">None</option></select>
+        <span id="visualJoint" class="visual-legend">Select a joint in the table to inspect baseline, measured, command, and error.</span>
+      </div>
+    </section>
 
     <section class="setup" aria-label="Connection and operator authorization">
       <div class="field"><label for="token">Bearer token — held in memory only</label><input id="token" type="password" autocomplete="off" /></div>
@@ -204,6 +227,26 @@
     $("promoteBtn").addEventListener("click", () => post("promote"));
     $("stopBtn").addEventListener("click", async () => { clearInterval(heartbeatTimer); await post("stop", {reason:"operator_stop"}); });
     window.addEventListener("beforeunload", () => { clearInterval(heartbeatTimer); });
+    import("/visual/g1_visualizer.js").then(({mountG1Visualizer}) => mountG1Visualizer({
+      container: $("robotVisual"),
+      stateUrl: "/api/v1/commissioning/state",
+      headers,
+      referenceToggle: $("showReference"), measuredToggle: $("showMeasured"), commandedToggle: $("showCommanded"), resetButton: $("resetView"), jointSelect: $("visualJointSelect"),
+      onAvailability: (status, error) => { $("visualStatus").textContent=status.toUpperCase(); if (error) message(error.message, true); },
+      onState: (visual) => {
+        if ($("visualJointSelect").options.length === 1) visual.joint_names.forEach((name) => $("visualJointSelect").add(new Option(name.replaceAll("_", " "), name)));
+        const name = $("visualJointSelect").value || visual.selected_joint;
+        if (!name) return;
+        const index = visual.joint_names.indexOf(name), reference = visual.reference_pose_rad?.[index], measured = visual.measured_pose_rad?.[index], commanded = visual.commanded_pose_rad?.[index];
+        const error = Number.isFinite(measured) && Number.isFinite(commanded) ? Math.abs(measured-commanded) : null;
+        $("visualJoint").textContent = `${name.replaceAll("_", " ")} · baseline ${reference?.toFixed(4) ?? "—"} · measured ${measured?.toFixed(4) ?? "—"} · requested ${commanded?.toFixed(4) ?? "—"} · error ${error?.toFixed(4) ?? "—"} rad`;
+      },
+    })).catch((error) => {
+      $("visualStatus").textContent="UNAVAILABLE";
+      const recovery = $("visualRecovery") || Object.assign(document.createElement("p"), {id:"visualRecovery", className:"visual-message"});
+      recovery.textContent=`3D assets unavailable (${error.message}). On this host run: uv run g1 assets build --target robot`;
+      if (!recovery.isConnected) $("robotVisual").replaceChildren(recovery);
+    });
   </script>
 </body>
 </html>

@@ -667,6 +667,19 @@ def arm_tracking() -> dict[str, Any]:
         return dict(state.arm_tracking)
 
 
+@app.get("/visualization/state")
+def visualization_state_report() -> dict[str, Any]:
+    """Read-only scene state; this endpoint has no mutation counterpart."""
+
+    with state.lock:
+        visual = state.arm_tracking.get("visualization")
+        if isinstance(visual, dict):
+            return dict(visual)
+    from object_tracking.arm_tracking.visualization import visualization_state
+
+    return visualization_state(measured_body_q=None, available=False)
+
+
 @app.get("/depth.jpg")
 def depth_colormap() -> Response:
     with state.lock:

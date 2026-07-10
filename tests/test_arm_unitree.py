@@ -116,3 +116,19 @@ def test_standing_excludes_commanded_arm_velocity_and_reports_motor_status() -> 
     assert hardware._state is not None
     assert hardware._state.standing is False
     assert "legs_waist_still" in hardware._state.balance_details
+
+
+def test_lowstate_captures_all_29_encoder_positions_and_velocities() -> None:
+    hardware = UnitreeArmHardware(monotonic=lambda: 10.0)
+    message = LowState()
+    for index in range(29):
+        message.motor_state[index].q = index / 10.0
+        message.motor_state[index].dq = index / 100.0
+
+    hardware._low_state_callback(message)
+
+    assert hardware._state is not None
+    assert hardware._state.body_q == tuple(index / 10.0 for index in range(29))
+    assert hardware._state.body_dq == tuple(index / 100.0 for index in range(29))
+    assert hardware._state.arm_q == tuple(index / 10.0 for index in ARM_INDICES)
+    assert hardware._state.arm_dq == tuple(index / 100.0 for index in ARM_INDICES)

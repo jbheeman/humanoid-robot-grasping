@@ -10,7 +10,7 @@ import time
 from typing import Callable
 
 from .arm_bridge import ArmCommand, RobotState
-from .joints import ARM_INDICES, ARM_WEIGHT_INDEX
+from .joints import ARM_INDICES, ARM_WEIGHT_INDEX, BODY_JOINT_INDICES
 
 
 class UnitreeArmHardware:
@@ -212,6 +212,8 @@ class UnitreeArmHardware:
     def _low_state_callback(self, message: object) -> None:
         now = self._monotonic()
         try:
+            body_q = tuple(float(message.motor_state[index].q) for index in BODY_JOINT_INDICES)
+            body_dq = tuple(float(message.motor_state[index].dq) for index in BODY_JOINT_INDICES)
             q = tuple(float(message.motor_state[index].q) for index in ARM_INDICES)
             arm_dq = tuple(float(message.motor_state[index].dq) for index in ARM_INDICES)
             waist_q = tuple(float(message.motor_state[index].q) for index in (12, 13, 14))
@@ -242,7 +244,7 @@ class UnitreeArmHardware:
                 math.isfinite(value) and abs(value) <= self.max_standing_velocity_rad_s
                 for value in balance_velocity
             )
-            finite = all(math.isfinite(value) for value in (*q, *arm_dq))
+            finite = all(math.isfinite(value) for value in (*body_q, *body_dq))
             motor_faults: list[str] = []
             motor_status_verified = False
             for index in range(29):
@@ -270,6 +272,8 @@ class UnitreeArmHardware:
                 if not passed
             )
         except (AttributeError, IndexError, TypeError, ValueError):
+            body_q = (math.nan,) * 29
+            body_dq = (math.nan,) * 29
             q = (math.nan,) * 14
             arm_dq = (math.nan,) * 14
             waist_q = (math.nan,) * 3
@@ -302,4 +306,6 @@ class UnitreeArmHardware:
                 motor_state_healthy=motor_state_healthy,
                 motor_faults=tuple(motor_faults),
                 balance_details=balance_details,
+                body_q=body_q,
+                body_dq=body_dq,
             )

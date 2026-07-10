@@ -21,3 +21,16 @@ def test_research_endpoints_expose_session_summary_and_export(tmp_path) -> None:
         assert export.headers["content-type"].startswith("application/x-ndjson")
     finally:
         yolo_stream_server.research_session = previous
+
+
+def test_visualization_endpoint_is_read_only_and_reports_unavailable() -> None:
+    previous = yolo_stream_server.state.arm_tracking
+    yolo_stream_server.state.arm_tracking = {"visualization": {"schema_version": 1, "read_only": True, "available": False}}
+    try:
+        client = TestClient(yolo_stream_server.app)
+        report = client.get("/visualization/state")
+        assert report.status_code == 200
+        assert report.json()["read_only"] is True
+        assert client.post("/visualization/state", json={}).status_code == 405
+    finally:
+        yolo_stream_server.state.arm_tracking = previous

@@ -26,6 +26,7 @@ echo "Installing FastAPI, YOLO/CUDA, calibration, and G1 IK runtime"
 UV_PYTHON=3.12 uv sync --only-group vision --only-group train --only-group arm --locked
 
 "${ROOT_DIR}/scripts/dev/fetch-arm-assets.sh"
+"${VENV_DIR}/bin/g1" assets build --target gb10
 
 "${VENV_DIR}/bin/python" - <<'PY'
 import cv2

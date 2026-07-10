@@ -3,6 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="icon" href="data:," />
   <title>G1 Grasping Research Console</title>
   <style>
     :root {
@@ -211,6 +212,14 @@
     @media (prefers-reduced-motion: reduce) {
       *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
     }
+    .robot-visual { margin: 12px 0; }
+    .visual-stage { height: 520px; min-height: 340px; background:#080c0f; }
+    .visual-stage canvas { display:block; width:100%; height:100%; }
+    .visual-tools { display:flex; flex-wrap:wrap; align-items:center; gap:12px; padding:9px 12px; border-top:1px solid var(--line); }
+    .visual-tools label { display:inline-flex; align-items:center; gap:5px; }
+    .visual-message { margin:0; padding:12px; color:var(--muted); }
+    .cyan { color:#32d5e8; } .amber { color:#f3a62f; }
+    @media (max-width: 700px) { .visual-stage { height:360px; min-height:360px; } }
   </style>
 </head>
 <body>
@@ -237,6 +246,19 @@
         <div class="panel-header"><h2>RealSense hardware depth</h2><span id="depthMeta" class="panel-meta">waiting for depth</span></div>
         <img id="depthImage" class="stream depth-stream" alt="Latest hardware depth colormap" />
       </article>
+    </section>
+
+    <section class="panel robot-visual" aria-labelledby="robotVisualTitle">
+      <div class="panel-header"><h2 id="robotVisualTitle">Commanded versus measured G1</h2><span id="visualStatus" class="panel-meta">assets checking</span></div>
+      <div id="robotVisual" class="visual-stage"><p id="visualRecovery" class="visual-message">Loading full-body scene, workspace, camera, and target overlays…</p></div>
+      <div class="visual-tools" aria-label="Visualization layers">
+        <label><input id="showReference" type="checkbox" checked /> Reference outline</label>
+        <label><input id="showMeasured" type="checkbox" checked /> <span class="cyan">Measured movement</span></label>
+        <label><input id="showCommanded" type="checkbox" checked /> <span class="amber">Commanded ghost</span></label>
+        <button id="resetView" class="button" type="button">Reset view (R)</button>
+        <label for="visualJointSelect">Inspect joint</label><select id="visualJointSelect"><option value="">None</option></select>
+        <span id="visualDetail" class="panel-meta">10 Hz read-only state · 0.005 rad movement threshold</span>
+      </div>
     </section>
 
     <section class="metric-strip" aria-label="Live research metrics">
@@ -531,6 +553,22 @@
     applyStream();
     refresh();
     window.setInterval(refresh, 1000);
+    import("./visual/g1_visualizer.js").then(({mountG1Visualizer}) => mountG1Visualizer({
+      container: byId("robotVisual"), stateUrl: () => endpoint("/visualization/state"),
+      referenceToggle: byId("showReference"), measuredToggle: byId("showMeasured"), commandedToggle: byId("showCommanded"), resetButton: byId("resetView"), jointSelect: byId("visualJointSelect"),
+      onAvailability: (status, error) => { setText("visualStatus", status); if (error) setText("visualDetail", error.message); },
+      onState: (visual) => {
+        if (byId("visualJointSelect").options.length === 1) visual.joint_names.forEach((name) => byId("visualJointSelect").add(new Option(name.replaceAll("_", " "), name)));
+        const measured = visual.measured_pose_rad, commanded = visual.commanded_pose_rad;
+        const maximum = Array.isArray(measured) && Array.isArray(commanded) ? Math.max(...measured.map((value, index) => Math.abs(value-commanded[index]))) : null;
+        setText("visualDetail", `max command error ${maximum == null ? "—" : maximum.toFixed(4)} rad · ${visual.fresh ? "fresh" : "stale"} · shapes and labels supplement color`);
+      },
+    })).catch((error) => {
+      setText("visualStatus", "unavailable");
+      const recovery = byId("visualRecovery") || Object.assign(document.createElement("p"), {id:"visualRecovery", className:"visual-message"});
+      recovery.textContent=`3D assets unavailable (${error.message}). On this host run: uv run g1 assets build --target gb10`;
+      if (!recovery.isConnected) byId("robotVisual").replaceChildren(recovery);
+    });
   </script>
 </body>
 </html>

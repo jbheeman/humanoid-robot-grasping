@@ -15,9 +15,11 @@ import time
 from typing import Callable, Protocol, Sequence
 
 from .joints import (
+    BODY_JOINT_NAMES,
     DEFAULT_RIGHT_JOINT_LIMITS,
     RIGHT_ARM_JOINT_NAMES,
 )
+from .visualization import visualization_state
 
 
 class ArmState(str, Enum):
@@ -61,6 +63,8 @@ class RobotState:
     motor_state_healthy: bool = False
     motor_faults: tuple[str, ...] = ()
     balance_details: tuple[str, ...] = ()
+    body_q: tuple[float, ...] = ()
+    body_dq: tuple[float, ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.arm_q) != 14:
@@ -69,6 +73,12 @@ class RobotState:
             raise ValueError("RobotState.waist_q must contain yaw, roll, and pitch")
         if len(self.arm_dq) != 14:
             raise ValueError("RobotState.arm_dq must contain all 14 arm joints")
+        if not self.body_q:
+            object.__setattr__(self, "body_q", (0.0,) * 12 + self.waist_q + self.arm_q)
+        if not self.body_dq:
+            object.__setattr__(self, "body_dq", (0.0,) * 15 + self.arm_dq)
+        if len(self.body_q) != 29 or len(self.body_dq) != 29:
+            raise ValueError("RobotState body_q and body_dq must contain all 29 body joints")
 
 
 @dataclass(frozen=True)
@@ -566,6 +576,28 @@ class ArmBridgeController:
             now = self._monotonic()
         with self._lock:
             robot = self.hardware.latest_state()
+            commanded_arm = (
+                None
+                if self.left_latch is None or self.commanded_right is None
+                else [*self.left_latch, *self.commanded_right]
+            )
+            faulted_joints = []
+            if robot is not None:
+                for fault in robot.motor_faults:
+                    parts = fault.split("_", 2)
+                    if len(parts) >= 2 and parts[0] == "motor" and parts[1].isdigit():
+                        index = int(parts[1])
+                        if index < len(BODY_JOINT_NAMES):
+                            faulted_joints.append(BODY_JOINT_NAMES[index])
+            visual = visualization_state(
+                measured_body_q=None if robot is None else robot.body_q,
+                measured_body_dq=None if robot is None else robot.body_dq,
+                commanded_arm_q=commanded_arm,
+                received_at=None if robot is None else robot.received_at,
+                now=now,
+                state_ttl_s=self.config.state_ttl_s,
+                faulted_joints=faulted_joints,
+            )
             return {
                 "ok": self.state is not ArmState.FAULT,
                 "state": self.state.value,
@@ -598,9 +630,8 @@ class ArmBridgeController:
                 "weight": round(self.weight, 6),
                 "hold_reason": self.hold_reason,
                 "fault_reason": self.fault_reason,
-                "commanded_arm_q": None
-                if self.left_latch is None or self.commanded_right is None
-                else [*self.left_latch, *self.commanded_right],
+                "commanded_arm_q": commanded_arm,
+                "visualization": visual,
                 "loop": self.metrics.as_dict(),
             }
 
