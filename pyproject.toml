@@ -49,6 +49,7 @@ train-plushie-detector = "object_tracking.train_plushie_detector:main"
 g1-scan = "object_tracking.g1_scan_cli:main"
 arm-calibration = "object_tracking.arm_tracking.calibration_cli:main"
 g1-tune = "object_tracking.tuning_cli:main"
+g1-arm = "object_tracking.arm_commissioning_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]

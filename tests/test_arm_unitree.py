@@ -41,6 +41,26 @@ class Publisher:
         self.writes.append(command)
 
 
+class StateMotor:
+    def __init__(self, q: float = 0.0, dq: float = 0.0) -> None:
+        self.q = q
+        self.dq = dq
+        self.temperature = 30.0
+        self.lost = 0
+
+
+class Imu:
+    rpy = (0.0, 0.0, 0.0)
+    gyroscope = (0.0, 0.0, 0.0)
+
+
+class LowState:
+    def __init__(self) -> None:
+        self.motor_state = [StateMotor() for _ in range(35)]
+        self.imu_state = Imu()
+        self.mode_machine = 5
+
+
 def test_sdk_adapter_writes_only_all_fourteen_arm_slots_and_weight() -> None:
     hardware = UnitreeArmHardware()
     low_command = LowCommand()
@@ -75,3 +95,24 @@ def test_sdk_adapter_writes_only_all_fourteen_arm_slots_and_weight() -> None:
     assert low_command.motor_cmd[ARM_WEIGHT_INDEX].q == 0.75
     # Waist slots must not be commanded by this bridge.
     assert [low_command.motor_cmd[index].q for index in (12, 13, 14)] == [-999.0, -999.0, -999.0]
+
+
+def test_standing_excludes_commanded_arm_velocity_and_reports_motor_status() -> None:
+    hardware = UnitreeArmHardware(monotonic=lambda: 10.0)
+    message = LowState()
+    for index in ARM_INDICES:
+        message.motor_state[index].dq = 0.4
+
+    hardware._low_state_callback(message)
+
+    assert hardware._state is not None
+    assert hardware._state.standing is True
+    assert hardware._state.arm_dq == (0.4,) * 14
+    assert hardware._state.motor_status_verified is True
+    assert hardware._state.motor_state_healthy is True
+
+    message.motor_state[0].dq = 0.3
+    hardware._low_state_callback(message)
+    assert hardware._state is not None
+    assert hardware._state.standing is False
+    assert "legs_waist_still" in hardware._state.balance_details

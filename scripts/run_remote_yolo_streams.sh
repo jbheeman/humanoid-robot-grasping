@@ -34,6 +34,8 @@ DEPTH_WS="${DEPTH_WS:-ws://${ROBOT_HOST}:8767/depth/stream}"
 CALIBRATION="${CALIBRATION:-}"
 ARM_URL="${ARM_URL:-http://${ROBOT_HOST}:8766}"
 ARM_TOKEN_FILE="${ARM_TOKEN_FILE:-}"
+ARM_HOME="${ARM_HOME:-}"
+G1_ROBOT_ID="${G1_ROBOT_ID:-}"
 TARGET_HZ="${TARGET_HZ:-15}"
 EXECUTE="${EXECUTE:-0}"
 RESEARCH_RECORD="${RESEARCH_RECORD:-1}"
@@ -99,6 +101,13 @@ if [[ "${EXECUTE}" == "1" ]]; then
     exit 1
   fi
   tracking_args+=(--execute --arm-token-file "${ARM_TOKEN_FILE}")
+fi
+if [[ -n "${ARM_HOME}" ]]; then
+  if [[ -z "${G1_ROBOT_ID}" ]]; then
+    echo "ARM_HOME requires G1_ROBOT_ID to prevent cross-robot profile reuse." >&2
+    exit 1
+  fi
+  tracking_args+=(--arm-home "${ARM_HOME}" --robot-id "${G1_ROBOT_ID}")
 fi
 
 cleanup() {

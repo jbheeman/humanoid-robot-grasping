@@ -28,6 +28,11 @@ class ArmState(str, Enum):
     FAULT = "FAULT"
 
 
+class ArmControlMode(str, Enum):
+    TRACKING = "tracking"
+    COMMISSIONING = "commissioning"
+
+
 class ArmBridgeError(ValueError):
     """A request was rejected without changing the controller state."""
 
@@ -48,12 +53,22 @@ class RobotState:
     controller_available: bool = True
     mode_machine: int = 0
     waist_q: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    arm_dq: tuple[float, ...] = (0.0,) * 14
+    motion_mode_name: str | None = None
+    motion_mode_verified: bool = False
+    controller_ownership_verified: bool = False
+    motor_status_verified: bool = False
+    motor_state_healthy: bool = False
+    motor_faults: tuple[str, ...] = ()
+    balance_details: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if len(self.arm_q) != 14:
             raise ValueError("RobotState.arm_q must contain all 14 arm joints")
         if len(self.waist_q) != 3:
             raise ValueError("RobotState.waist_q must contain yaw, roll, and pitch")
+        if len(self.arm_dq) != 14:
+            raise ValueError("RobotState.arm_dq must contain all 14 arm joints")
 
 
 @dataclass(frozen=True)
@@ -87,8 +102,10 @@ class ArmHardware(Protocol):
 
 @dataclass(frozen=True)
 class ArmBridgeConfig:
+    control_mode: ArmControlMode = ArmControlMode.TRACKING
     allow_movement: bool = False
     calibration_id: str | None = None
+    joint_contract_id: str | None = None
     control_hz: float = 250.0
     target_ttl_s: float = 0.250
     deadman_s: float = 0.500
@@ -100,6 +117,7 @@ class ArmBridgeConfig:
     max_velocity_rad_s: float = 0.50
     max_acceleration_rad_s2: float = 2.0
     max_following_error_rad: float = 0.35
+    max_left_drift_rad: float = 0.01
     kp: float = 60.0
     kd: float = 1.5
     right_joint_limits: tuple[tuple[float, float], ...] = DEFAULT_RIGHT_JOINT_LIMITS
@@ -107,6 +125,7 @@ class ArmBridgeConfig:
     max_waist_deviation_rad: float = math.radians(3.0)
 
     def __post_init__(self) -> None:
+        object.__setattr__(self, "control_mode", ArmControlMode(self.control_mode))
         positive = {
             "control_hz": self.control_hz,
             "target_ttl_s": self.target_ttl_s,
@@ -118,6 +137,7 @@ class ArmBridgeConfig:
             "max_velocity_rad_s": self.max_velocity_rad_s,
             "max_acceleration_rad_s2": self.max_acceleration_rad_s2,
             "max_following_error_rad": self.max_following_error_rad,
+            "max_left_drift_rad": self.max_left_drift_rad,
         }
         for name, value in positive.items():
             if not math.isfinite(value) or value <= 0.0:
@@ -190,6 +210,10 @@ class ArmBridgeController:
         self._last_publish_at: float | None = None
         self.metrics = LoopMetrics()
 
+    @property
+    def control_mode(self) -> ArmControlMode:
+        return self.config.control_mode
+
     def start(self) -> None:
         """Start the SDK transport and the one persistent control loop."""
         with self._lock:
@@ -221,6 +245,11 @@ class ArmBridgeController:
         session = self._required_string(session_id, "session_id")
         calibration = self._required_string(calibration_id, "calibration_id")
         with self._lock:
+            if self.control_mode is not ArmControlMode.TRACKING:
+                raise ArmBridgeError(
+                    "Tracking commands are unavailable in commissioning mode",
+                    code="mode_mismatch",
+                )
             if not self.config.allow_movement:
                 raise ArmBridgeError(
                     "Movement is disabled; restart with --allow-movement", code="movement_disabled"
@@ -253,6 +282,56 @@ class ArmBridgeController:
             self._transition_at = now
             return self.state_report(now)
 
+    def enable_commissioning(
+        self, *, session_id: object, joint_contract_id: object
+    ) -> dict[str, object]:
+        """Enable the bridge from measured state without camera calibration."""
+
+        now = self._monotonic()
+        session = self._required_string(session_id, "session_id")
+        contract = self._required_string(joint_contract_id, "joint_contract_id")
+        with self._lock:
+            if self.control_mode is not ArmControlMode.COMMISSIONING:
+                raise ArmBridgeError(
+                    "Commissioning commands are unavailable in tracking mode",
+                    code="mode_mismatch",
+                )
+            if not self.config.allow_movement:
+                raise ArmBridgeError(
+                    "Movement is disabled; restart with --allow-movement",
+                    code="movement_disabled",
+                )
+            if not self.config.joint_contract_id:
+                raise ArmBridgeError(
+                    "No audited 29-DOF joint contract is configured",
+                    code="joint_contract_required",
+                )
+            if contract != self.config.joint_contract_id:
+                raise ArmBridgeError(
+                    "Joint contract does not match the audited robot contract",
+                    code="joint_contract_mismatch",
+                )
+            if self.state is not ArmState.DISARMED:
+                raise ArmBridgeError(f"Cannot enable from {self.state.value}", code="invalid_state")
+            robot = self._require_safe_robot_state(
+                now, require_stable=True, require_commissioning_verification=True
+            )
+            self.session_id = session
+            self.calibration_id = None
+            self.last_sequence = -1
+            self.last_target_at = now
+            self.last_target_source_timestamp = None
+            self.left_latch = tuple(robot.arm_q[:7])
+            self.commanded_right = list(robot.arm_q[7:])
+            self.desired_right = tuple(robot.arm_q[7:])
+            self.right_velocity = [0.0] * 7
+            self.weight = 0.0
+            self.fault_reason = None
+            self.hold_reason = None
+            self.state = ArmState.ARMING
+            self._transition_at = now
+            return self.state_report(now)
+
     def set_target(
         self,
         *,
@@ -264,6 +343,10 @@ class ArmBridgeController:
     ) -> dict[str, object]:
         now = self._monotonic()
         with self._lock:
+            if self.control_mode is not ArmControlMode.TRACKING:
+                raise ArmBridgeError(
+                    "Tracking target rejected in commissioning mode", code="mode_mismatch"
+                )
             if self.state is not ArmState.ARMED:
                 raise ArmBridgeError("Arm must be ARMED before accepting targets", code="not_armed")
             if self._required_string(session_id, "session_id") != self.session_id:
@@ -310,6 +393,61 @@ class ArmBridgeController:
             self.last_target_source_timestamp = source
             return self.state_report(now)
 
+    def set_commissioning_target(
+        self,
+        *,
+        session_id: object,
+        sequence: object,
+        right_arm_q: object,
+    ) -> dict[str, object]:
+        """Accept one bounded commissioning target using monotonic local freshness."""
+
+        now = self._monotonic()
+        with self._lock:
+            if self.control_mode is not ArmControlMode.COMMISSIONING:
+                raise ArmBridgeError(
+                    "Commissioning target rejected in tracking mode", code="mode_mismatch"
+                )
+            if self.state is not ArmState.ARMED:
+                raise ArmBridgeError("Arm must be ARMED before accepting targets", code="not_armed")
+            if self._required_string(session_id, "session_id") != self.session_id:
+                raise ArmBridgeError(
+                    "Target session does not match the enabled session", code="session_mismatch"
+                )
+            if isinstance(sequence, bool) or not isinstance(sequence, int):
+                raise ArmBridgeError("sequence must be an integer", code="invalid_sequence")
+            if sequence <= self.last_sequence:
+                raise ArmBridgeError("sequence must increase strictly", code="stale_sequence")
+            target = self._validate_target(right_arm_q)
+            assert self.commanded_right is not None
+            if any(
+                abs(target[index] - self.commanded_right[index]) > self.config.max_target_delta_rad
+                for index in range(7)
+            ):
+                raise ArmBridgeError(
+                    f"Target exceeds the {self.config.max_target_delta_rad:.3f} rad maximum command delta",
+                    code="discontinuous_target",
+                )
+            self._require_safe_robot_state(
+                now, require_stable=False, require_commissioning_verification=True
+            )
+            self.desired_right = target
+            self.last_sequence = sequence
+            self.last_target_at = now
+            return self.state_report(now)
+
+    def heartbeat(self, *, session_id: object) -> dict[str, object]:
+        now = self._monotonic()
+        with self._lock:
+            if self.control_mode is not ArmControlMode.COMMISSIONING:
+                raise ArmBridgeError("Heartbeat rejected in tracking mode", code="mode_mismatch")
+            if self.state not in (ArmState.ARMING, ArmState.ARMED):
+                raise ArmBridgeError("No active armed commissioning session", code="not_armed")
+            if self._required_string(session_id, "session_id") != self.session_id:
+                raise ArmBridgeError("Heartbeat session mismatch", code="session_mismatch")
+            self.last_target_at = now
+            return self.state_report(now)
+
     def stop(self, reason: str = "operator_stop") -> dict[str, object]:
         """Idempotently start the highest-priority bounded release path."""
         now = self._monotonic()
@@ -342,6 +480,15 @@ class ArmBridgeController:
                 self._enter_fault("incompatible_motion_mode", now)
             elif not robot.controller_available:
                 self._enter_fault("competing_arm_controller", now)
+            elif (
+                self.control_mode is ArmControlMode.COMMISSIONING
+                and not robot.motor_status_verified
+            ):
+                self._enter_fault("motor_status_unverified", now)
+            elif (
+                self.control_mode is ArmControlMode.COMMISSIONING and not robot.motor_state_healthy
+            ):
+                self._enter_fault("motor_state_fault", now)
 
             if self.state is ArmState.ARMING:
                 ratio = min(1.0, (now - self._transition_at) / self.config.weight_ramp_s)
@@ -366,6 +513,17 @@ class ArmBridgeController:
                         for i in range(7)
                     ):
                         self._enter_fault("following_error", now)
+                    elif (
+                        self.control_mode is ArmControlMode.COMMISSIONING
+                        and self.left_latch is not None
+                        and any(
+                            abs(actual - expected) > self.config.max_left_drift_rad
+                            for actual, expected in zip(
+                                robot.arm_q[:7], self.left_latch, strict=True
+                            )
+                        )
+                    ):
+                        self._enter_fault("left_arm_drift", now)
 
             if self.state is ArmState.ARMED:
                 self._interpolate_right(dt)
@@ -389,6 +547,7 @@ class ArmBridgeController:
             return {
                 "ok": self.state is not ArmState.FAULT,
                 "bridge": "unitree_arm_bridge",
+                "control_mode": self.control_mode.value,
                 "state": self.state.value,
                 "allow_movement": self.config.allow_movement,
                 "calibration_configured": bool(self.config.calibration_id),
@@ -411,6 +570,7 @@ class ArmBridgeController:
                 "ok": self.state is not ArmState.FAULT,
                 "state": self.state.value,
                 "session_id": self.session_id,
+                "control_mode": self.control_mode.value,
                 "calibration_id": self.calibration_id,
                 "last_sequence": self.last_sequence,
                 "last_target_age_ms": (
@@ -424,6 +584,17 @@ class ArmBridgeController:
                 "standing": None if robot is None else robot.standing,
                 "compatible_motion_mode": None if robot is None else robot.compatible_motion_mode,
                 "controller_available": None if robot is None else robot.controller_available,
+                "motion_mode_name": None if robot is None else robot.motion_mode_name,
+                "motion_mode_verified": None if robot is None else robot.motion_mode_verified,
+                "controller_ownership_verified": (
+                    None if robot is None else robot.controller_ownership_verified
+                ),
+                "motor_status_verified": None if robot is None else robot.motor_status_verified,
+                "motor_state_healthy": None if robot is None else robot.motor_state_healthy,
+                "motor_faults": [] if robot is None else list(robot.motor_faults),
+                "balance_details": [] if robot is None else list(robot.balance_details),
+                "measured_arm_q": None if robot is None else list(robot.arm_q),
+                "measured_arm_dq": None if robot is None else list(robot.arm_dq),
                 "weight": round(self.weight, 6),
                 "hold_reason": self.hold_reason,
                 "fault_reason": self.fault_reason,
@@ -454,7 +625,13 @@ class ArmBridgeController:
                     self._enter_fault(f"control_loop_error:{type(exc).__name__}", now)
             deadline += period
 
-    def _require_safe_robot_state(self, now: float, *, require_stable: bool) -> RobotState:
+    def _require_safe_robot_state(
+        self,
+        now: float,
+        *,
+        require_stable: bool,
+        require_commissioning_verification: bool = False,
+    ) -> RobotState:
         robot = self.hardware.latest_state()
         if robot is None or now - robot.received_at > self.config.state_ttl_s:
             raise ArmBridgeError("Fresh LowState is required", code="robot_state_stale")
@@ -479,6 +656,26 @@ class ArmBridgeController:
         if not robot.controller_available:
             raise ArmBridgeError(
                 "Another arm controller is active", code="competing_arm_controller"
+            )
+        if require_commissioning_verification and not robot.motion_mode_verified:
+            raise ArmBridgeError(
+                "Robot motion mode has not been verified for commissioning",
+                code="motion_mode_unverified",
+            )
+        if require_commissioning_verification and not robot.controller_ownership_verified:
+            raise ArmBridgeError(
+                "Exclusive arm controller ownership has not been verified",
+                code="controller_ownership_unverified",
+            )
+        if require_commissioning_verification and not robot.motor_status_verified:
+            raise ArmBridgeError(
+                "Motor status fields have not been verified",
+                code="motor_status_unverified",
+            )
+        if require_commissioning_verification and not robot.motor_state_healthy:
+            raise ArmBridgeError(
+                "Motor status reports a commissioning fault",
+                code="motor_state_fault",
             )
         if self.config.waist_reference_rad is not None:
             if not self._finite(robot.waist_q):

@@ -5,6 +5,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 import xml.etree.ElementTree as ET
+import hashlib
+import json
 
 
 LEFT_ARM_JOINT_NAMES = (
@@ -58,6 +60,11 @@ def joint_contract() -> list[dict[str, Any]]:
             )
         )
     ]
+
+
+def joint_contract_id() -> str:
+    payload = json.dumps(joint_contract(), separators=(",", ":"), sort_keys=True).encode()
+    return f"g1-29dof-right-arm-{hashlib.sha256(payload).hexdigest()[:16]}"
 
 
 def audit_urdf(path: str | Path, *, tolerance_rad: float = 1e-3) -> dict[str, Any]:

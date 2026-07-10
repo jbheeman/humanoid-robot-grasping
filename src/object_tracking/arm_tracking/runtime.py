@@ -13,6 +13,7 @@ from urllib.error import HTTPError, URLError
 import numpy as np
 
 from .calibration import Calibration, load_calibration
+from .arm_commissioning import load_home_profile
 from .depth import DepthFrame, estimate_roi_depth
 from .geometry import (
     deproject_depth_samples,
@@ -36,6 +37,8 @@ class RuntimeConfig:
     calibration_path: Path
     arm_url: str = "http://192.168.0.213:8766"
     arm_token_file: Path | None = None
+    arm_home_path: Path | None = None
+    robot_id: str | None = None
     execute: bool = False
     target_hz: float = 15.0
     max_pair_skew_s: float = 0.100
@@ -140,6 +143,13 @@ class ArmTrackingRuntime:
         self.last_target_track: int | None = None
         self.last_process_at = 0.0
         self.arm_token = self._load_token(config.arm_token_file) if config.execute else None
+        self.home_q: tuple[float, ...] | None = None
+        if config.arm_home_path is not None:
+            profile = load_home_profile(
+                config.arm_home_path,
+                expected_robot_id=config.robot_id,
+            )
+            self.home_q = tuple(float(value) for value in profile["measured_q"])
         self.ik: G1RightArmIK | None = None
         self.ik_error: str | None = None
         try:
@@ -332,7 +342,11 @@ class ArmTrackingRuntime:
             return
         arm_state = self._arm_state() if self.config.execute else {}
         last_arm = arm_state.get("commanded_arm_q")
-        last_q = last_arm[-7:] if isinstance(last_arm, list) and len(last_arm) == 14 else [0.0] * 7
+        last_q = (
+            last_arm[-7:]
+            if isinstance(last_arm, list) and len(last_arm) == 14
+            else list(self.home_q or (0.0,) * 7)
+        )
         transform = np.eye(4)
         transform[:3, 3] = target.position
         ik = self.ik.solve(transform, last_q, support_plane=plane)

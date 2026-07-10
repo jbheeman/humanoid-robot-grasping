@@ -6,6 +6,8 @@ The GB10 startup output prints the exact browser URL and SSH tunnel command for 
 
 Joint-order validation and movement-free tuning helpers are documented in [docs/TUNING_GUIDE.md](docs/TUNING_GUIDE.md). Use `uv run g1-tune joint-audit`, `uv run g1-tune analyze runs/research/arm_tracking`, and `uv run g1-tune compare runs/research/arm_tracking` to verify the 29-DOF contract and compare controlled dry-run trials.
 
+Before tuning moving-object tracking, use the separate camera-free right-arm commissioning workflow in [docs/ARM_COMMISSIONING_RUNBOOK.md](docs/ARM_COMMISSIONING_RUNBOOK.md). The robot-local wizard and `g1-arm` CLI provide verified 0.01 rad one-joint jogs, 0.05 rad operator-approved stages, a 0.30 rad per-joint session envelope, deadman release, event logs, and explicit promotion of a measured home pose.
+
 ## Setup
 
 From the project root:

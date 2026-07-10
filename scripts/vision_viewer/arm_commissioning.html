@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>G1 Right-Arm Commissioning</title>
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: #090e12;
+      --surface: #111920;
+      --surface-2: #17232c;
+      --line: #30414d;
+      --text: #f3f7f9;
+      --muted: #adbdc7;
+      --good: #4bd6a2;
+      --warn: #ffc857;
+      --bad: #ff6b74;
+      --focus: #83d9ff;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    * { box-sizing: border-box; }
+    body { margin: 0; padding-bottom: 96px; background: var(--bg); color: var(--text); font-family: var(--sans); }
+    button, input { font: inherit; }
+    button:focus-visible, input:focus-visible { outline: 3px solid var(--focus); outline-offset: 2px; }
+    .topbar { position: sticky; top: 0; z-index: 20; display: flex; justify-content: space-between; gap: 18px; align-items: center; padding: 14px 18px; background: #090e12f2; border-bottom: 1px solid var(--line); }
+    h1, h2, h3, p { margin: 0; }
+    h1 { font-size: 20px; letter-spacing: -0.02em; }
+    h2 { font-size: 15px; }
+    .subtitle, .muted { color: var(--muted); }
+    .subtitle { margin-top: 3px; font-size: 12px; }
+    .status { display: inline-flex; align-items: center; gap: 7px; border: 1px solid var(--line); border-radius: 999px; padding: 6px 10px; color: var(--muted); font-size: 12px; }
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
+    .status.good .dot { background: var(--good); }
+    .status.bad .dot { background: var(--bad); }
+    main { max-width: 1300px; margin: 0 auto; padding: 16px; }
+    .danger-banner { display: flex; gap: 12px; align-items: flex-start; padding: 12px 14px; background: #30191c; border: 1px solid #8e3b42; border-radius: 10px; color: #ffdadd; }
+    .danger-banner strong { color: #fff; }
+    .setup { display: grid; grid-template-columns: repeat(3, minmax(180px, 1fr)); gap: 10px; margin: 14px 0; }
+    .field { display: grid; gap: 6px; }
+    label { color: var(--muted); font-size: 12px; }
+    input { width: 100%; min-height: 38px; padding: 8px 10px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface); color: var(--text); }
+    .inline-check { display: inline-flex; align-items: center; gap: 7px; color: var(--muted); font-size: 12px; }
+    .inline-check input { width: auto; min-height: auto; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+    button { min-height: 36px; padding: 7px 11px; border: 1px solid var(--line); border-radius: 8px; background: var(--surface-2); color: var(--text); cursor: pointer; font-weight: 650; }
+    button:hover:not(:disabled) { border-color: var(--focus); }
+    button:disabled { cursor: not-allowed; opacity: 0.38; }
+    button.primary { background: #0b5572; border-color: #157ba3; }
+    button.danger { background: #8e2730; border-color: #d64f59; }
+    button.safe { background: #165b45; border-color: #279270; }
+    .grid { display: grid; grid-template-columns: minmax(0, 1.4fr) minmax(290px, 0.6fr); gap: 12px; }
+    .panel { min-width: 0; background: var(--surface); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+    .panel-header { display: flex; justify-content: space-between; align-items: center; gap: 12px; min-height: 44px; padding: 10px 12px; border-bottom: 1px solid var(--line); }
+    .panel-body { padding: 12px; }
+    .phase { color: var(--warn); font: 600 12px var(--mono); }
+    .table-wrap { overflow-x: auto; }
+    table { width: 100%; border-collapse: collapse; font-size: 12px; }
+    th, td { padding: 9px 8px; border-bottom: 1px solid var(--line); text-align: right; white-space: nowrap; }
+    th:first-child, td:first-child { text-align: left; }
+    th { color: var(--muted); font-weight: 600; }
+    td.mono, .mono { font-family: var(--mono); }
+    .jog-controls { display: inline-flex; gap: 5px; }
+    .jog-controls button { min-width: 42px; }
+    .kv { display: grid; grid-template-columns: minmax(130px, 1fr) auto; gap: 0; }
+    .kv div { padding: 8px 0; border-bottom: 1px solid var(--line); }
+    .kv div:nth-child(odd) { color: var(--muted); }
+    .kv div:nth-child(even) { text-align: right; font-family: var(--mono); }
+    .workflow { margin: 0; padding-left: 20px; color: var(--muted); }
+    .workflow li { margin: 8px 0; }
+    .workflow li.current { color: var(--warn); font-weight: 700; }
+    .message { min-height: 44px; margin-top: 12px; padding: 10px 12px; border-radius: 8px; background: var(--surface-2); color: var(--muted); font: 12px/1.45 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; }
+    .stopbar { position: fixed; left: max(16px, calc((100vw - 1300px) / 2 + 16px)); right: max(16px, calc((100vw - 1300px) / 2 + 16px)); bottom: 12px; z-index: 20; display: flex; justify-content: space-between; align-items: center; gap: 12px; padding: 10px 12px; background: #111920f2; border: 1px solid var(--line); border-radius: 10px; }
+    .stopbar button { min-height: 48px; min-width: 180px; font-size: 16px; }
+    @media (max-width: 800px) {
+      .topbar { position: static; align-items: flex-start; flex-direction: column; }
+      .setup, .grid { grid-template-columns: 1fr; }
+      main { padding: 10px; }
+      .stopbar { align-items: stretch; flex-direction: column; }
+      .stopbar { left: 10px; right: 10px; bottom: 8px; padding: 8px; }
+      .stopbar p { display: none; }
+      .stopbar button { width: 100%; min-height: 44px; }
+    }
+    @media (prefers-reduced-motion: reduce) { * { scroll-behavior: auto !important; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div><h1>G1 Right-Arm Commissioning</h1><p class="subtitle">Measured joint-space commissioning · no camera, YOLO, IK, or tracking</p></div>
+    <span id="connectionStatus" class="status"><span class="dot"></span><span>Disconnected</span></span>
+  </header>
+  <main>
+    <div class="danger-banner" role="alert"><span>⚠</span><p><strong>Software Stop is not an emergency stop.</strong> Keep a physical e-stop in hand, use a spotter, clear the robot’s full arm envelope, and keep the robot in verified stable standing.</p></div>
+
+    <section class="setup" aria-label="Connection and operator authorization">
+      <div class="field"><label for="token">Bearer token — held in memory only</label><input id="token" type="password" autocomplete="off" /></div>
+      <div class="field"><label for="operator">Operator name</label><input id="operator" autocomplete="name" /></div>
+      <div class="field"><label for="clientId">Client ID</label><input id="clientId" value="macbook-browser" /></div>
+      <div class="field" style="grid-column:1/-1"><label for="ack">Type exactly: I HAVE CLEARED THE ROBOT AREA</label><input id="ack" autocomplete="off" /></div>
+      <div class="actions" style="grid-column:1/-1">
+        <button id="connectBtn">Connect</button>
+        <button id="startBtn" class="primary" disabled>Create session</button>
+        <button id="enableBtn" class="safe" disabled>Enable at measured pose</button>
+      </div>
+    </section>
+
+    <div class="grid">
+      <section class="panel">
+        <div class="panel-header"><h2>Right-arm joint contract</h2><span id="phase" class="phase">NO SESSION</span></div>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Joint</th><th>SDK</th><th>Measured</th><th>From start</th><th>Jog 0.01 rad</th></tr></thead>
+          <tbody id="jointRows"><tr><td colspan="5" class="muted">Connect to load the verified joint contract.</td></tr></tbody>
+        </table></div>
+        <div class="panel-body">
+          <div class="actions">
+            <label class="inline-check"><input id="signMode" type="checkbox" /> Record jog as sign check</label>
+            <button id="confirmBtn" disabled>Accept settled motion</button>
+            <button id="confirmSignBtn" disabled>Confirm expected joint moved</button>
+            <button id="rejectBtn" disabled>Reject motion</button>
+            <button id="checkpointBtn" disabled>Approve 0.05 rad stage</button>
+            <button id="captureBtn" disabled>Capture safe_chest candidate</button>
+            <button id="replayBtn" disabled>Replay one 0.01 rad step</button>
+            <button id="validateBtn" disabled>Validate replay at candidate</button>
+            <button id="promoteBtn" disabled>Promote tracking home</button>
+          </div>
+          <div id="message" class="message" aria-live="polite">Enter the token and connect. No movement occurs on connection.</div>
+        </div>
+      </section>
+
+      <aside class="panel">
+        <div class="panel-header"><h2>Safety gates</h2><span class="mono">live</span></div>
+        <div class="panel-body">
+          <div id="safetyKv" class="kv"><div>Bridge</div><div>—</div><div>Stable standing</div><div>—</div><div>Motion mode</div><div>—</div><div>Controller ownership</div><div>—</div><div>Arm weight</div><div>—</div><div>Loop misses</div><div>—</div></div>
+          <h3 style="margin-top:18px">Enforced order</h3>
+          <ol class="workflow"><li>Preflight and operator acknowledgment</li><li>Enable at measured pose</li><li>Verify ± direction for each joint</li><li>Teach with 0.01 rad jogs</li><li>Approve each 0.05 rad stage</li><li>Capture and replay candidate twice</li><li>Stop, disarm, then promote</li></ol>
+        </div>
+      </aside>
+    </div>
+
+    <div class="stopbar"><p><strong>Release control immediately</strong><br><span class="muted">Also use the physical e-stop for an emergency.</span></p><button id="stopBtn" class="danger" disabled>SOFTWARE STOP</button></div>
+  </main>
+  <script>
+    const $ = (id) => document.getElementById(id);
+    const ACK = "I HAVE CLEARED THE ROBOT AREA";
+    let state = null, sessionId = null, sequence = 0, pollTimer = null, heartbeatTimer = null, authToken = "";
+    const headers = () => ({"Authorization": `Bearer ${authToken}`, "Content-Type": "application/json"});
+    async function api(path, body) {
+      const response = await fetch(path, {method: body === undefined ? "GET" : "POST", headers: headers(), body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store"});
+      const value = await response.json();
+      if (!response.ok) throw new Error(`${value.error || response.status}: ${value.message || "request rejected"}`);
+      return value;
+    }
+    const sessionPath = (action) => `/api/v1/commissioning/sessions/${sessionId}/${action}`;
+    function message(text, bad=false) { $("message").textContent = text; $("message").style.color = bad ? "var(--bad)" : "var(--muted)"; }
+    function phaseIs(name) { return state && state.phase === name; }
+    function render(value) {
+      state = value; sessionId = value.session_id || sessionId;
+      const bridge = value.bridge || {};
+      $("phase").textContent = value.phase || "NO SESSION";
+      const connected = Boolean(value.joint_contract);
+      $("connectionStatus").className = `status ${connected ? "good" : "bad"}`;
+      $("connectionStatus").lastElementChild.textContent = connected ? "Connected" : "Unavailable";
+      $("startBtn").disabled = !connected || Boolean(value.active);
+      $("enableBtn").disabled = !phaseIs("CREATED");
+      $("stopBtn").disabled = !value.active;
+      const ready = phaseIs("READY");
+      const awaiting = phaseIs("AWAITING_CONFIRM");
+      $("confirmBtn").disabled = !awaiting;
+      $("confirmSignBtn").disabled = !awaiting;
+      $("rejectBtn").disabled = !awaiting;
+      $("checkpointBtn").disabled = !ready;
+      $("captureBtn").disabled = !ready || Object.keys(value.sign_checks || {}).length !== 14;
+      $("replayBtn").disabled = !ready || !value.candidate || !value.candidate.departed;
+      $("validateBtn").disabled = !ready || !value.candidate;
+      $("promoteBtn").disabled = bridge.state !== "DISARMED" || (value.replay_validations || 0) < 2;
+      const contract = value.joint_contract || [];
+      const measured = value.measured_q || Array(7).fill(null);
+      const delta = value.session_delta_q || Array(7).fill(null);
+      $("jointRows").replaceChildren(...contract.map((joint, i) => {
+        const row = document.createElement("tr");
+        const cells = [joint.name.replaceAll("_", " "), joint.sdk_index, measured[i] == null ? "—" : measured[i].toFixed(4), delta[i] == null ? "—" : delta[i].toFixed(4)];
+        cells.forEach((text, index) => { const cell = document.createElement("td"); cell.textContent = text; if (index > 0) cell.className = "mono"; row.appendChild(cell); });
+        const control = document.createElement("td"); control.className = "jog-controls";
+        [-1, 1].forEach((direction) => { const button = document.createElement("button"); button.textContent = direction < 0 ? "−" : "+"; button.disabled = !ready; button.addEventListener("click", () => jog(joint.name, direction)); control.appendChild(button); });
+        row.appendChild(control); return row;
+      }));
+      const kv = [["Bridge", bridge.state], ["Stable standing", bridge.standing], ["Motion mode", bridge.motion_mode_verified ? bridge.motion_mode_name : "UNVERIFIED"], ["Controller ownership", bridge.controller_ownership_verified], ["Motor status", bridge.motor_status_verified && bridge.motor_state_healthy], ["Arm weight", bridge.weight], ["Loop misses", bridge.loop?.missed_deadlines]];
+      $("safetyKv").replaceChildren(...kv.flatMap(([label, data]) => { const left=document.createElement("div"), right=document.createElement("div"); left.textContent=label; right.textContent=data ?? "—"; return [left,right]; }));
+    }
+    async function refresh() { try { render(await api("/api/v1/commissioning/state")); } catch (error) { message(error.message, true); } }
+    async function post(action, body={}, quiet=false) { try { const result=await api(sessionPath(action), body); render(result); if (!quiet) message(`${action} accepted`); } catch(error) { message(error.message, true); } }
+    async function jog(joint_name, direction) { sequence += 1; await post("jogs", {sequence, joint_name, direction, kind: $("signMode").checked ? "sign_check" : "jog"}); }
+    $("connectBtn").addEventListener("click", async () => { authToken=$("token").value; await refresh(); if (state) $("token").value=""; clearInterval(pollTimer); pollTimer=setInterval(refresh, 250); });
+    $("startBtn").addEventListener("click", async () => { if ($("ack").value !== ACK) return message("The safety acknowledgment must match exactly.", true); try { const value=await api("/api/v1/commissioning/sessions", {operator_ack: ACK, operator: $("operator").value, client_id: $("clientId").value}); sequence=0; render(value); message("Session created. Enabling will latch the measured pose."); } catch(error) { message(error.message, true); } });
+    $("enableBtn").addEventListener("click", async () => { await post("enable"); clearInterval(heartbeatTimer); heartbeatTimer=setInterval(() => post("heartbeat", {}, true), 100); });
+    $("confirmBtn").addEventListener("click", () => post("confirmations", {sequence: ++sequence, outcome: "accepted"}));
+    $("confirmSignBtn").addEventListener("click", () => post("confirmations", {sequence: ++sequence, outcome: "expected"}));
+    $("rejectBtn").addEventListener("click", () => post("confirmations", {sequence: ++sequence, outcome: "rejected"}));
+    $("checkpointBtn").addEventListener("click", () => post("checkpoints", {label: `stage-${Date.now()}`}));
+    $("captureBtn").addEventListener("click", () => post("candidate", {label: "safe_chest"}));
+    $("replayBtn").addEventListener("click", () => post("replay-steps", {sequence: ++sequence}));
+    $("validateBtn").addEventListener("click", () => post("replay-validations"));
+    $("promoteBtn").addEventListener("click", () => post("promote"));
+    $("stopBtn").addEventListener("click", async () => { clearInterval(heartbeatTimer); await post("stop", {reason:"operator_stop"}); });
+    window.addEventListener("beforeunload", () => { clearInterval(heartbeatTimer); });
+  </script>
+</body>
+</html>

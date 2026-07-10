@@ -854,6 +854,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--calibration", help="Validated camera-to-torso calibration YAML")
     parser.add_argument("--arm-url", default="http://192.168.0.213:8766")
     parser.add_argument("--arm-token-file", help="Mode-0600 bearer token used with --execute")
+    parser.add_argument("--arm-home", help="Validated commissioned right-arm home profile")
+    parser.add_argument("--robot-id", help="Robot identity bound to the commissioned arm home")
     parser.add_argument("--target-hz", type=float, default=15.0)
     parser.add_argument(
         "--execute",
@@ -969,6 +971,8 @@ def main() -> None:
                 "depth_ws": args.depth_ws,
                 "arm_url": args.arm_url,
                 "calibration_file": args.calibration,
+                "arm_home_file": args.arm_home,
+                "robot_id": args.robot_id,
                 "experiment_label": args.research_label,
                 "experiment_notes": args.research_notes,
                 "configuration": {
@@ -1020,6 +1024,8 @@ def main() -> None:
                     arm_token_file=(
                         None if args.arm_token_file is None else Path(args.arm_token_file)
                     ),
+                    arm_home_path=None if args.arm_home is None else Path(args.arm_home),
+                    robot_id=args.robot_id,
                     execute=args.execute,
                     target_hz=args.target_hz,
                 ),
