@@ -210,11 +210,11 @@
       $("safetyKv").replaceChildren(...kv.flatMap(([label, data]) => { const left=document.createElement("div"), right=document.createElement("div"); left.textContent=label; right.textContent=data ?? "—"; return [left,right]; }));
     }
     async function refresh() { try { render(await api("/api/v1/commissioning/state")); } catch (error) { message(error.message, true); } }
-    async function post(action, body={}, quiet=false) { try { const result=await api(sessionPath(action), body); render(result); if (!quiet) message(`${action} accepted`); } catch(error) { message(error.message, true); } }
+    async function post(action, body={}, quiet=false) { try { const result=await api(sessionPath(action), body); render(result); if (!quiet) message(`${action} accepted`); return result; } catch(error) { message(error.message, true); return null; } }
     async function jog(joint_name, direction) { sequence += 1; await post("jogs", {sequence, joint_name, direction, kind: $("signMode").checked ? "sign_check" : "jog"}); }
     $("connectBtn").addEventListener("click", async () => { authToken=$("token").value; await refresh(); if (state) $("token").value=""; clearInterval(pollTimer); pollTimer=setInterval(refresh, 250); });
     $("startBtn").addEventListener("click", async () => { try { const value=await api("/api/v1/commissioning/sessions", {operator: $("operator").value, client_id: $("clientId").value}); sequence=0; render(value); message("Session created. Enabling will latch the measured pose."); } catch(error) { message(error.message, true); } });
-    $("enableBtn").addEventListener("click", async () => { await post("enable"); clearInterval(heartbeatTimer); heartbeatTimer=setInterval(() => post("heartbeat", {}, true), 100); });
+    $("enableBtn").addEventListener("click", async () => { const result=await post("enable"); if (!result) return; clearInterval(heartbeatTimer); heartbeatTimer=setInterval(() => post("heartbeat", {}, true), 100); });
     $("confirmBtn").addEventListener("click", () => post("confirmations", {sequence: ++sequence, outcome: "accepted"}));
     $("confirmSignBtn").addEventListener("click", () => post("confirmations", {sequence: ++sequence, outcome: "expected"}));
     $("rejectBtn").addEventListener("click", () => post("confirmations", {sequence: ++sequence, outcome: "rejected"}));
