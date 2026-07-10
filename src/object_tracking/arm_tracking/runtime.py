@@ -248,6 +248,7 @@ class ArmTrackingRuntime:
             "depth_age_ms": round(age_ms, 3),
             "pair_skew_ms": round(skew_s * 1000.0, 3),
             "calibration_id": self.calibration.calibration_id,
+            "target_sequence": self.target_sequence,
         }
         recognized_ids = {
             self.calibration.calibration_id,
@@ -341,6 +342,9 @@ class ArmTrackingRuntime:
                 "ik_position_error_m": ik.position_error_m,
                 "ik_orientation_error_rad": ik.orientation_error_rad,
                 "arm_state": arm_state.get("state", "dry-run"),
+                "arm_weight": arm_state.get("weight"),
+                "arm_last_target_age_ms": arm_state.get("last_target_age_ms"),
+                "arm_loop": arm_state.get("loop") or {},
             }
         )
         if not ik.ok or ik.q_rad is None:
@@ -362,6 +366,7 @@ class ArmTrackingRuntime:
             )
             self.target_sequence += 1
             base_status["status"] = "target_sent"
+            base_status["target_sequence"] = self.target_sequence
         self.last_target_track = int(selected["track_id"])
         self.update_status(base_status, colormap)
 

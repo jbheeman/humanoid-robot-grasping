@@ -2,6 +2,8 @@
 
 The RealSense-guided right-arm pregrasp pipeline is implemented as a disarmed-by-default robot depth/arm service plus a GB10 hardware-depth fusion and IK runtime. See [docs/ARM_TRACKING_RUNBOOK.md](docs/ARM_TRACKING_RUNBOOK.md) for installation, calibration, dry-run, REST schemas, port forwarding, and operator-gated hardware stages.
 
+The GB10 startup output prints the exact browser URL and SSH tunnel command for a MacBook. Its research console combines live RGB/depth views with pipeline timing, detections, 3D targets, IK/arm state, rejection diagnostics, and downloadable JSONL telemetry stored under `runs/research/arm_tracking/`.
+
 ## Setup
 
 From the project root:

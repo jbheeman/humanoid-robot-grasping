@@ -36,6 +36,10 @@ ARM_URL="${ARM_URL:-http://${ROBOT_HOST}:8766}"
 ARM_TOKEN_FILE="${ARM_TOKEN_FILE:-}"
 TARGET_HZ="${TARGET_HZ:-15}"
 EXECUTE="${EXECUTE:-0}"
+RESEARCH_RECORD="${RESEARCH_RECORD:-1}"
+RESEARCH_HZ="${RESEARCH_HZ:-5}"
+RESEARCH_ROOT="${RESEARCH_ROOT:-runs/research/arm_tracking}"
+GB10_LAN_IP="${GB10_LAN_IP:-}"
 
 if [[ ! -f "${MODEL}" ]]; then
   echo "Fine-tuned plushie model not found: ${MODEL}"
@@ -63,6 +67,24 @@ export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 tracking_args=()
 if [[ -n "${CALIBRATION}" ]]; then
   tracking_args+=(--depth-ws "${DEPTH_WS}" --calibration "${CALIBRATION}" --arm-url "${ARM_URL}" --target-hz "${TARGET_HZ}")
+fi
+
+research_args=(--research-hz "${RESEARCH_HZ}" --research-root "${RESEARCH_ROOT}")
+if [[ "${RESEARCH_RECORD}" == "1" ]]; then
+  research_args+=(--research-record)
+else
+  research_args+=(--no-research-record)
+fi
+
+if [[ -z "${GB10_LAN_IP}" ]] && command -v hostname >/dev/null 2>&1; then
+  GB10_LAN_IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
+fi
+if [[ -z "${GB10_LAN_IP}" ]]; then
+  GB10_LAN_IP="<GB10_IP>"
+fi
+DISPLAY_HOST="${HOST}"
+if [[ "${DISPLAY_HOST}" == "0.0.0.0" || -z "${DISPLAY_HOST}" ]]; then
+  DISPLAY_HOST="${GB10_LAN_IP}"
 fi
 if [[ "${EXECUTE}" == "1" ]]; then
   if [[ -z "${CALIBRATION}" || -z "${ARM_TOKEN_FILE}" ]]; then
@@ -99,12 +121,35 @@ if [[ "${STOP_EXISTING}" == "1" ]]; then
   stop_processes "[g]st-launch-1.0 -q udpsrc address=0.0.0.0 port=${UDP_PORT}"
 fi
 
-echo "GB10 Unitree receiver: udp://0.0.0.0:${UDP_PORT}"
-echo "YOLO model:            ${MODEL}"
-echo "Tracking profile:       ${VISION_WIDTH}x${VISION_HEIGHT} at ${VISION_FPS} FPS"
-echo "Inference cadence:      every ${INFER_EVERY} frame(s)"
-echo "Browser JPEG quality:   ${JPEG_QUALITY}"
-echo "Processed stream:      http://${HOST}:${PORT}/stream.mjpg"
+echo
+echo "============================================================"
+echo " G1 RESEARCH SERVER"
+echo "============================================================"
+echo "Robot RGB receiver:  udp://0.0.0.0:${UDP_PORT}"
+echo "YOLO model:          ${MODEL}"
+echo "Tracking profile:    ${VISION_WIDTH}x${VISION_HEIGHT} at ${VISION_FPS} FPS"
+echo "Inference cadence:   every ${INFER_EVERY} frame(s)"
+echo "Research recording:  ${RESEARCH_RECORD} at ${RESEARCH_HZ} Hz"
+echo "Research data root:  ${ROOT_DIR}/${RESEARCH_ROOT}"
+echo
+echo "ON YOUR MACBOOK (same local network), open:"
+echo "  http://${DISPLAY_HOST}:${VIEWER_PORT}/unitree_dual_viewer.html?single=1"
+echo
+echo "If direct access is blocked, run this on the MacBook:"
+echo "  ssh -N -L ${VIEWER_PORT}:127.0.0.1:${VIEWER_PORT} -L ${PORT}:127.0.0.1:${PORT} ${USER:-USER}@${DISPLAY_HOST}"
+echo "Then open:"
+echo "  http://127.0.0.1:${VIEWER_PORT}/unitree_dual_viewer.html?single=1"
+echo
+echo "Research API:"
+echo "  http://${DISPLAY_HOST}:${PORT}/health"
+echo "  http://${DISPLAY_HOST}:${PORT}/research/summary"
+echo "  http://${DISPLAY_HOST}:${PORT}/research/export.jsonl"
+echo
+echo "The webpage shows RGB, hardware depth, detections, tracks,"
+echo "3D object/prediction/target data, timing, IK/arm state,"
+echo "rejection reasons, and research-session/export statistics."
+echo "============================================================"
+echo
 "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
   --camera-name main \
   --pipeline "${PIPELINE}" \
@@ -122,10 +167,10 @@ echo "Processed stream:      http://${HOST}:${PORT}/stream.mjpg"
   --expected-fps "${VISION_FPS}" \
   --capture-backend "${CAPTURE_BACKEND}" \
   "${tracking_args[@]}" \
+  "${research_args[@]}" \
   "$@" &
 server_pid=$!
 
-echo "Viewer:                http://${HOST}:${VIEWER_PORT}/unitree_dual_viewer.html?single=1"
 "${VENV_DIR}/bin/python" -m http.server "${VIEWER_PORT}" --bind "${HOST}" --directory "${VIEWER_DIR}" &
 viewer_pid=$!
 

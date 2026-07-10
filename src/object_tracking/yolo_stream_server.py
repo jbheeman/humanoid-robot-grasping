@@ -18,8 +18,10 @@ from typing import Optional
 import cv2
 import numpy as np
 from fastapi import FastAPI
-from fastapi.responses import HTMLResponse, Response, StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
 
+from object_tracking.research_session import ResearchSession
 from object_tracking.simple_tracker import SimpleTracker
 
 
@@ -96,6 +98,13 @@ frame_ready = threading.Condition(state.lock)
 jpeg_ready = threading.Condition(state.lock)
 tracker = SimpleTracker()
 app = FastAPI()
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["GET"],
+    allow_headers=["*"],
+)
+research_session: ResearchSession | None = None
 
 
 def yolo_enabled(model_name: str) -> bool:
@@ -566,6 +575,9 @@ def index() -> str:
             Capture: <a href="/capture">/capture</a><br/>
             Detections: <a href="/detections">/detections</a><br/>
             Tracks: <a href="/tracks">/tracks</a><br/>
+            Arm tracking: <a href="/arm-tracking">/arm-tracking</a><br/>
+            Research summary: <a href="/research/summary">/research/summary</a><br/>
+            Research export: <a href="/research/export.jsonl">/research/export.jsonl</a><br/>
             Health: <a href="/health">/health</a>
           </p>
         </div>
@@ -610,6 +622,11 @@ def health() -> dict[str, object]:
             "opencv_threads": state.opencv_threads,
             "torch_threads": state.torch_threads,
             "arm_tracking": dict(state.arm_tracking),
+            "research": (
+                {"enabled": False}
+                if research_session is None
+                else research_session.session_report()
+            ),
         }
 
 
@@ -657,6 +674,46 @@ def depth_colormap() -> Response:
     if data is None:
         return Response(content=b"No depth frame yet", media_type="text/plain", status_code=503)
     return Response(content=data, media_type="image/jpeg")
+
+
+@app.get("/research/session")
+def research_session_report() -> dict[str, Any]:
+    if research_session is None:
+        return {"enabled": False, "reason": "research recording disabled"}
+    return research_session.session_report()
+
+
+@app.get("/research/summary")
+def research_summary() -> dict[str, Any]:
+    if research_session is None:
+        return {"enabled": False, "reason": "research recording disabled"}
+    return {"enabled": True, **research_session.summary_report()}
+
+
+@app.get("/research/telemetry")
+def research_telemetry(limit: int = 100) -> dict[str, Any]:
+    if research_session is None:
+        return {"enabled": False, "samples": []}
+    return {
+        "enabled": True,
+        "session_id": research_session.session_id,
+        "samples": research_session.recent_samples(limit),
+    }
+
+
+@app.get("/research/export.jsonl")
+def research_export() -> Response:
+    if research_session is None or not research_session.telemetry_path.exists():
+        return Response(
+            content=b"Research recording is disabled or has no samples yet",
+            media_type="text/plain",
+            status_code=404,
+        )
+    return FileResponse(
+        research_session.telemetry_path,
+        media_type="application/x-ndjson",
+        filename=f"{research_session.session_id}_telemetry.jsonl",
+    )
 
 
 def _capture_session_dir() -> Path:
@@ -803,6 +860,23 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Publish arm targets only after every calibration and health gate passes",
     )
+    parser.add_argument(
+        "--research-record",
+        action=argparse.BooleanOptionalAction,
+        default=True,
+        help="Record structured telemetry under runs/research/arm_tracking (default: enabled)",
+    )
+    parser.add_argument(
+        "--research-root",
+        default="runs/research/arm_tracking",
+        help="Root directory for isolated research sessions",
+    )
+    parser.add_argument(
+        "--research-hz",
+        type=float,
+        default=5.0,
+        help="Structured telemetry sampling rate (default: 5 Hz)",
+    )
     return parser
 
 
@@ -834,7 +908,34 @@ def update_arm_tracking(status: dict[str, Any], depth_jpeg: bytes | None) -> Non
             state.depth_colormap_jpeg = depth_jpeg
 
 
+def research_recording_loop(sample_hz: float) -> None:
+    period = 1.0 / sample_hz
+    while True:
+        started = time.monotonic()
+        with state.lock:
+            sample = {
+                "frame_count": state.frame_count,
+                "yolo_count": state.yolo_count,
+                "encode_count": state.encode_count,
+                "fps": state.fps,
+                "yolo_fps": state.yolo_fps,
+                "encode_fps": state.encode_fps,
+                "inference_status": state.inference_status,
+                "inference_error": state.inference_error,
+                "camera_name": state.camera_name,
+                "model_name": state.model_name,
+                "detections": [dict(item) for item in state.latest_detections],
+                "tracks": [dict(item) for item in state.latest_tracks],
+                "arm_tracking": dict(state.arm_tracking),
+            }
+        if research_session is not None:
+            research_session.record(sample)
+        elapsed = time.monotonic() - started
+        time.sleep(max(0.0, period - elapsed))
+
+
 def main() -> None:
+    global research_session
     args = build_parser().parse_args()
     assert_port_available(args.host, args.port)
     detector_enabled = yolo_enabled(args.model)
@@ -844,6 +945,8 @@ def main() -> None:
         )
     if args.depth_ws and not args.calibration:
         raise SystemExit("--depth-ws requires --calibration")
+    if args.research_hz <= 0 or args.research_hz > 30:
+        raise SystemExit("--research-hz must be greater than 0 and at most 30")
     configure_runtime(args.opencv_threads, args.torch_threads, detector_enabled)
 
     with state.lock:
@@ -851,6 +954,30 @@ def main() -> None:
         state.expected_fps = max(args.expected_fps, 0.0)
         state.inference_status = "warming_up" if detector_enabled else "disabled"
         state.inference_error = None
+
+    if args.research_record:
+        research_session = ResearchSession(
+            args.research_root,
+            metadata={
+                "mode": "execute" if args.execute else "dry-run",
+                "camera_name": args.camera_name,
+                "model": args.model,
+                "expected_fps": args.expected_fps,
+                "target_hz": args.target_hz,
+                "depth_ws": args.depth_ws,
+                "arm_url": args.arm_url,
+                "calibration_file": args.calibration,
+            },
+        )
+        print(f"Research session: {research_session.session_id}")
+        print(f"Research data:    {research_session.directory}")
+        research_worker = threading.Thread(
+            target=research_recording_loop,
+            args=(args.research_hz,),
+            daemon=True,
+            name="research-recorder",
+        )
+        research_worker.start()
 
     camera_worker = threading.Thread(
         target=camera_loop,

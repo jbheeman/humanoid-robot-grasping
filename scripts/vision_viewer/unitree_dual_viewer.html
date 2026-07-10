@@ -3,367 +3,534 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>Unitree G1 Dual Camera Viewer</title>
+  <title>G1 Grasping Research Console</title>
   <style>
     :root {
       color-scheme: dark;
+      --bg: #0c1014;
+      --surface: #141a20;
+      --surface-2: #1a222b;
+      --line: #2c3742;
+      --line-strong: #43515e;
+      --text: #f2f5f7;
+      --muted: #aeb9c3;
+      --accent: #5cc8ff;
+      --good: #54d69b;
+      --warn: #ffc65c;
+      --bad: #ff7373;
+      --unknown: #8795a1;
+      --mono: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+      --sans: Inter, ui-sans-serif, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
+
+    * { box-sizing: border-box; }
 
     body {
       margin: 0;
-      font-family: Arial, Helvetica, sans-serif;
-      background: #111;
-      color: #f0f0f0;
+      min-width: 320px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      font-size: 14px;
+      line-height: 1.45;
     }
 
-    .top {
-      padding: 12px 16px;
-      border-bottom: 1px solid #2e2e2e;
-      background: #171717;
+    a { color: var(--accent); }
+    a:hover { color: #a3e3ff; }
+    a:focus-visible, button:focus-visible, input:focus-visible {
+      outline: 2px solid var(--accent);
+      outline-offset: 2px;
+    }
+
+    .topbar {
       position: sticky;
       top: 0;
-      z-index: 2;
+      z-index: 10;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 20px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(12, 16, 20, 0.96);
     }
 
-    .row {
+    .title-group { min-width: 220px; }
+    h1, h2, h3 { margin: 0; text-wrap: balance; }
+    h1 { font-size: 19px; letter-spacing: -0.015em; }
+    h2 { font-size: 15px; }
+    h3 { font-size: 13px; color: var(--muted); }
+    .subtitle { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+
+    .status-group {
+      display: flex;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      gap: 7px;
+    }
+
+    .status {
+      display: inline-flex;
+      align-items: center;
+      gap: 7px;
+      min-height: 28px;
+      padding: 4px 9px;
+      border: 1px solid var(--line-strong);
+      border-radius: 999px;
+      background: var(--surface);
+      color: var(--muted);
+      font-size: 12px;
+      white-space: nowrap;
+    }
+
+    .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--unknown); }
+    .status.good .dot { background: var(--good); }
+    .status.warn .dot { background: var(--warn); }
+    .status.bad .dot { background: var(--bad); }
+
+    main { max-width: 1800px; margin: 0 auto; padding: 16px; }
+
+    .visual-grid {
       display: grid;
-      grid-template-columns: 1fr;
+      grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.75fr);
       gap: 12px;
-      padding: 12px;
-    }
-
-    @media (min-width: 900px) {
-      .row {
-        grid-template-columns: 1fr 1fr;
-      }
-    }
-
-    .single-camera .chest-only {
-      display: none;
-    }
-
-    .single-camera .row {
-      grid-template-columns: 1fr;
     }
 
     .panel {
-      border: 1px solid #2f2f2f;
-      border-radius: 8px;
-      padding: 8px;
-      background: #1c1c1c;
+      min-width: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--surface);
+      overflow: hidden;
     }
 
-    h1,
-    h2 {
-      margin: 0 0 6px;
-      font-size: 16px;
-      font-weight: 600;
-    }
-
-    .controls {
-      font-size: 13px;
-      color: #cfcfcf;
-      display: grid;
-      grid-template-columns: auto 1fr;
-      gap: 6px 10px;
+    .panel-header {
+      display: flex;
       align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      min-height: 42px;
+      padding: 9px 12px;
+      border-bottom: 1px solid var(--line);
     }
 
-    label {
-      opacity: 0.95;
-    }
+    .panel-meta { color: var(--muted); font: 12px var(--mono); }
+    .stream { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; }
+    .depth-stream { image-rendering: auto; }
 
-    input,
-    button {
-      width: 100%;
-      padding: 6px 8px;
-      background: #262626;
-      color: #f6f6f6;
-      border: 1px solid #3c3c3c;
-      border-radius: 6px;
-    }
-
-    button {
-      cursor: pointer;
-      background: #2f5dc6;
-      border-color: #2f5dc6;
-      color: #fff;
-      width: auto;
-      min-width: 120px;
-    }
-
-    button:hover {
-      filter: brightness(1.07);
-    }
-
-    .streams {
-      display: grid;
-      gap: 8px;
-    }
-
-    .telemetry {
-      display: grid;
-      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-      gap: 8px;
-      margin-top: 10px;
+    .metric-strip {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 1px;
+      margin: 12px 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+      background: var(--line);
     }
 
     .metric {
-      padding: 8px;
-      border-radius: 6px;
-      background: #242424;
-      border: 1px solid #343434;
-      font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
-      white-space: pre-wrap;
+      flex: 1 1 135px;
+      min-height: 70px;
+      padding: 10px 12px;
+      background: var(--surface);
     }
 
-    .stream {
-      width: 100%;
-      height: auto;
-      border: 1px solid #3a3a3a;
-      background: #000;
-      object-fit: contain;
-      aspect-ratio: 16/9;
+    .metric-label { display: block; color: var(--muted); font-size: 11px; }
+    .metric-value { display: block; margin-top: 4px; font: 600 18px var(--mono); }
+    .metric-detail { display: block; margin-top: 2px; color: var(--muted); font-size: 11px; }
+
+    .data-grid {
+      display: grid;
+      grid-template-columns: minmax(270px, 0.8fr) minmax(320px, 1fr) minmax(340px, 1.2fr);
+      gap: 12px;
+      align-items: start;
     }
 
-    .small-note {
-      color: #9c9c9c;
-      font-size: 12px;
-      margin-top: 4px;
-    }
+    .section-body { padding: 10px 12px 12px; }
+    .kv { width: 100%; border-collapse: collapse; }
+    .kv th, .kv td { padding: 6px 0; border-bottom: 1px solid var(--line); vertical-align: top; }
+    .kv tr:last-child th, .kv tr:last-child td { border-bottom: 0; }
+    .kv th { width: 48%; color: var(--muted); text-align: left; font-weight: 500; }
+    .kv td { text-align: right; font-family: var(--mono); overflow-wrap: anywhere; }
 
-    .pill {
+    .table-wrap { width: 100%; overflow-x: auto; }
+    .data-table { width: 100%; border-collapse: collapse; font: 12px var(--mono); }
+    .data-table th, .data-table td { padding: 7px 8px; border-bottom: 1px solid var(--line); text-align: left; white-space: nowrap; }
+    .data-table th { position: sticky; top: 0; color: var(--muted); background: var(--surface); font-family: var(--sans); font-weight: 600; }
+    .data-table tbody tr:last-child td { border-bottom: 0; }
+    .empty { padding: 18px 8px; color: var(--muted); text-align: center; font-family: var(--sans); }
+
+    .wide { grid-column: 1 / -1; }
+    .research-layout { display: grid; grid-template-columns: minmax(280px, 0.7fr) minmax(420px, 1.3fr); gap: 12px; }
+    .session-path { display: block; margin-top: 6px; color: var(--muted); font: 11px var(--mono); overflow-wrap: anywhere; }
+    .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+
+    .button {
       display: inline-flex;
       align-items: center;
-      gap: 8px;
-      padding: 4px 8px;
-      border: 1px solid #3f3f3f;
-      border-radius: 999px;
-      font-size: 12px;
-      margin-right: 8px;
+      min-height: 32px;
+      padding: 6px 10px;
+      border: 1px solid var(--line-strong);
+      border-radius: 7px;
+      background: var(--surface-2);
+      color: var(--text);
+      font: 600 12px var(--sans);
+      text-decoration: none;
+      cursor: pointer;
     }
 
-    .dot {
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: #f59e0b;
+    .button:hover { border-color: var(--accent); color: var(--text); }
+
+    details { margin-top: 12px; border: 1px solid var(--line); border-radius: 10px; background: var(--surface); }
+    summary { padding: 11px 12px; cursor: pointer; font-weight: 600; }
+    .connection-form { display: grid; grid-template-columns: auto minmax(240px, 1fr) auto; gap: 8px; padding: 0 12px 12px; align-items: center; }
+    label { color: var(--muted); font-size: 12px; }
+    input { width: 100%; min-height: 34px; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 7px; background: var(--bg); color: var(--text); font: 12px var(--mono); }
+
+    .footer { display: flex; justify-content: space-between; gap: 16px; padding: 12px 2px 4px; color: var(--muted); font-size: 11px; }
+    .mono { font-family: var(--mono); }
+    .good-text { color: var(--good); }
+    .warn-text { color: var(--warn); }
+    .bad-text { color: var(--bad); }
+
+    @media (max-width: 1050px) {
+      .visual-grid, .data-grid, .research-layout { grid-template-columns: 1fr; }
+      .wide { grid-column: auto; }
     }
 
-    .dot.ok {
-      background: #22c55e;
+    @media (max-width: 700px) {
+      .topbar { position: static; align-items: flex-start; flex-direction: column; padding: 12px; }
+      .status-group { justify-content: flex-start; }
+      main { padding: 10px; }
+      .connection-form { grid-template-columns: 1fr; }
+      .metric { flex-basis: 110px; }
+      .metric-value { font-size: 16px; }
     }
 
-    .footer {
-      padding: 8px 12px 14px;
-      color: #a7a7a7;
-      font-size: 12px;
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
     }
   </style>
 </head>
 <body>
-  <div class="top">
-    <h1 id="pageTitle">Unitree G1 Camera Viewer</h1>
-    <p class="small-note">Displays the processed camera stream and detection output.</p>
-    <div>
-      <span class="pill">
-        <span id="mainStatus" class="dot"></span>
-        <span>Main status</span>
-      </span>
-      <span class="pill chest-only">
-        <span id="chestStatus" class="dot"></span>
-        <span>Chest status</span>
-      </span>
+  <header class="topbar">
+    <div class="title-group">
+      <h1>G1 Grasping Research Console</h1>
+      <p class="subtitle">RealSense-guided perception, tracking, IK, and experiment telemetry</p>
     </div>
-  </div>
-
-  <div class="row">
-    <section class="panel">
-      <h2>Main camera</h2>
-      <div class="streams">
-        <img id="mainStream" class="stream" src="" alt="main camera stream" />
-      </div>
-      <div class="small-note">
-        Endpoint: <span id="mainEndpoint"></span>
-      </div>
-      <div class="small-note">
-        Health: <span id="mainHealth">Checking...</span> | Snapshot: <a id="mainSnapshot" href="#" target="_blank">/snapshot.jpg</a> |
-        Detections: <a id="mainDetections" href="#" target="_blank">/detections</a>
-      </div>
-    </section>
-
-    <section class="panel chest-only">
-      <h2>Chest camera</h2>
-      <div class="streams">
-        <img id="chestStream" class="stream" src="" alt="chest camera stream" />
-      </div>
-      <div class="small-note">
-        Endpoint: <span id="chestEndpoint"></span>
-      </div>
-      <div class="small-note">
-        Health: <span id="chestHealth">Checking...</span> | Snapshot: <a id="chestSnapshot" href="#" target="_blank">/snapshot.jpg</a> |
-        Detections: <a id="chestDetections" href="#" target="_blank">/detections</a>
-      </div>
-    </section>
-
-    <section class="panel" id="depthPanel">
-      <h2>Hardware depth and arm tracking</h2>
-      <img id="depthImage" class="stream" src="" alt="RealSense hardware depth colormap" />
-      <div class="telemetry">
-        <div id="modeMetric" class="metric">Mode: checking</div>
-        <div id="depthMetric" class="metric">Depth: checking</div>
-        <div id="targetMetric" class="metric">Target XYZ: unavailable</div>
-        <div id="predictionMetric" class="metric">Prediction: unavailable</div>
-        <div id="ikMetric" class="metric">IK: unavailable</div>
-        <div id="armMetric" class="metric">Arm: unavailable</div>
-      </div>
-    </section>
-  </div>
-
-  <div class="panel footer">
-    <div class="controls">
-      <label for="mainInput">Main stream URL</label>
-      <input id="mainInput" type="text" placeholder="http://127.0.0.1:8000/stream.mjpg" />
-      <label class="chest-only" for="chestInput">Chest stream URL</label>
-      <input class="chest-only" id="chestInput" type="text" placeholder="http://127.0.0.1:8001/stream.mjpg" />
-      <button id="applyBtn" type="button">Apply URLs</button>
+    <div class="status-group" aria-label="System status">
+      <span id="systemStatus" class="status"><span class="dot"></span><span>System checking</span></span>
+      <span id="inferenceStatus" class="status"><span class="dot"></span><span>Inference checking</span></span>
+      <span id="trackingStatus" class="status"><span class="dot"></span><span>Tracking checking</span></span>
+      <span id="recordingStatus" class="status"><span class="dot"></span><span>Recording checking</span></span>
     </div>
-  </div>
+  </header>
+
+  <main>
+    <section class="visual-grid" aria-label="Live sensor views">
+      <article class="panel">
+        <div class="panel-header"><h2>Annotated RGB</h2><span id="rgbMeta" class="panel-meta">waiting for frames</span></div>
+        <img id="mainStream" class="stream" alt="Live annotated RGB stream from the G1 camera" />
+      </article>
+      <article class="panel">
+        <div class="panel-header"><h2>RealSense hardware depth</h2><span id="depthMeta" class="panel-meta">waiting for depth</span></div>
+        <img id="depthImage" class="stream depth-stream" alt="Latest hardware depth colormap" />
+      </article>
+    </section>
+
+    <section class="metric-strip" aria-label="Live research metrics">
+      <div class="metric"><span class="metric-label">Camera rate</span><span id="cameraFps" class="metric-value">—</span><span id="cameraFpsDetail" class="metric-detail">expected —</span></div>
+      <div class="metric"><span class="metric-label">YOLO rate</span><span id="yoloFps" class="metric-value">—</span><span id="inferenceDetail" class="metric-detail">state —</span></div>
+      <div class="metric"><span class="metric-label">Depth age</span><span id="depthAge" class="metric-value">—</span><span id="depthValidity" class="metric-detail">validity —</span></div>
+      <div class="metric"><span class="metric-label">RGB/depth skew</span><span id="pairSkew" class="metric-value">—</span><span class="metric-detail">limit 100 ms</span></div>
+      <div class="metric"><span class="metric-label">Detections / tracks</span><span id="detectionCount" class="metric-value">—</span><span id="activeTrack" class="metric-detail">active track —</span></div>
+      <div class="metric"><span class="metric-label">Control mode</span><span id="controlMode" class="metric-value">—</span><span id="armStateDetail" class="metric-detail">arm —</span></div>
+    </section>
+
+    <section class="data-grid" aria-label="Pipeline and control data">
+      <article class="panel">
+        <div class="panel-header"><h2>Pipeline health</h2><span id="lastErrorBadge" class="panel-meta">no errors</span></div>
+        <div class="section-body"><table class="kv"><tbody>
+          <tr><th>Frame / inference</th><td id="frameCounts">—</td></tr>
+          <tr><th>Encode rate</th><td id="encodeFps">—</td></tr>
+          <tr><th>Capture backend</th><td id="captureBackend">—</td></tr>
+          <tr><th>CUDA</th><td id="cudaState">—</td></tr>
+          <tr><th>Model</th><td id="modelName">—</td></tr>
+          <tr><th>Calibration</th><td id="calibrationId">—</td></tr>
+        </tbody></table></div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header"><h2>3D state</h2><span class="panel-meta">torso/base frame · metres</span></div>
+        <div class="section-body"><table class="kv"><tbody>
+          <tr><th>Measured object XYZ</th><td id="objectXyz">—</td></tr>
+          <tr><th>Predicted object XYZ</th><td id="predictedXyz">—</td></tr>
+          <tr><th>Pregrasp target XYZ</th><td id="targetXyz">—</td></tr>
+          <tr><th>Track ID</th><td id="trackId">—</td></tr>
+          <tr><th>Depth sequence</th><td id="depthSequence">—</td></tr>
+          <tr><th>Depth valid fraction</th><td id="depthValidFraction">—</td></tr>
+        </tbody></table></div>
+      </article>
+
+      <article class="panel">
+        <div class="panel-header"><h2>Decision and arm state</h2><span id="decisionStatus" class="panel-meta">waiting</span></div>
+        <div class="section-body"><table class="kv"><tbody>
+          <tr><th>Decision reason</th><td id="decisionReason">—</td></tr>
+          <tr><th>IK status</th><td id="ikStatus">—</td></tr>
+          <tr><th>IK position error</th><td id="ikPositionError">—</td></tr>
+          <tr><th>IK orientation error</th><td id="ikOrientationError">—</td></tr>
+          <tr><th>Arm state</th><td id="armState">—</td></tr>
+          <tr><th>Arm weight</th><td id="armWeight">—</td></tr>
+          <tr><th>Loop period / missed</th><td id="armLoop">—</td></tr>
+          <tr><th>Target sequence</th><td id="targetSequence">—</td></tr>
+        </tbody></table></div>
+      </article>
+
+      <article class="panel wide">
+        <div class="panel-header"><h2>Current detections and tracks</h2><span id="detectionMeta" class="panel-meta">0 observations</span></div>
+        <div class="table-wrap"><table class="data-table">
+          <thead><tr><th>Track</th><th>Class</th><th>Confidence</th><th>Center px</th><th>Velocity px/s</th><th>Age frames</th><th>Missed</th></tr></thead>
+          <tbody id="detectionRows"><tr><td class="empty" colspan="7">Waiting for detections</td></tr></tbody>
+        </table></div>
+      </article>
+
+      <article class="panel wide">
+        <div class="panel-header"><h2>Research recording</h2><span id="sessionBadge" class="panel-meta">initializing</span></div>
+        <div class="section-body research-layout">
+          <div>
+            <table class="kv"><tbody>
+              <tr><th>Session ID</th><td id="sessionId">—</td></tr>
+              <tr><th>Elapsed</th><td id="sessionElapsed">—</td></tr>
+              <tr><th>Samples</th><td id="sampleCount">—</td></tr>
+              <tr><th>Mean camera / YOLO</th><td id="meanRates">—</td></tr>
+              <tr><th>Mean depth / skew</th><td id="meanTiming">—</td></tr>
+              <tr><th>Targets sent</th><td id="targetsSent">—</td></tr>
+              <tr><th>Top rejection</th><td id="topRejection">—</td></tr>
+            </tbody></table>
+            <span id="sessionPath" class="session-path">No research directory yet</span>
+            <div class="actions">
+              <a id="exportLink" class="button" href="#">Download JSONL</a>
+              <a id="summaryLink" class="button" href="#" target="_blank" rel="noreferrer">Open summary JSON</a>
+              <a id="healthLink" class="button" href="#" target="_blank" rel="noreferrer">Open health JSON</a>
+              <a id="snapshotLink" class="button" href="#" target="_blank" rel="noreferrer">Open snapshot</a>
+            </div>
+          </div>
+          <div>
+            <h3>Recent decision samples</h3>
+            <div class="table-wrap"><table class="data-table">
+              <thead><tr><th>Elapsed</th><th>Status</th><th>Reason</th><th>Depth age</th><th>Pair skew</th><th>Track</th></tr></thead>
+              <tbody id="sampleRows"><tr><td class="empty" colspan="6">Waiting for research samples</td></tr></tbody>
+            </table></div>
+          </div>
+        </div>
+      </article>
+    </section>
+
+    <details>
+      <summary>Connection and raw endpoints</summary>
+      <div class="connection-form">
+        <label for="mainInput">Inference stream URL</label>
+        <input id="mainInput" type="url" />
+        <button id="applyBtn" class="button" type="button">Reconnect</button>
+      </div>
+    </details>
+
+    <footer class="footer">
+      <span id="connectionText">Connecting to GB10…</span>
+      <span id="updatedAt" class="mono">not updated</span>
+    </footer>
+  </main>
 
   <script>
-    function cacheBusted(url) {
-      const separator = url.includes("?") ? "&" : "?";
-      return `${url}${separator}ts=${Date.now()}`;
-    }
-
-    function normalizeStreamBase(url) {
-      return url.replace(/\/$/, "");
-    }
-
-    function makeApiBase(streamBase) {
-      return streamBase.endsWith("/stream.mjpg")
-        ? streamBase.replace(/\/stream\.mjpg$/, "")
-        : streamBase.replace(/\/$/, "");
-    }
-
+    const byId = (id) => document.getElementById(id);
     const params = new URLSearchParams(window.location.search);
-    const singleCamera = params.get("single") === "1";
-    document.body.classList.toggle("single-camera", singleCamera);
-    document.getElementById("pageTitle").textContent = singleCamera
-      ? "Unitree G1 Main Camera Viewer"
-      : "Unitree G1 Dual Camera Viewer";
-    const hostFromQuery = params.get("host") || window.location.hostname || "127.0.0.1";
-    const mainDefault = params.get("main") || `http://${hostFromQuery}:8000/stream.mjpg`;
-    const chestDefault = params.get("chest") || `http://${hostFromQuery}:8001/stream.mjpg`;
+    const host = params.get("host") || window.location.hostname || "127.0.0.1";
+    let streamUrl = params.get("main") || `http://${host}:8000/stream.mjpg`;
+    let apiBase = streamUrl.replace(/\/stream\.mjpg(?:\?.*)?$/, "").replace(/\/$/, "");
 
-    const mainInput = document.getElementById("mainInput");
-    const chestInput = document.getElementById("chestInput");
-    const mainStreamEl = document.getElementById("mainStream");
-    const chestStreamEl = document.getElementById("chestStream");
-    const mainEndpointEl = document.getElementById("mainEndpoint");
-    const chestEndpointEl = document.getElementById("chestEndpoint");
-    const mainHealthEl = document.getElementById("mainHealth");
-    const chestHealthEl = document.getElementById("chestHealth");
-    const mainSnapshot = document.getElementById("mainSnapshot");
-    const chestSnapshot = document.getElementById("chestSnapshot");
-    const mainDetections = document.getElementById("mainDetections");
-    const chestDetections = document.getElementById("chestDetections");
-    const mainStatus = document.getElementById("mainStatus");
-    const chestStatus = document.getElementById("chestStatus");
-    const applyBtn = document.getElementById("applyBtn");
-    const depthImage = document.getElementById("depthImage");
-    const modeMetric = document.getElementById("modeMetric");
-    const depthMetric = document.getElementById("depthMetric");
-    const targetMetric = document.getElementById("targetMetric");
-    const predictionMetric = document.getElementById("predictionMetric");
-    const ikMetric = document.getElementById("ikMetric");
-    const armMetric = document.getElementById("armMetric");
-
-    let currentMain = normalizeStreamBase(mainDefault);
-    let currentChest = normalizeStreamBase(chestDefault);
-
-    function applyStreamStatus(statusEl, value) {
-      const isOnline = value;
-      statusEl.classList.toggle("ok", isOnline);
+    function cacheBusted(url) {
+      return `${url}${url.includes("?") ? "&" : "?"}ts=${Date.now()}`;
     }
 
-    function buildAuxLinks(streamBase) {
-      const apiBase = makeApiBase(streamBase);
-      return {
-        snapshot: `${apiBase}/snapshot.jpg`,
-        detections: `${apiBase}/detections`,
-      };
+    function number(value, digits = 1, suffix = "") {
+      return Number.isFinite(Number(value)) ? `${Number(value).toFixed(digits)}${suffix}` : "—";
     }
 
-    function applyStreams(main, chest) {
-      currentMain = normalizeStreamBase(main);
-      currentChest = normalizeStreamBase(chest);
+    function vector(value) {
+      return Array.isArray(value) && value.length >= 3
+        ? `[${value.slice(0, 3).map((item) => Number(item).toFixed(3)).join(", ")}]`
+        : "—";
+    }
 
-      mainInput.value = currentMain;
-      chestInput.value = currentChest;
-      mainEndpointEl.textContent = currentMain;
-      chestEndpointEl.textContent = currentChest;
+    function setStatus(element, label, state) {
+      element.className = `status ${state || ""}`.trim();
+      element.querySelector("span:last-child").textContent = label;
+    }
 
-      mainStreamEl.onload = () => applyStreamStatus(mainStatus, true);
-      chestStreamEl.onload = () => applyStreamStatus(chestStatus, true);
-      mainStreamEl.onerror = () => applyStreamStatus(mainStatus, false);
-      chestStreamEl.onerror = () => applyStreamStatus(chestStatus, false);
+    function setText(id, value) {
+      byId(id).textContent = value === undefined || value === null || value === "" ? "—" : String(value);
+    }
 
-      mainStreamEl.src = cacheBusted(currentMain);
-      if (!singleCamera) {
-        chestStreamEl.src = cacheBusted(currentChest);
+    function endpoint(path) { return `${apiBase}${path}`; }
+
+    function applyStream() {
+      streamUrl = byId("mainInput").value.trim() || streamUrl;
+      apiBase = streamUrl.replace(/\/stream\.mjpg(?:\?.*)?$/, "").replace(/\/$/, "");
+      byId("mainInput").value = streamUrl;
+      byId("mainStream").src = cacheBusted(streamUrl);
+      byId("exportLink").href = endpoint("/research/export.jsonl");
+      byId("summaryLink").href = endpoint("/research/summary");
+      byId("healthLink").href = endpoint("/health");
+      byId("snapshotLink").href = endpoint("/snapshot.jpg");
+      setText("connectionText", `API ${apiBase}`);
+    }
+
+    async function json(path) {
+      const response = await fetch(endpoint(path), {cache: "no-store"});
+      if (!response.ok) throw new Error(`${path}: HTTP ${response.status}`);
+      return response.json();
+    }
+
+    function renderDetectionRows(tracks, detections) {
+      const body = byId("detectionRows");
+      body.replaceChildren();
+      const rows = tracks.length ? tracks : detections;
+      if (!rows.length) {
+        const row = body.insertRow();
+        const cell = row.insertCell();
+        cell.colSpan = 7;
+        cell.className = "empty";
+        cell.textContent = "No current detections";
+        return;
       }
-
-      const mainAux = buildAuxLinks(currentMain);
-      const chestAux = buildAuxLinks(currentChest);
-      mainSnapshot.href = mainAux.snapshot;
-      chestSnapshot.href = chestAux.snapshot;
-      mainDetections.href = mainAux.detections;
-      chestDetections.href = chestAux.detections;
-      mainHealthEl.textContent = "stream endpoint set";
-      chestHealthEl.textContent = "stream endpoint set";
-      depthImage.src = cacheBusted(`${makeApiBase(currentMain)}/depth.jpg`);
+      rows.forEach((item) => {
+        const row = body.insertRow();
+        const values = [
+          item.track_id ?? "—",
+          item.class_name ?? item.class_id ?? "—",
+          number(item.confidence, 3),
+          Array.isArray(item.center_xy) ? item.center_xy.map((v) => Number(v).toFixed(1)).join(", ") : "—",
+          Array.isArray(item.velocity_px_per_sec) ? item.velocity_px_per_sec.map((v) => Number(v).toFixed(1)).join(", ") : "—",
+          item.age_frames ?? "—",
+          item.missed_updates ?? "—",
+        ];
+        values.forEach((value) => { row.insertCell().textContent = value; });
+      });
     }
 
-    function vectorText(value) {
-      return Array.isArray(value) ? value.map((item) => Number(item).toFixed(3)).join(", ") : "unavailable";
+    function renderSamples(samples) {
+      const body = byId("sampleRows");
+      body.replaceChildren();
+      const recent = samples.slice(-12).reverse();
+      if (!recent.length) {
+        const row = body.insertRow();
+        const cell = row.insertCell();
+        cell.colSpan = 6;
+        cell.className = "empty";
+        cell.textContent = "No research samples recorded yet";
+        return;
+      }
+      recent.forEach((sample) => {
+        const tracking = sample.arm_tracking || {};
+        const row = body.insertRow();
+        [
+          number(sample.session_elapsed_s, 1, " s"),
+          tracking.status || "—",
+          tracking.reason || "—",
+          number(tracking.depth_age_ms, 1, " ms"),
+          number(tracking.pair_skew_ms, 1, " ms"),
+          tracking.track_id ?? "—",
+        ].forEach((value) => { row.insertCell().textContent = value; });
+      });
     }
 
-    async function refreshTelemetry() {
-      const apiBase = makeApiBase(currentMain);
+    function topRejection(reasons) {
+      const entries = Object.entries(reasons || {}).sort((a, b) => b[1] - a[1]);
+      return entries.length ? `${entries[0][0]} (${entries[0][1]})` : "none";
+    }
+
+    async function refresh() {
       try {
-        const [healthResponse, trackingResponse] = await Promise.all([
-          fetch(`${apiBase}/health`, {cache: "no-store"}),
-          fetch(`${apiBase}/arm-tracking`, {cache: "no-store"}),
+        const [health, detections, tracks, tracking, session, summary, telemetry] = await Promise.all([
+          json("/health"), json("/detections"), json("/tracks"), json("/arm-tracking"),
+          json("/research/session"), json("/research/summary"), json("/research/telemetry?limit=20"),
         ]);
-        const health = await healthResponse.json();
-        const tracking = await trackingResponse.json();
-        mainHealthEl.textContent = `${health.fps?.toFixed?.(1) ?? "?"} FPS | ${health.inference_status}`;
-        applyStreamStatus(mainStatus, Boolean(health.ok));
-        modeMetric.textContent = `Mode: ${tracking.mode || "dry-run"}\nStatus: ${tracking.status || "unknown"}`;
-        depthMetric.textContent = `Depth age: ${tracking.depth_age_ms ?? "?"} ms\nValid: ${tracking.depth_valid_fraction ?? "?"}`;
-        targetMetric.textContent = `Target XYZ: ${vectorText(tracking.target_xyz_m)}`;
-        predictionMetric.textContent = `Predicted XYZ: ${vectorText(tracking.predicted_xyz_m)}`;
-        ikMetric.textContent = `IK: ${tracking.ik_status || tracking.reason || "unavailable"}`;
-        armMetric.textContent = `Arm: ${tracking.arm_state || "unavailable"}\nCalibration: ${tracking.calibration_id || "none"}`;
-        if (tracking.depth_sequence !== undefined) {
-          depthImage.src = cacheBusted(`${apiBase}/depth.jpg`);
-        }
+
+        setStatus(byId("systemStatus"), health.ok ? "System ready" : "System not ready", health.ok ? "good" : "bad");
+        const inferenceReady = ["ready", "disabled"].includes(health.inference_status);
+        setStatus(byId("inferenceStatus"), `Inference ${health.inference_status}`, inferenceReady ? "good" : health.inference_status === "error" ? "bad" : "warn");
+        const trackingState = tracking.status || "disabled";
+        setStatus(byId("trackingStatus"), `Tracking ${trackingState}`, ["tracking", "target_sent"].includes(trackingState) ? "good" : trackingState === "error" ? "bad" : "warn");
+        setStatus(byId("recordingStatus"), session.enabled ? `Recording ${session.session_id}` : "Recording off", session.enabled ? "good" : "warn");
+
+        setText("cameraFps", number(health.fps, 1, " Hz"));
+        setText("cameraFpsDetail", `expected ${number(health.expected_fps, 0, " Hz")}`);
+        setText("yoloFps", number(health.yolo_fps, 1, " Hz"));
+        setText("inferenceDetail", `${health.inference_status} · warmup ${number(health.inference_warmup_seconds, 2, " s")}`);
+        setText("depthAge", number(tracking.depth_age_ms, 1, " ms"));
+        setText("depthValidity", `valid ${number(tracking.depth_valid_fraction, 3)}`);
+        setText("pairSkew", number(tracking.pair_skew_ms, 1, " ms"));
+        setText("detectionCount", `${detections.detections.length} / ${tracks.tracks.length}`);
+        setText("activeTrack", `active track ${tracking.track_id ?? "—"}`);
+        setText("controlMode", tracking.mode || "dry-run");
+        setText("armStateDetail", `arm ${tracking.arm_state || "—"}`);
+
+        setText("rgbMeta", `frame ${health.frame_count} · ${number(health.fps, 1, " Hz")}`);
+        setText("depthMeta", `sequence ${tracking.depth_sequence ?? "—"} · age ${number(tracking.depth_age_ms, 1, " ms")}`);
+        if (tracking.depth_sequence !== undefined) byId("depthImage").src = cacheBusted(endpoint("/depth.jpg"));
+
+        setText("frameCounts", `${health.frame_count} / ${health.yolo_count}`);
+        setText("encodeFps", number(health.encode_fps, 1, " Hz"));
+        setText("captureBackend", health.capture_backend);
+        setText("cudaState", health.torch_cuda ? "available" : "unavailable");
+        setText("modelName", health.model_name);
+        setText("calibrationId", tracking.calibration_id);
+        setText("lastErrorBadge", health.last_error || health.inference_error || "no errors");
+
+        setText("objectXyz", vector(tracking.object_xyz_m));
+        setText("predictedXyz", vector(tracking.predicted_xyz_m));
+        setText("targetXyz", vector(tracking.target_xyz_m));
+        setText("trackId", tracking.track_id);
+        setText("depthSequence", tracking.depth_sequence);
+        setText("depthValidFraction", number(tracking.depth_valid_fraction, 4));
+        setText("decisionStatus", tracking.status || "disabled");
+        setText("decisionReason", tracking.reason || "none");
+        setText("ikStatus", tracking.ik_status);
+        setText("ikPositionError", number(tracking.ik_position_error_m, 4, " m"));
+        setText("ikOrientationError", number(tracking.ik_orientation_error_rad, 4, " rad"));
+        setText("armState", tracking.arm_state);
+        setText("armWeight", number(tracking.arm_weight, 3));
+        setText("armLoop", `${number(tracking.arm_loop?.last_period_ms, 2, " ms")} / ${tracking.arm_loop?.missed_deadlines ?? "—"}`);
+        setText("targetSequence", tracking.target_sequence);
+        setText("detectionMeta", `${detections.detections.length} detections · ${tracks.tracks.length} tracks`);
+        renderDetectionRows(tracks.tracks, detections.detections);
+
+        setText("sessionBadge", session.enabled ? "structured JSONL active" : "disabled");
+        setText("sessionId", session.session_id);
+        setText("sessionElapsed", number(session.elapsed_s, 1, " s"));
+        setText("sampleCount", summary.sample_count);
+        setText("meanRates", `${number(summary.mean_camera_fps, 1)} / ${number(summary.mean_yolo_fps, 1)} Hz`);
+        setText("meanTiming", `${number(summary.mean_depth_age_ms, 1)} / ${number(summary.mean_pair_skew_ms, 1)} ms`);
+        setText("targetsSent", summary.target_sent_count);
+        setText("topRejection", topRejection(summary.rejection_reasons));
+        setText("sessionPath", session.directory || "Research recording disabled");
+        renderSamples(telemetry.samples || []);
+        setText("updatedAt", `updated ${new Date().toLocaleTimeString()}`);
       } catch (error) {
-        mainHealthEl.textContent = `offline: ${error}`;
-        applyStreamStatus(mainStatus, false);
+        setStatus(byId("systemStatus"), "API unavailable", "bad");
+        setText("connectionText", `${apiBase} · ${error.message}`);
+        setText("updatedAt", `failed ${new Date().toLocaleTimeString()}`);
       }
     }
 
-    applyBtn.addEventListener("click", () => {
-      const main = mainInput.value.trim() || currentMain;
-      const chest = chestInput.value.trim() || currentChest;
-      applyStreams(main, chest);
-    });
-
-    applyStreams(currentMain, currentChest);
-    refreshTelemetry();
-    window.setInterval(refreshTelemetry, 1000);
+    byId("applyBtn").addEventListener("click", () => { applyStream(); refresh(); });
+    byId("mainStream").addEventListener("load", () => setText("connectionText", `Live stream ${streamUrl}`));
+    byId("mainStream").addEventListener("error", () => setText("connectionText", `Stream unavailable ${streamUrl}`));
+    byId("mainInput").value = streamUrl;
+    applyStream();
+    refresh();
+    window.setInterval(refresh, 1000);
   </script>
 </body>
 </html>

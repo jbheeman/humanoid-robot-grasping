@@ -98,7 +98,18 @@ CALIBRATION=/secure/runtime/g1-camera.yaml \
 ./scripts/run_gb10_vision_server.sh
 ```
 
-Open `http://GB10:8080/unitree_dual_viewer.html?single=1`. The viewer reports RGB detections, depth age/validity, hardware-depth colormap, measured/predicted XYZ, pregrasp target, IK result, calibration ID, arm state, and dry-run/execute mode.
+When the GB10 server starts, it prints a copy-paste LAN URL and SSH tunnel command for the MacBook. Open `http://GB10:8080/unitree_dual_viewer.html?single=1`. The research console shows annotated RGB, hardware-depth colormap, camera/YOLO/encode rates, depth age and RGB/depth skew, detections and tracks, measured/predicted/target XYZ, IK errors, arm state and loop timing, rejection reasons, calibration identity, and research-session statistics.
+
+Structured telemetry recording is enabled by default at 5 Hz. Each server start creates an isolated directory:
+
+```text
+runs/research/arm_tracking/YYYYMMDD_HHMMSS_PID/
+  manifest.json
+  telemetry.jsonl
+  summary.json
+```
+
+This is separate from YOLO/VLM training outputs. It records structured observations and decisions, not raw images. Override it with `RESEARCH_ROOT`, change sampling with `RESEARCH_HZ`, or disable it with `RESEARCH_RECORD=0`.
 
 MacBook tunnel:
 
@@ -118,6 +129,13 @@ Depth:
 - `GET :8767/health`
 - `GET :8767/depth/calibration`
 - `WS :8767/depth/stream`
+
+GB10 research:
+
+- `GET :8000/research/session`
+- `GET :8000/research/summary`
+- `GET :8000/research/telemetry?limit=100`
+- `GET :8000/research/export.jsonl`
 
 Each binary WebSocket message is a network-order 4-byte JSON-header length, a versioned JSON header, then zstd-compressed little-endian Z16. The decoder bounds header, compressed payload, dimensions, and decompressed size and verifies SHA-256.
 
