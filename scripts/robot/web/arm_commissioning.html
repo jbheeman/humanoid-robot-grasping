@@ -210,8 +210,15 @@
       const kv = [["Bridge", bridge.state], ["Stable standing", bridge.standing], ["Motion mode", bridge.motion_mode_verified ? bridge.motion_mode_name : "UNVERIFIED"], ["Controller ownership", bridge.controller_ownership_verified], ["Motor status", bridge.motor_status_verified && bridge.motor_state_healthy], ["Arm weight", bridge.weight], ["Loop misses", bridge.loop?.missed_deadlines]];
       $("safetyKv").replaceChildren(...kv.flatMap(([label, data]) => { const left=document.createElement("div"), right=document.createElement("div"); left.textContent=label; right.textContent=data ?? "—"; return [left,right]; }));
     }
-    async function refresh() { try { render(await api("/api/v1/commissioning/state")); } catch (error) { message(error.message, true); } }
-    async function post(action, body={}, quiet=false) { try { const result=await api(sessionPath(action), body); render(result); if (!quiet) message(`${action} accepted`); return result; } catch(error) { message(error.message, true); return null; } }
+    function faultMessage(value, fallback="") {
+      const bridge = value?.bridge || {};
+      const reason = value?.fault_reason || bridge.fault_reason;
+      return reason
+        ? `FAULT: ${reason}\nBridge: ${bridge.state || "unknown"} · phase: ${value?.phase || "unknown"} · standing: ${bridge.standing ?? "unknown"} · state age: ${bridge.robot_state_age_ms ?? "unknown"} ms`
+        : fallback;
+    }
+    async function refresh() { try { const value=await api("/api/v1/commissioning/state"); render(value); if (value.phase === "FAULT" || value.bridge?.state === "FAULT") { clearInterval(heartbeatTimer); message(faultMessage(value, "Commissioning fault"), true); } } catch (error) { message(error.message, true); } }
+    async function post(action, body={}, quiet=false) { try { const result=await api(sessionPath(action), body); render(result); if (result.phase === "FAULT" || result.bridge?.state === "FAULT") { clearInterval(heartbeatTimer); message(faultMessage(result, `${action} faulted`), true); return null; } if (!quiet) message(`${action} accepted`); return result; } catch(error) { try { const current=await api("/api/v1/commissioning/state"); render(current); if (current.phase === "FAULT" || current.bridge?.state === "FAULT") { clearInterval(heartbeatTimer); message(faultMessage(current, error.message), true); return null; } } catch (_) {} message(error.message, true); return null; } }
     async function jog(joint_name, direction) { sequence += 1; await post("jogs", {sequence, joint_name, direction, kind: $("signMode").checked ? "sign_check" : "jog"}); }
     $("connectBtn").addEventListener("click", async () => { authToken=$("token").value; await refresh(); if (state) $("token").value=""; clearInterval(pollTimer); pollTimer=setInterval(refresh, 250); });
     $("startBtn").addEventListener("click", async () => { try { const value=await api("/api/v1/commissioning/sessions", {operator: $("operator").value, client_id: $("clientId").value}); sequence=0; render(value); message("Session created. Enabling will latch the measured pose."); } catch(error) { message(error.message, true); } });
