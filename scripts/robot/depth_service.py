@@ -6,7 +6,7 @@ from dataclasses import dataclass
 import math
 import threading
 import time
-from typing import Any, Protocol
+from typing import Any, Dict, List, Optional, Protocol
 
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
@@ -23,11 +23,11 @@ class CapturedDepth:
 
 
 class DepthSource(Protocol):
-    calibration: dict[str, Any]
+    calibration: Dict[str, Any]
 
     def start(self) -> None: ...
 
-    def read(self, timeout_s: float) -> CapturedDepth | None: ...
+    def read(self, timeout_s: float) -> Optional[CapturedDepth]: ...
 
     def close(self) -> None: ...
 
@@ -35,7 +35,7 @@ class DepthSource(Protocol):
 class RealSenseDepthSource:
     """Depth-only librealsense source that never claims unverified RGB alignment."""
 
-    def __init__(self, *, width: int, height: int, fps: int, serial: str | None) -> None:
+    def __init__(self, *, width: int, height: int, fps: int, serial: Optional[str]) -> None:
         self.width = width
         self.height = height
         self.fps = fps
@@ -44,7 +44,7 @@ class RealSenseDepthSource:
         self.spatial: Any = None
         self.temporal: Any = None
         self.hole_filling: Any = None
-        self.calibration: dict[str, Any] = {}
+        self.calibration: Dict[str, Any] = {}
 
     def start(self) -> None:
         try:
@@ -76,7 +76,7 @@ class RealSenseDepthSource:
         depth_sensor = profile.get_device().first_depth_sensor()
         depth_scale = float(depth_sensor.get_depth_scale())
 
-        color_profiles: list[dict[str, Any]] = []
+        color_profiles: List[Dict[str, Any]] = []
         for sensor in device.query_sensors():
             for stream_profile in sensor.get_stream_profiles():
                 try:
@@ -123,7 +123,7 @@ class RealSenseDepthSource:
         self.temporal = rs.temporal_filter()
         self.hole_filling = rs.hole_filling_filter()
 
-    def read(self, timeout_s: float) -> CapturedDepth | None:
+    def read(self, timeout_s: float) -> Optional[CapturedDepth]:
         if self.pipeline is None:
             raise RuntimeError("Depth source is not started")
         try:
@@ -163,12 +163,12 @@ class RosAlignedDepthSource:
         self.camera_info_topic = camera_info_topic
         self.depth_scale = depth_scale
         self.startup_timeout_s = startup_timeout_s
-        self.calibration: dict[str, Any] = {}
+        self.calibration: Dict[str, Any] = {}
         self._lock = threading.Lock()
-        self._latest: CapturedDepth | None = None
+        self._latest: Optional[CapturedDepth] = None
         self._node: Any = None
         self._executor: Any = None
-        self._thread: threading.Thread | None = None
+        self._thread: Optional[threading.Thread] = None
         self._rclpy: Any = None
         self._camera_info: Any = None
 
@@ -232,7 +232,7 @@ class RosAlignedDepthSource:
             self._latest = CapturedDepth(z16, timestamp_ms, "ros_time")
             self._refresh_calibration(width=int(message.width), height=int(message.height))
 
-    def _refresh_calibration(self, width: int | None = None, height: int | None = None) -> None:
+    def _refresh_calibration(self, width: Optional[int] = None, height: Optional[int] = None) -> None:
         info = self._camera_info
         if info is None:
             return
@@ -265,7 +265,7 @@ class RosAlignedDepthSource:
             "calibration_id": f"ros-aligned-{width}x{height}",
         }
 
-    def read(self, timeout_s: float) -> CapturedDepth | None:
+    def read(self, timeout_s: float) -> Optional[CapturedDepth]:
         deadline = time.monotonic() + timeout_s
         while time.monotonic() < deadline:
             with self._lock:
@@ -292,9 +292,9 @@ class AutoDepthSource:
     def __init__(self, preferred: DepthSource, fallback: DepthSource) -> None:
         self.preferred = preferred
         self.fallback = fallback
-        self.active: DepthSource | None = None
-        self.calibration: dict[str, Any] = {}
-        self.preferred_error: str | None = None
+        self.active: Optional[DepthSource] = None
+        self.calibration: Dict[str, Any] = {}
+        self.preferred_error: Optional[str] = None
 
     def start(self) -> None:
         try:
@@ -307,7 +307,7 @@ class AutoDepthSource:
         self.calibration = dict(self.active.calibration)
         self.calibration["preferred_source_error"] = self.preferred_error
 
-    def read(self, timeout_s: float) -> CapturedDepth | None:
+    def read(self, timeout_s: float) -> Optional[CapturedDepth]:
         if self.active is None:
             raise RuntimeError("Depth source is not started")
         return self.active.read(timeout_s)
@@ -318,7 +318,7 @@ class AutoDepthSource:
             self.active = None
 
 
-def _intrinsics_dict(intrinsics: Any) -> dict[str, Any]:
+def _intrinsics_dict(intrinsics: Any) -> Dict[str, Any]:
     return {
         "width": int(intrinsics.width),
         "height": int(intrinsics.height),
@@ -337,16 +337,16 @@ class DepthService:
         self.transmit_fps = transmit_fps
         self.codec = DepthEnvelopeCodec()
         self.lock = threading.Lock()
-        self.latest_envelope: bytes | None = None
+        self.latest_envelope: Optional[bytes] = None
         self.latest_sequence = -1
-        self.latest_received_monotonic: float | None = None
-        self.last_error: str | None = None
+        self.latest_received_monotonic: Optional[float] = None
+        self.last_error: Optional[str] = None
         self.started_at = time.monotonic()
         self.frames_captured = 0
-        self.thread: threading.Thread | None = None
+        self.thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
 
-    def start(self, calibration_path: str | None = None) -> None:
+    def start(self, calibration_path: Optional[str] = None) -> None:
         self.source.start()
         if calibration_path:
             bind_validated_calibration(self.source, calibration_path)
@@ -394,7 +394,7 @@ class DepthService:
                     self.last_error = f"{type(exc).__name__}: {exc}"
                 time.sleep(0.1)
 
-    def health(self) -> dict[str, Any]:
+    def health(self) -> Dict[str, Any]:
         now = time.monotonic()
         with self.lock:
             age = (
@@ -427,11 +427,11 @@ def create_app(service: DepthService) -> FastAPI:
     app = FastAPI(title="Unitree G1 RealSense Depth Service", version="1.0")
 
     @app.get("/health")
-    def health() -> dict[str, Any]:
+    def health() -> Dict[str, Any]:
         return service.health()
 
     @app.get("/depth/calibration")
-    def calibration() -> dict[str, Any]:
+    def calibration() -> Dict[str, Any]:
         return service.source.calibration
 
     @app.websocket("/depth/stream")
