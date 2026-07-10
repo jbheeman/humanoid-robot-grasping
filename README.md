@@ -536,35 +536,8 @@ uv run g1 robot command move --vx 0.05 --vy 0 --omega 0 --duration 0.4 --ramp 0.
 uv run g1 robot command stop
 ```
 
-Avoid interactive keyboard control for now. Use one bounded command at a time (`forward`, `move`, `arms-up`, SDK examples), then send `stop` before the next test.
-
-Unitree SDK example actions can also be listed and run through the same bridge:
-
-```bash
-uv run g1 robot command sdk-examples
-uv run g1 robot command sdk-example motion_switcher check_mode
-uv run g1 robot command sdk-example g1_loco high_stand
-uv run g1 robot command sdk-example g1_loco move_forward_tiny --speed 0.1 --duration 0.5
-uv run g1 robot command sdk-example g1_arm_action "hands up"
-uv run g1 robot command sdk-example g1_arm_action "release arm"
-```
-
-The original SDK files these map to are `example/g1/high_level/g1_loco_client_example.py`, `example/g1/high_level/g1_arm_action_example.py`, and `example/motionSwitcher/motion_switcher_example.py`. The wrapper is allowlisted because the original examples are interactive loops and several actions move the robot immediately.
-
-Copied vendor examples are also available verbatim under `scripts/vendor/unitree_examples/`. Run these on the robot, not the server:
-
-```bash
-cd ~/humanoid-robot-grasping
-git pull
-
-uv run g1 robot command vendor-example list
-uv run g1 robot command vendor-example motion_switcher
-uv run g1 robot command vendor-example g1_loco
-uv run g1 robot command vendor-example g1_arm_action
-uv run g1 robot command vendor-example g1_arm5
-```
-
-These are the Unitree examples unchanged. For `g1_loco`, type `list` at its prompt, then try IDs from the Unitree menu. For example, ID `3` is Unitree's `move forward` example and ID `5` is `move rotate`.
+Avoid interactive keyboard control for now. Use one bounded command at a time
+(`forward`, `move`, or `arms-up`), then send `stop` before the next test.
 
 `amount` is the fraction of the forward arm target. Start around `0.1` to `0.2`. Arm and velocity motion use smoothstep easing so they ease in/out instead of snapping to a linear ramp.
 

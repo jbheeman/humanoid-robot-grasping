@@ -15,7 +15,6 @@ from urllib.parse import urlparse
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
 G1_LOCO_SCRIPT = REPO_ROOT / "src" / "object_tracking" / "g1_loco_cli.py"
-SDK_EXAMPLE_SCRIPT = REPO_ROOT / "scripts" / "vendor" / "sdk_runner.py"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -144,33 +143,6 @@ class Bridge:
         except Exception:
             pass
         return report
-
-    def run_sdk_example(self, body: dict[str, object]) -> dict[str, object]:
-        example = str(body.get("example", body.get("name", "list")))
-        action = str(body.get("action", "list"))
-        command = [
-            self.python,
-            str(SDK_EXAMPLE_SCRIPT),
-            example,
-            action,
-            "--interface",
-            self.args.interface,
-            "--domain-id",
-            str(self.args.domain_id),
-            "--timeout",
-            str(self.args.timeout),
-            "--dds-config-mode",
-            self.args.dds_config_mode,
-            "--loco-service-name",
-            self.args.loco_service_name,
-        ]
-        if "duration" in body:
-            command.extend(["--duration", str(body["duration"])])
-        if "speed" in body:
-            command.extend(["--speed", str(body["speed"])])
-        if body.get("smoke"):
-            command.append("--smoke")
-        return self.run_child(command, timeout_extra_s=float(body.get("timeout_extra_s", 20.0)))
 
     def health(self) -> dict[str, object]:
         return {
@@ -340,10 +312,6 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
                 result = bridge.run_loco(["check_motion_mode"])
                 self.send_json(200 if result["ok"] else 502, result)
                 return
-            if path == "/sdk/examples":
-                result = bridge.run_sdk_example({"example": "list", "action": "list"})
-                self.send_json(200 if result["ok"] else 502, result)
-                return
             self.send_json(404, {"ok": False, "error": f"Unknown GET path: {path}"})
 
         def do_POST(self) -> None:
@@ -366,11 +334,6 @@ def make_handler(bridge: Bridge) -> type[BaseHTTPRequestHandler]:
 
             if path == "/select_ai_mode":
                 result = bridge.run_loco(["select_ai_mode"])
-                self.send_json(200 if result["ok"] else 502, result)
-                return
-
-            if path in ("/sdk/example", "/sdk/run-example"):
-                result = bridge.run_sdk_example(body)
                 self.send_json(200 if result["ok"] else 502, result)
                 return
 

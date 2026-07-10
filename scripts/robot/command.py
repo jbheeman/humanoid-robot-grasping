@@ -17,7 +17,7 @@ DEFAULT_INTERFACE = "wlan0"
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Unitree G1 command helper for bridge, SDK examples, and bounded tests.")
+    parser = argparse.ArgumentParser(description="Unitree G1 command helper for bridge and bounded tests.")
     parser.add_argument("--host", default=DEFAULT_ROBOT_HOST, help=f"Robot Wi-Fi IP. Default: {DEFAULT_ROBOT_HOST}")
     parser.add_argument("--port", type=int, default=DEFAULT_PORT)
 
@@ -37,28 +37,6 @@ def build_parser() -> argparse.ArgumentParser:
     subparsers.add_parser("stop", help="Send StopMove through the bridge.")
     subparsers.add_parser("estop", help="Alias for stop. This is software stop, not hardware e-stop.")
     subparsers.add_parser("smoke-move", help="Run the smallest guarded forward movement test.")
-    subparsers.add_parser("sdk-examples", help="List allowlisted Unitree SDK example actions exposed by the bridge.")
-
-    sdk_example = subparsers.add_parser("sdk-example", help="Run an allowlisted Unitree SDK example action via the bridge.")
-    sdk_example.add_argument("example", choices=("g1_loco", "g1_arm_action", "motion_switcher"))
-    sdk_example.add_argument("action", nargs="?", default="list")
-    sdk_example.add_argument("--speed", type=float, default=0.1)
-    sdk_example.add_argument("--duration", type=float, default=0.5)
-    sdk_example.add_argument("--smoke", action="store_true")
-
-    vendor_example = subparsers.add_parser(
-        "vendor-example",
-        help="Run a copied Unitree SDK2 example file verbatim. Run this on the robot.",
-    )
-    vendor_example.add_argument(
-        "example",
-        nargs="?",
-        choices=("list", "g1_loco", "g1_arm_action", "g1_arm5", "g1_arm7", "g1_low_level", "motion_switcher"),
-        default="list",
-    )
-    vendor_example.add_argument("--interface", default=DEFAULT_INTERFACE)
-    vendor_example.add_argument("--no-interface-arg", action="store_true")
-
     arms = subparsers.add_parser("arms-up", help="Run a bounded arm raise through the bridge.")
     arms.add_argument("amount", nargs="?", type=float, default=0.15)
     arms.add_argument("--ramp", type=float, default=1.5)
@@ -183,13 +161,6 @@ def shoulder_pitch(args: argparse.Namespace) -> int:
     return run_script("arms_forward.py", command)
 
 
-def vendor_example(args: argparse.Namespace) -> int:
-    command = [args.example, "--interface", args.interface]
-    if args.no_interface_arg:
-        command.append("--no-interface-arg")
-    return subprocess.call([sys.executable, str(REPO_ROOT / "scripts" / "vendor" / "examples.py"), *command])
-
-
 def print_response(status: int, body: str) -> int:
     print(body, end="" if body.endswith("\n") else "\n")
     return 0 if 200 <= status < 300 else 1
@@ -227,26 +198,12 @@ def main() -> int:
         return serve(args)
     if args.command == "shoulder-pitch":
         return shoulder_pitch(args)
-    if args.command == "vendor-example":
-        return vendor_example(args)
-
     if args.command == "health":
         return print_response(*send_json(bridge_url(args.host, args.port, "/health")))
     if args.command == "probe":
         return print_response(*send_json(bridge_url(args.host, args.port, "/probe_loco")))
     if args.command == "mode":
         return print_response(*send_json(bridge_url(args.host, args.port, "/check_motion_mode")))
-    if args.command == "sdk-examples":
-        return print_response(*send_json(bridge_url(args.host, args.port, "/sdk/examples")))
-    if args.command == "sdk-example":
-        payload = {
-            "example": args.example,
-            "action": args.action,
-            "speed": args.speed,
-            "duration": args.duration,
-            "smoke": args.smoke,
-        }
-        return print_response(*send_json(bridge_url(args.host, args.port, "/sdk/example"), payload))
     try:
         return send_command(args.host, args.port, command_payload(args.command, args))
     except KeyboardInterrupt:

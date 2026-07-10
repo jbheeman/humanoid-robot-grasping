@@ -49,8 +49,9 @@ uv run g1 arm commissioning
   testing. It is not required for the robot or GB10 deployment.
 - `scripts/data/`, `scripts/training/`, and `scripts/dev/` contain offline
   workflows and diagnostics and never start robot movement implicitly.
-- `scripts/vendor/` contains copied Unitree examples and is kept separate from
-  repository-native runtime code.
+- Unitree vendor examples are intentionally not tracked; use the maintained
+  project-native robot commands instead of copying interactive vendor demos
+  into the repository.
 
 The MacBook does not need a display server on the robot or GB10. It opens the
 URL printed by the GB10 launcher, optionally through SSH port forwarding.
