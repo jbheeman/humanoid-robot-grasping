@@ -7,7 +7,7 @@
 - Run plushie YOLO inference, RGB/depth fusion, 3D tracking, calibration, and IK on GB10.
 - Run SDK2 locally on robot `192.168.0.213` through a persistent authenticated REST bridge.
 - Initially control only the 29-DOF G1 right arm, with the waist locked and no hand closure. Move to a safe pregrasp pose approximately 20 cm from the plushie.
-- Accept the current 15 FPS RGB source. Run arm target generation at 10-15 Hz and interpolate commands locally on the robot at 250 Hz.
+- Preserve the current 30 FPS RGB fast path, tolerate a 15 FPS source, run arm target generation at 10-15 Hz, and interpolate commands locally on the robot at 250 Hz.
 
 ## Implementation
 
@@ -15,7 +15,7 @@
 
 - Preserve compressed H264 multicast forwarding; do not decode RGB or run YOLO on the robot.
 - Add a RealSense depth service that prefers an existing ROS aligned-depth topic and falls back to direct `librealsense` depth-only capture using factory intrinsics and extrinsics.
-- Use Z16 depth at the best supported 30 FPS mode, retain only the newest frame, and transmit at 15 FPS to match RGB.
+- Use Z16 depth at the best supported 30 FPS mode, retain only the newest frame, and transmit at 15 FPS to bound bandwidth while supporting 10-15 Hz target generation.
 - Apply RealSense spatial, temporal, validity, and outlier filtering without replacing measurements with learned estimates.
 - Fail closed if `videohub_pc4` prevents depth access; never silently substitute monocular depth.
 - Expose depth through `GET /health`, `GET /depth/calibration`, and `WS /depth/stream` with timestamped, zstd-compressed Z16 frames.
@@ -29,7 +29,7 @@
 
 ### GB10 Perception and Control
 
-- Rework the existing uncommitted 2D `arm_tracking` prototype rather than committing it unchanged.
+- Build the 3D arm-tracking pipeline around the committed YOLO server and tracker; the previously referenced uncommitted prototype is not present in the repository.
 - Continue using `models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt`.
 - Pair each decoded RGB frame with the nearest depth frame, rejecting pairs more than 100 ms apart.
 - Estimate object depth using valid-depth clustering and a robust median from the central detection region.

@@ -7,7 +7,7 @@ import random
 import shutil
 import subprocess
 import zipfile
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from typing import Any
 from urllib.error import HTTPError, URLError
@@ -181,7 +181,6 @@ def select_coco_records(
         random.Random(seed).shuffle(positive_image_ids)
         positive_image_ids = sorted(positive_image_ids[:max_positive])
 
-    positive_id_set = set(positive_image_ids)
     negative_image_ids = sorted(negative_candidate_ids - set(positive_annotations_by_image))
     negative_count = int(len(positive_image_ids) * negative_per_positive)
     random.Random(seed).shuffle(negative_image_ids)

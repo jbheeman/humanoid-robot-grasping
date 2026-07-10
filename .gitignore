@@ -6,6 +6,9 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .deps/
+*arm-token*
+*calibration*.yaml
+*calibration*.yml
 
 # Local datasets, model artifacts, and training outputs.
 data/
@@ -21,6 +24,8 @@ models/
 *.weights
 *.cache
 *.lock
+!uv.lock
+!robot/uv.lock
 runs/*
 !runs/.gitkeep
 data/sources/

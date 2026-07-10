@@ -101,6 +101,22 @@
       gap: 8px;
     }
 
+    .telemetry {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+      gap: 8px;
+      margin-top: 10px;
+    }
+
+    .metric {
+      padding: 8px;
+      border-radius: 6px;
+      background: #242424;
+      border: 1px solid #343434;
+      font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+      white-space: pre-wrap;
+    }
+
     .stream {
       width: 100%;
       height: auto;
@@ -189,6 +205,19 @@
         Detections: <a id="chestDetections" href="#" target="_blank">/detections</a>
       </div>
     </section>
+
+    <section class="panel" id="depthPanel">
+      <h2>Hardware depth and arm tracking</h2>
+      <img id="depthImage" class="stream" src="" alt="RealSense hardware depth colormap" />
+      <div class="telemetry">
+        <div id="modeMetric" class="metric">Mode: checking</div>
+        <div id="depthMetric" class="metric">Depth: checking</div>
+        <div id="targetMetric" class="metric">Target XYZ: unavailable</div>
+        <div id="predictionMetric" class="metric">Prediction: unavailable</div>
+        <div id="ikMetric" class="metric">IK: unavailable</div>
+        <div id="armMetric" class="metric">Arm: unavailable</div>
+      </div>
+    </section>
   </div>
 
   <div class="panel footer">
@@ -242,6 +271,13 @@
     const mainStatus = document.getElementById("mainStatus");
     const chestStatus = document.getElementById("chestStatus");
     const applyBtn = document.getElementById("applyBtn");
+    const depthImage = document.getElementById("depthImage");
+    const modeMetric = document.getElementById("modeMetric");
+    const depthMetric = document.getElementById("depthMetric");
+    const targetMetric = document.getElementById("targetMetric");
+    const predictionMetric = document.getElementById("predictionMetric");
+    const ikMetric = document.getElementById("ikMetric");
+    const armMetric = document.getElementById("armMetric");
 
     let currentMain = normalizeStreamBase(mainDefault);
     let currentChest = normalizeStreamBase(chestDefault);
@@ -286,6 +322,37 @@
       chestDetections.href = chestAux.detections;
       mainHealthEl.textContent = "stream endpoint set";
       chestHealthEl.textContent = "stream endpoint set";
+      depthImage.src = cacheBusted(`${makeApiBase(currentMain)}/depth.jpg`);
+    }
+
+    function vectorText(value) {
+      return Array.isArray(value) ? value.map((item) => Number(item).toFixed(3)).join(", ") : "unavailable";
+    }
+
+    async function refreshTelemetry() {
+      const apiBase = makeApiBase(currentMain);
+      try {
+        const [healthResponse, trackingResponse] = await Promise.all([
+          fetch(`${apiBase}/health`, {cache: "no-store"}),
+          fetch(`${apiBase}/arm-tracking`, {cache: "no-store"}),
+        ]);
+        const health = await healthResponse.json();
+        const tracking = await trackingResponse.json();
+        mainHealthEl.textContent = `${health.fps?.toFixed?.(1) ?? "?"} FPS | ${health.inference_status}`;
+        applyStreamStatus(mainStatus, Boolean(health.ok));
+        modeMetric.textContent = `Mode: ${tracking.mode || "dry-run"}\nStatus: ${tracking.status || "unknown"}`;
+        depthMetric.textContent = `Depth age: ${tracking.depth_age_ms ?? "?"} ms\nValid: ${tracking.depth_valid_fraction ?? "?"}`;
+        targetMetric.textContent = `Target XYZ: ${vectorText(tracking.target_xyz_m)}`;
+        predictionMetric.textContent = `Predicted XYZ: ${vectorText(tracking.predicted_xyz_m)}`;
+        ikMetric.textContent = `IK: ${tracking.ik_status || tracking.reason || "unavailable"}`;
+        armMetric.textContent = `Arm: ${tracking.arm_state || "unavailable"}\nCalibration: ${tracking.calibration_id || "none"}`;
+        if (tracking.depth_sequence !== undefined) {
+          depthImage.src = cacheBusted(`${apiBase}/depth.jpg`);
+        }
+      } catch (error) {
+        mainHealthEl.textContent = `offline: ${error}`;
+        applyStreamStatus(mainStatus, false);
+      }
     }
 
     applyBtn.addEventListener("click", () => {
@@ -295,6 +362,8 @@
     });
 
     applyStreams(currentMain, currentChest);
+    refreshTelemetry();
+    window.setInterval(refreshTelemetry, 1000);
   </script>
 </body>
 </html>

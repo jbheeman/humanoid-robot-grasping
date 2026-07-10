@@ -11,10 +11,17 @@ dependencies = [
 ]
 
 [dependency-groups]
-dev = []
+dev = [
+    "httpx>=0.27",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]
 vision = [
     "fastapi>=0.111",
     "uvicorn[standard]>=0.30",
+    "websockets>=14",
+    "zstandard>=0.23",
 ]
 train = [
     "opencv-python>=4.9",
@@ -25,6 +32,12 @@ loco = [
     "cyclonedds==0.10.2",
     "unitree-sdk2py==1.0.1",
 ]
+arm = [
+    "casadi>=3.6.7,<4",
+    "pin>=2.7,<4",
+    "pupil-apriltags>=1.0.4.post11",
+    "scipy>=1.11",
+]
 
 [project.scripts]
 object-manual-tracker = "object_tracking.manual_tracker:main"
@@ -34,6 +47,7 @@ vision-streamlit = "object_tracking.streamlit_viewer_cli:main"
 vision-yolo-stream = "object_tracking.yolo_stream_server:main"
 train-plushie-detector = "object_tracking.train_plushie_detector:main"
 g1-scan = "object_tracking.g1_scan_cli:main"
+arm-calibration = "object_tracking.arm_tracking.calibration_cli:main"
 
 [build-system]
 requires = ["setuptools>=68"]
@@ -43,4 +57,26 @@ build-backend = "setuptools.build_meta"
 package = true
 
 [tool.uv.sources]
-unitree-sdk2py = { path = ".deps/unitree_sdk2_python", editable = true }
+unitree-sdk2py = { git = "https://github.com/unitreerobotics/unitree_sdk2_python.git", rev = "37116c521f1588482e238d8450e471ba78ab9863" }
+
+[tool.pytest.ini_options]
+addopts = "-m 'not hardware'"
+asyncio_mode = "auto"
+pythonpath = [".", "src"]
+testpaths = ["tests"]
+markers = [
+    "hardware: requires physical robot, camera, or other hardware",
+    "integration: exercises multiple components or service boundaries",
+]
+
+[tool.ruff]
+extend-exclude = ["scripts/unitree_examples"]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/g1_arms_forward.py" = ["F821"]
+"scripts/g1_loco.py" = ["E402"]

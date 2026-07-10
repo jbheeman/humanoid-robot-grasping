@@ -19,7 +19,6 @@ uv venv --system-site-packages --allow-existing "${VENV_DIR}"
 source "${VENV_DIR}/bin/activate"
 
 echo "Installing vision server dependencies"
-./scripts/ensure_unitree_sdk_path.sh
 uv sync --only-group vision --locked
 
 echo "Removing pip OpenCV wheels so the venv uses Ubuntu system OpenCV/GStreamer"

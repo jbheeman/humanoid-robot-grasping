@@ -1,0 +1,399 @@
+"""Camera deprojection, rigid transforms, planes, and pregrasp policy."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from math import cos, sin
+from typing import Iterable
+
+import numpy as np
+
+
+def _vector3(value: Iterable[float], name: str) -> np.ndarray:
+    result = np.asarray(tuple(value), dtype=np.float64)
+    if result.shape != (3,) or not np.all(np.isfinite(result)):
+        raise ValueError(f"{name} must contain three finite values")
+    return result
+
+
+@dataclass(frozen=True)
+class CameraIntrinsics:
+    width: int
+    height: int
+    fx: float
+    fy: float
+    ppx: float
+    ppy: float
+    distortion_model: str = "none"
+    coefficients: tuple[float, ...] = ()
+
+    def __post_init__(self) -> None:
+        if self.width <= 0 or self.height <= 0 or self.fx <= 0 or self.fy <= 0:
+            raise ValueError("intrinsic dimensions and focal lengths must be positive")
+        if not np.all(np.isfinite((self.fx, self.fy, self.ppx, self.ppy))):
+            raise ValueError("intrinsic values must be finite")
+        object.__setattr__(self, "width", int(self.width))
+        object.__setattr__(self, "height", int(self.height))
+        object.__setattr__(self, "fx", float(self.fx))
+        object.__setattr__(self, "fy", float(self.fy))
+        object.__setattr__(self, "ppx", float(self.ppx))
+        object.__setattr__(self, "ppy", float(self.ppy))
+        object.__setattr__(self, "coefficients", tuple(float(item) for item in self.coefficients))
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "width": self.width,
+            "height": self.height,
+            "fx": self.fx,
+            "fy": self.fy,
+            "ppx": self.ppx,
+            "ppy": self.ppy,
+            "distortion_model": self.distortion_model,
+            "coefficients": list(self.coefficients),
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> "CameraIntrinsics":
+        return cls(
+            width=int(value["width"]),
+            height=int(value["height"]),
+            fx=float(value["fx"]),
+            fy=float(value["fy"]),
+            ppx=float(value["ppx"]),
+            ppy=float(value["ppy"]),
+            distortion_model=str(value.get("distortion_model", "none")),
+            coefficients=tuple(float(item) for item in value.get("coefficients", ())),
+        )
+
+
+@dataclass(frozen=True)
+class RigidTransform:
+    """Transform points from a source frame into a destination frame."""
+
+    rotation: np.ndarray
+    translation: np.ndarray
+
+    def __post_init__(self) -> None:
+        rotation = np.asarray(self.rotation, dtype=np.float64)
+        translation = _vector3(self.translation, "translation")
+        if rotation.shape != (3, 3) or not np.all(np.isfinite(rotation)):
+            raise ValueError("rotation must be a finite 3x3 matrix")
+        if not np.allclose(rotation.T @ rotation, np.eye(3), atol=1e-6):
+            raise ValueError("rotation must be orthonormal")
+        if not np.isclose(np.linalg.det(rotation), 1.0, atol=1e-6):
+            raise ValueError("rotation determinant must be +1")
+        object.__setattr__(self, "rotation", rotation)
+        object.__setattr__(self, "translation", translation)
+
+    @classmethod
+    def identity(cls) -> "RigidTransform":
+        return cls(np.eye(3), np.zeros(3))
+
+    @classmethod
+    def from_xyz_rpy(cls, xyz: Iterable[float], rpy_rad: Iterable[float]) -> "RigidTransform":
+        roll, pitch, yaw = _vector3(rpy_rad, "rpy_rad")
+        rx = np.array([[1, 0, 0], [0, cos(roll), -sin(roll)], [0, sin(roll), cos(roll)]])
+        ry = np.array([[cos(pitch), 0, sin(pitch)], [0, 1, 0], [-sin(pitch), 0, cos(pitch)]])
+        rz = np.array([[cos(yaw), -sin(yaw), 0], [sin(yaw), cos(yaw), 0], [0, 0, 1]])
+        return cls(rz @ ry @ rx, _vector3(xyz, "xyz"))
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> "RigidTransform":
+        return cls(value["rotation"], value["translation"])
+
+    def to_dict(self) -> dict[str, list[object]]:
+        return {
+            "rotation": self.rotation.tolist(),
+            "translation": self.translation.tolist(),
+        }
+
+    def apply(self, point: Iterable[float] | np.ndarray) -> np.ndarray:
+        points = np.asarray(point, dtype=np.float64)
+        if not np.all(np.isfinite(points)):
+            raise ValueError("point values must be finite")
+        if points.shape == (3,):
+            return self.rotation @ points + self.translation
+        if points.ndim == 2 and points.shape[1] == 3:
+            return points @ self.rotation.T + self.translation
+        raise ValueError("point must have shape (3,) or (N, 3)")
+
+    def inverse(self) -> "RigidTransform":
+        rotation = self.rotation.T
+        return RigidTransform(rotation, -(rotation @ self.translation))
+
+    def then(self, next_transform: "RigidTransform") -> "RigidTransform":
+        """Apply this transform, followed by ``next_transform``."""
+
+        return RigidTransform(
+            next_transform.rotation @ self.rotation,
+            next_transform.rotation @ self.translation + next_transform.translation,
+        )
+
+
+@dataclass(frozen=True)
+class Plane:
+    normal: np.ndarray
+    offset: float
+
+    def __post_init__(self) -> None:
+        normal = _vector3(self.normal, "normal")
+        magnitude = float(np.linalg.norm(normal))
+        if magnitude <= 1e-12 or not np.isfinite(self.offset):
+            raise ValueError("plane must have a finite nonzero normal and offset")
+        object.__setattr__(self, "normal", normal / magnitude)
+        object.__setattr__(self, "offset", float(self.offset) / magnitude)
+
+    def signed_distance(self, points: Iterable[float] | np.ndarray) -> np.ndarray:
+        value = np.asarray(points, dtype=np.float64)
+        return value @ self.normal + self.offset
+
+
+@dataclass(frozen=True)
+class WorkspaceBounds:
+    minimum: np.ndarray
+    maximum: np.ndarray
+
+    def __post_init__(self) -> None:
+        minimum = _vector3(self.minimum, "minimum")
+        maximum = _vector3(self.maximum, "maximum")
+        if np.any(maximum <= minimum):
+            raise ValueError("workspace maximum must exceed minimum")
+        object.__setattr__(self, "minimum", minimum)
+        object.__setattr__(self, "maximum", maximum)
+
+    def contains(self, point: Iterable[float], margin_m: float = 0.0) -> bool:
+        value = _vector3(point, "point")
+        if margin_m < 0:
+            raise ValueError("margin_m must be non-negative")
+        return bool(
+            np.all(value >= self.minimum + margin_m) and np.all(value <= self.maximum - margin_m)
+        )
+
+
+@dataclass(frozen=True)
+class TargetPose:
+    position: np.ndarray
+    orientation_xyzw: np.ndarray
+
+    def __post_init__(self) -> None:
+        position = _vector3(self.position, "position")
+        orientation = np.asarray(self.orientation_xyzw, dtype=np.float64)
+        norm = float(np.linalg.norm(orientation))
+        if orientation.shape != (4,) or not np.all(np.isfinite(orientation)) or norm <= 1e-12:
+            raise ValueError("orientation_xyzw must be a finite quaternion")
+        object.__setattr__(self, "position", position)
+        object.__setattr__(self, "orientation_xyzw", orientation / norm)
+
+
+def map_pixel_between_profiles(
+    pixel_xy: tuple[float, float],
+    source_size: tuple[int, int],
+    destination_size: tuple[int, int],
+) -> tuple[float, float]:
+    source_width, source_height = source_size
+    destination_width, destination_height = destination_size
+    if min(source_width, source_height, destination_width, destination_height) <= 0:
+        raise ValueError("profile dimensions must be positive")
+    return (
+        pixel_xy[0] * destination_width / source_width,
+        pixel_xy[1] * destination_height / source_height,
+    )
+
+
+def deproject_pixel(
+    pixel_xy: tuple[float, float], depth_m: float, intrinsics: CameraIntrinsics
+) -> np.ndarray:
+    """Deproject a registered pixel using RealSense Brown distortion conventions."""
+
+    if not np.isfinite(depth_m) or depth_m <= 0:
+        raise ValueError("depth_m must be positive and finite")
+    pixel = np.asarray(pixel_xy, dtype=np.float64)
+    if pixel.shape != (2,) or not np.all(np.isfinite(pixel)):
+        raise ValueError("pixel_xy must contain two finite values")
+    x = (pixel[0] - intrinsics.ppx) / intrinsics.fx
+    y = (pixel[1] - intrinsics.ppy) / intrinsics.fy
+    x, y = _undistort_normalized(x, y, intrinsics)
+    return np.array([x * depth_m, y * depth_m, depth_m], dtype=np.float64)
+
+
+def _undistort_normalized(
+    x: np.ndarray | float, y: np.ndarray | float, intrinsics: CameraIntrinsics
+) -> tuple[np.ndarray | float, np.ndarray | float]:
+    model = intrinsics.distortion_model.lower()
+    coefficients = (*intrinsics.coefficients, 0.0, 0.0, 0.0, 0.0, 0.0)[:5]
+    k1, k2, p1, p2, k3 = coefficients
+    if model in {"none", "pinhole"}:
+        pass
+    elif model in {"brown_conrady", "modified_brown_conrady"}:
+        distorted_x, distorted_y = x, y
+        for _ in range(10):
+            radius_squared = x * x + y * y
+            radial = 1.0 + k1 * radius_squared + k2 * radius_squared**2 + k3 * radius_squared**3
+            if np.any(np.abs(radial) <= 1e-12):
+                raise ValueError("distortion coefficients produce a singular projection")
+            delta_x = 2.0 * p1 * x * y + p2 * (radius_squared + 2.0 * x * x)
+            delta_y = p1 * (radius_squared + 2.0 * y * y) + 2.0 * p2 * x * y
+            x = (distorted_x - delta_x) / radial
+            y = (distorted_y - delta_y) / radial
+    elif model == "inverse_brown_conrady":
+        radius_squared = x * x + y * y
+        radial = 1.0 + k1 * radius_squared + k2 * radius_squared**2 + k3 * radius_squared**3
+        x, y = (
+            x * radial + 2.0 * p1 * x * y + p2 * (radius_squared + 2.0 * x * x),
+            y * radial + 2.0 * p2 * x * y + p1 * (radius_squared + 2.0 * y * y),
+        )
+    else:
+        raise ValueError(f"unsupported distortion model {intrinsics.distortion_model!r}")
+    return x, y
+
+
+def fit_plane(points: np.ndarray, *, orient_toward: Iterable[float] | None = None) -> Plane:
+    """Fit a least-squares plane to already filtered 3D support points."""
+
+    values = np.asarray(points, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] != 3 or len(values) < 3:
+        raise ValueError("at least three 3D points are required")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("plane points must be finite")
+    centroid = values.mean(axis=0)
+    _, singular_values, vh = np.linalg.svd(values - centroid, full_matrices=False)
+    if singular_values[-2] <= 1e-9:
+        raise ValueError("plane points are collinear")
+    normal = vh[-1]
+    if orient_toward is not None and np.dot(normal, _vector3(orient_toward, "orient_toward")) < 0:
+        normal = -normal
+    return Plane(normal=normal, offset=-float(np.dot(normal, centroid)))
+
+
+def fit_plane_ransac(
+    points: np.ndarray,
+    *,
+    distance_threshold_m: float = 0.015,
+    iterations: int = 100,
+    minimum_inlier_fraction: float = 0.35,
+    orient_toward: Iterable[float] | None = None,
+    seed: int = 0,
+) -> tuple[Plane, np.ndarray]:
+    """Extract the dominant plane and return its input-aligned inlier mask."""
+
+    values = np.asarray(points, dtype=np.float64)
+    if values.ndim != 2 or values.shape[1] != 3 or len(values) < 3:
+        raise ValueError("at least three 3D points are required")
+    if not np.all(np.isfinite(values)):
+        raise ValueError("plane points must be finite")
+    if distance_threshold_m <= 0 or iterations <= 0 or not 0 < minimum_inlier_fraction <= 1:
+        raise ValueError("invalid RANSAC thresholds")
+    generator = np.random.default_rng(seed)
+    best_mask: np.ndarray | None = None
+    best_count = 0
+    for _ in range(iterations):
+        sample = values[generator.choice(len(values), size=3, replace=False)]
+        normal = np.cross(sample[1] - sample[0], sample[2] - sample[0])
+        magnitude = float(np.linalg.norm(normal))
+        if magnitude <= 1e-9:
+            continue
+        normal /= magnitude
+        offset = -float(np.dot(normal, sample[0]))
+        mask = np.abs(values @ normal + offset) <= distance_threshold_m
+        count = int(mask.sum())
+        if count > best_count:
+            best_count, best_mask = count, mask
+    required = max(3, int(np.ceil(len(values) * minimum_inlier_fraction)))
+    if best_mask is None or best_count < required:
+        raise ValueError("no dominant support plane met the inlier requirement")
+    return fit_plane(values[best_mask], orient_toward=orient_toward), best_mask
+
+
+def deproject_depth_samples(
+    z16: np.ndarray,
+    intrinsics: CameraIntrinsics,
+    *,
+    depth_scale: float,
+    stride: int = 4,
+    minimum_depth_m: float = 0.12,
+    maximum_depth_m: float = 4.0,
+    row_range: tuple[int, int] | None = None,
+) -> np.ndarray:
+    """Convert a bounded, strided registered depth region into optical-frame points."""
+
+    depth = np.asarray(z16)
+    if depth.shape != (intrinsics.height, intrinsics.width):
+        raise ValueError("depth frame shape must match its calibrated intrinsics")
+    if stride <= 0 or not np.isfinite(depth_scale) or depth_scale <= 0:
+        raise ValueError("stride and depth scale must be positive")
+    start, stop = row_range or (0, intrinsics.height)
+    if not 0 <= start < stop <= intrinsics.height:
+        raise ValueError("row_range is outside the depth frame")
+    rows, columns = np.mgrid[start:stop:stride, 0 : intrinsics.width : stride]
+    depths = depth[rows, columns].astype(np.float64) * depth_scale
+    valid = np.isfinite(depths) & (depths >= minimum_depth_m) & (depths <= maximum_depth_m)
+    if not np.any(valid):
+        return np.empty((0, 3), dtype=np.float64)
+    pixels_x = columns[valid].astype(np.float64)
+    pixels_y = rows[valid].astype(np.float64)
+    depths = depths[valid]
+    x = (pixels_x - intrinsics.ppx) / intrinsics.fx
+    y = (pixels_y - intrinsics.ppy) / intrinsics.fy
+    x, y = _undistort_normalized(x, y, intrinsics)
+    return np.column_stack((x * depths, y * depths, depths))
+
+
+def extract_support_plane(
+    z16: np.ndarray,
+    intrinsics: CameraIntrinsics,
+    *,
+    depth_scale: float,
+    optical_to_base: RigidTransform | None = None,
+    lower_image_fraction: float = 0.45,
+    stride: int = 4,
+    distance_threshold_m: float = 0.015,
+    minimum_inlier_fraction: float = 0.35,
+) -> tuple[Plane, np.ndarray]:
+    """Extract a dominant support plane from the lower registered depth image."""
+
+    if not 0 < lower_image_fraction <= 1:
+        raise ValueError("lower_image_fraction must be in (0, 1]")
+    start_row = int(intrinsics.height * (1.0 - lower_image_fraction))
+    points = deproject_depth_samples(
+        z16,
+        intrinsics,
+        depth_scale=depth_scale,
+        stride=stride,
+        row_range=(start_row, intrinsics.height),
+    )
+    if optical_to_base is not None:
+        points = optical_to_base.apply(points)
+        orientation = (0.0, 0.0, 1.0)
+    else:
+        orientation = None
+    return fit_plane_ransac(
+        points,
+        distance_threshold_m=distance_threshold_m,
+        minimum_inlier_fraction=minimum_inlier_fraction,
+        orient_toward=orientation,
+    )
+
+
+def generate_pregrasp_target(
+    object_position: Iterable[float],
+    shoulder_position: Iterable[float],
+    *,
+    stand_off_m: float = 0.20,
+    neutral_orientation_xyzw: Iterable[float] = (0.0, 0.0, 0.0, 1.0),
+) -> TargetPose:
+    object_point = _vector3(object_position, "object_position")
+    shoulder = _vector3(shoulder_position, "shoulder_position")
+    approach = object_point - shoulder
+    distance = float(np.linalg.norm(approach))
+    if stand_off_m <= 0 or distance <= stand_off_m:
+        raise ValueError("object must be farther from the shoulder than the stand-off")
+    position = object_point - approach / distance * stand_off_m
+    return TargetPose(position, np.asarray(tuple(neutral_orientation_xyzw), dtype=np.float64))
+
+
+def has_plane_clearance(
+    point: Iterable[float], plane: Plane, *, minimum_clearance_m: float = 0.10
+) -> bool:
+    if minimum_clearance_m < 0:
+        raise ValueError("minimum_clearance_m must be non-negative")
+    return bool(plane.signed_distance(_vector3(point, "point")) >= minimum_clearance_m)

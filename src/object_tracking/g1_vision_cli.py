@@ -147,7 +147,6 @@ def _route_info(robot_ip: str) -> dict[str, object]:
     except (OSError, subprocess.TimeoutExpired) as exc:
         return {"robot_ip": robot_ip, "ok": False, "error": str(exc)}
 
-    output = (completed.stdout + completed.stderr).strip()
     if completed.returncode != 0:
         return {
             "robot_ip": robot_ip,

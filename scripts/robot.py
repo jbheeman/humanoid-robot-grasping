@@ -11,7 +11,7 @@ from urllib.error import HTTPError, URLError
 
 
 REPO_ROOT = Path(__file__).resolve().parents[1]
-DEFAULT_ROBOT_HOST = "192.168.0.212"
+DEFAULT_ROBOT_HOST = "192.168.0.213"
 DEFAULT_PORT = 8765
 DEFAULT_INTERFACE = "wlan0"
 

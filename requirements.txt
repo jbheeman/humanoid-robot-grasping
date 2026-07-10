@@ -1,3 +1,0 @@
--e file:///home/aarav/Documents/project
-numpy==2.5.1
-opencv-python==5.0.0.93

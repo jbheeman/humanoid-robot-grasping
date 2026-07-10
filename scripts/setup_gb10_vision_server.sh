@@ -22,20 +22,26 @@ echo "Creating GB10 Python 3.12 vision environment"
 uv python install 3.12
 uv venv --clear --python 3.12 "${VENV_DIR}"
 
-echo "Installing FastAPI and YOLO/CUDA runtime"
-UV_PYTHON=3.12 uv sync --only-group vision --only-group train --locked
+echo "Installing FastAPI, YOLO/CUDA, calibration, and G1 IK runtime"
+UV_PYTHON=3.12 uv sync --only-group vision --only-group train --only-group arm --locked
+
+"${ROOT_DIR}/scripts/fetch_unitree_arm_assets.sh"
 
 "${VENV_DIR}/bin/python" - <<'PY'
 import cv2
 import fastapi
 import torch
 import ultralytics
+import casadi
+import pinocchio
 
 print("OpenCV:", cv2.__version__)
 print("FastAPI:", fastapi.__version__)
 print("Torch:", torch.__version__)
 print("CUDA available:", torch.cuda.is_available())
 print("Ultralytics:", ultralytics.__version__)
+print("CasADi:", casadi.__version__)
+print("Pinocchio:", pinocchio.__version__)
 PY
 
 echo

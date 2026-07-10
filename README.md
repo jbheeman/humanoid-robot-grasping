@@ -1,5 +1,7 @@
 # Humanoid Robot Grasping
 
+The RealSense-guided right-arm pregrasp pipeline is implemented as a disarmed-by-default robot depth/arm service plus a GB10 hardware-depth fusion and IK runtime. See [docs/ARM_TRACKING_RUNBOOK.md](docs/ARM_TRACKING_RUNBOOK.md) for installation, calibration, dry-run, REST schemas, port forwarding, and operator-gated hardware stages.
+
 ## Setup
 
 From the project root:
@@ -9,18 +11,17 @@ git switch aarav
 ./scripts/setup_gb10_vision_server.sh
 ```
 
-The GB10 setup installs only the vision and training groups in Python 3.12. The robot does not need a project Python environment for video; it only runs the compressed GStreamer relay. Install locomotion separately where needed:
+The GB10 setup installs the vision, training, calibration, and arm-IK groups in Python 3.12. The robot uses the isolated `robot/` environment for depth and arm services while the compressed GStreamer relay remains dependency-free. Install locomotion separately on other robot-network hosts when needed:
 
 ```bash
-./scripts/ensure_unitree_sdk_path.sh && uv sync --only-group loco --locked
+uv sync --only-group loco --locked
 ```
 
 If loco setup fails while building `cyclonedds`, install/configure the CycloneDDS system library on the robot-network host first, then rerun the loco sync. The Python package needs the C library visible through `CYCLONEDDS_HOME` or `CMAKE_PREFIX_PATH`.
 
-Loco commands are run from the server that is connected to the robot network, not necessarily on the robot itself. Pass the robot LAN IP to `uv run loco`. The local editable `unitree-sdk2py==1.0.1` checkout must exist either at `../unitree_sdk2_python` or `../repos/unitree_sdk2_python` relative to this project. `./scripts/ensure_unitree_sdk_path.sh` links the first one it finds into `.deps/unitree_sdk2_python`, which is the stable path uv uses. The robot SSH target (for example `unitree@ubuntu`) is separate from this local Python dependency path.
+Loco commands are run from the server that is connected to the robot network, not necessarily on the robot itself. Pass the robot LAN IP to `uv run loco`. The Unitree SDK is pinned to an official Git revision in the lockfile; the robot SSH target is separate from that Python dependency.
 
 ```bash
-./scripts/ensure_unitree_sdk_path.sh
 uv sync --only-group loco --locked
 uv run loco <robot_lan_ip> stop_move
 ```
@@ -361,8 +362,8 @@ uv run loco 192.168.0.4 stand_up
 uv run loco 192.168.0.4 balance_stand
 uv run loco 192.168.0.4 move --velocity "0.2 0 0 1.0"
 uv run loco 192.168.0.4 stop_move
-uv run loco 192.168.0.212 stop_move --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
-uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
+uv run loco 192.168.0.213 stop_move --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
+uv run loco 192.168.0.213 probe_loco --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
 uv run loco --diagnose 192.168.0.4
 ```
 
@@ -414,7 +415,7 @@ uv run loco --smoke-loco-subprocess 192.168.0.4 --interface eno1 --loco-service-
 If one config mode passes, use it for later commands:
 
 ```bash
-uv run loco 192.168.0.212 stop_move --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
+uv run loco 192.168.0.213 stop_move --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
 ```
 
 If every config mode exits with `SIGABRT` before `Constructing G1 LocoClient`, the failure is in CycloneDDS domain initialization, not in the repo movement wrapper or G1 service name patch. Rebuild or reinstall the native CycloneDDS and `unitree_sdk2py` stack before trying robot movement again.
@@ -433,8 +434,8 @@ During a normal `stop_move`, stderr should contain exactly one Unitree client co
 If `stop_move` reaches `[ClientStub] send request error`, DDS and `LocoClient` construction have already succeeded. Use the read-only probe before sending more movement commands:
 
 ```bash
-uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
-uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name sport --dds-config-mode no_trace
+uv run loco 192.168.0.213 probe_loco --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
+uv run loco 192.168.0.213 probe_loco --interface enP7s7 --loco-service-name sport --dds-config-mode no_trace
 ```
 
 If both probes return `3102` (`Request sending error`) on read-only methods, put the robot into high-level sport/ai-sport mode with the controller and retry. At that point the failure is the robot RPC server not responding on `rt/api/<service>/request`, not DDS initialization. The next useful checks are whether the robot firmware exposes the high-level loco RPC service at all and whether motion mode is enabled on the robot side.
@@ -444,7 +445,7 @@ If MotionSwitcher also returns `3102`, first classify the server-to-robot path f
 ```bash
 PYTHONPATH=$PWD/src python3 scripts/robot_eth0_rpc_probe.py \
   --interfaces enP7s7,wlan0 \
-  --ping-ip 192.168.0.212 \
+  --ping-ip 192.168.0.213 \
   --domain-id 0 \
   --timeout 15.0
 ```
@@ -508,7 +509,7 @@ If `wlan0` does not work inside the bridge, restart it with:
 python3 scripts/robot.py serve --interface eth0
 ```
 
-The server still talks to `192.168.0.212:8765`; only the robot-local DDS interface changes.
+The server still talks to `192.168.0.213:8765`; only the robot-local DDS interface changes.
 
 Movement is enabled by default for this robot-local bridge. Use `--read-only` when starting the bridge if you want to disable movement endpoints.
 
@@ -560,7 +561,7 @@ These are the Unitree examples unchanged. For `g1_loco`, type `list` at its prom
 Only use robot-local checks to isolate low-level robot networking after server-side tests are exhausted:
 
 ```bash
-ssh unitree@192.168.0.212
+ssh unitree@192.168.0.213
 cd ~/humanoid-robot-grasping
 git pull
 python3 scripts/robot_eth0_rpc_probe.py --interfaces eth0,wlan0 --ping-ip 192.168.123.1
@@ -569,9 +570,9 @@ python3 scripts/robot_eth0_rpc_probe.py --interfaces eth0,wlan0 --ping-ip 192.16
 If the robot does not show an obvious `ai_sport`/`loco` Linux service to start manually, use the SDK motion switcher path:
 
 ```bash
-uv run loco 192.168.0.212 check_motion_mode --interface enP7s7 --dds-config-mode no_trace
-uv run loco 192.168.0.212 select_ai_mode --interface enP7s7 --dds-config-mode no_trace
-uv run loco 192.168.0.212 probe_loco --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
+uv run loco 192.168.0.213 check_motion_mode --interface enP7s7 --dds-config-mode no_trace
+uv run loco 192.168.0.213 select_ai_mode --interface enP7s7 --dds-config-mode no_trace
+uv run loco 192.168.0.213 probe_loco --interface enP7s7 --loco-service-name ai_sport --dds-config-mode no_trace
 ```
 
 `check_motion_mode` is read-only. `select_ai_mode` calls `MotionSwitcherClient.SelectMode("ai")`, so only run it when the robot is physically safe and the controller/e-stop is ready.
@@ -605,7 +606,7 @@ If the shoulder pitch direction is backwards, retry with `--sign -1` or `--direc
 After a read-only probe returns `ok: true`, a tiny movement smoke test is available but guarded:
 
 ```bash
-uv run loco 192.168.0.212 smoke_move \
+uv run loco 192.168.0.213 smoke_move \
   --interface enP7s7 \
   --loco-service-name sport \
   --dds-config-mode no_trace

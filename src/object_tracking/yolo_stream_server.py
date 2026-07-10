@@ -53,6 +53,7 @@ DEFAULT_PIPELINE = os.environ.get("G1_CAMERA_PIPELINE") or unitree_g1_videohub_p
 @dataclass
 class SharedState:
     raw_frame: Optional[np.ndarray] = None
+    raw_frame_received_monotonic: float = 0.0
     annotated_frame: Optional[np.ndarray] = None
     jpeg_bytes: Optional[bytes] = None
     latest_detections: list[dict[str, Any]] = field(default_factory=list)
@@ -78,6 +79,15 @@ class SharedState:
     torch_threads: int = 0
     capture_session_dir: Optional[Path] = None
     capture_count: int = 0
+    arm_tracking: dict[str, Any] = field(
+        default_factory=lambda: {
+            "enabled": False,
+            "mode": "dry-run",
+            "status": "disabled",
+            "reason": "start with --depth-ws to enable hardware-depth tracking",
+        }
+    )
+    depth_colormap_jpeg: Optional[bytes] = None
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -353,6 +363,7 @@ def camera_loop(pipeline: str, camera_name: str, capture_backend: str) -> None:
 
         with frame_ready:
             state.raw_frame = frame
+            state.raw_frame_received_monotonic = time.monotonic()
             state.frame_count += 1
             if cam_fps is not None:
                 state.fps = cam_fps
@@ -598,6 +609,7 @@ def health() -> dict[str, object]:
             "inference_warmup_seconds": state.inference_warmup_seconds,
             "opencv_threads": state.opencv_threads,
             "torch_threads": state.torch_threads,
+            "arm_tracking": dict(state.arm_tracking),
         }
 
 
@@ -630,6 +642,21 @@ def tracks() -> dict[str, Any]:
             "yolo_count": state.yolo_count,
             "tracks": state.latest_tracks,
         }
+
+
+@app.get("/arm-tracking")
+def arm_tracking() -> dict[str, Any]:
+    with state.lock:
+        return dict(state.arm_tracking)
+
+
+@app.get("/depth.jpg")
+def depth_colormap() -> Response:
+    with state.lock:
+        data = state.depth_colormap_jpeg
+    if data is None:
+        return Response(content=b"No depth frame yet", media_type="text/plain", status_code=503)
+    return Response(content=data, media_type="image/jpeg")
 
 
 def _capture_session_dir() -> Path:
@@ -763,6 +790,19 @@ def build_parser() -> argparse.ArgumentParser:
         default="auto",
         help="Capture backend to use for camera read. opencv requires GStreamer-enabled cv2 and does not fallback.",
     )
+    parser.add_argument(
+        "--depth-ws",
+        help="Robot depth WebSocket, for example ws://192.168.0.213:8767/depth/stream",
+    )
+    parser.add_argument("--calibration", help="Validated camera-to-torso calibration YAML")
+    parser.add_argument("--arm-url", default="http://192.168.0.213:8766")
+    parser.add_argument("--arm-token-file", help="Mode-0600 bearer token used with --execute")
+    parser.add_argument("--target-hz", type=float, default=15.0)
+    parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Publish arm targets only after every calibration and health gate passes",
+    )
     return parser
 
 
@@ -778,10 +818,32 @@ def assert_port_available(host: str, port: int) -> None:
             ) from exc
 
 
+def arm_tracking_snapshot() -> dict[str, Any]:
+    with state.lock:
+        return {
+            "rgb_receipt_time_s": state.raw_frame_received_monotonic,
+            "rgb_shape": None if state.raw_frame is None else state.raw_frame.shape,
+            "tracks": [dict(track) for track in state.latest_tracks],
+        }
+
+
+def update_arm_tracking(status: dict[str, Any], depth_jpeg: bytes | None) -> None:
+    with state.lock:
+        state.arm_tracking = dict(status)
+        if depth_jpeg is not None:
+            state.depth_colormap_jpeg = depth_jpeg
+
+
 def main() -> None:
     args = build_parser().parse_args()
     assert_port_available(args.host, args.port)
     detector_enabled = yolo_enabled(args.model)
+    if detector_enabled and not Path(args.model).is_file():
+        raise SystemExit(
+            f"YOLO checkpoint not found: {args.model}. Provision the ignored model artifact before startup."
+        )
+    if args.depth_ws and not args.calibration:
+        raise SystemExit("--depth-ws requires --calibration")
     configure_runtime(args.opencv_threads, args.torch_threads, detector_enabled)
 
     with state.lock:
@@ -801,6 +863,36 @@ def main() -> None:
         daemon=True,
     )
     camera_worker.start()
+    if args.depth_ws:
+        from object_tracking.arm_tracking.runtime import ArmTrackingRuntime, RuntimeConfig
+
+        try:
+            arm_runtime = ArmTrackingRuntime(
+                RuntimeConfig(
+                    depth_ws_url=args.depth_ws,
+                    calibration_path=Path(args.calibration),
+                    arm_url=args.arm_url,
+                    arm_token_file=(
+                        None if args.arm_token_file is None else Path(args.arm_token_file)
+                    ),
+                    execute=args.execute,
+                    target_hz=args.target_hz,
+                ),
+                arm_tracking_snapshot,
+                update_arm_tracking,
+                repo_root=Path(__file__).resolve().parents[2],
+            )
+            arm_runtime.start()
+        except Exception as exc:
+            update_arm_tracking(
+                {
+                    "enabled": True,
+                    "mode": "execute" if args.execute else "dry-run",
+                    "status": "error",
+                    "reason": f"{type(exc).__name__}: {exc}",
+                },
+                None,
+            )
     if detector_enabled:
         inference_worker = threading.Thread(
             target=inference_loop,

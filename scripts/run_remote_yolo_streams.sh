@@ -29,6 +29,13 @@ TORCH_THREADS="${TORCH_THREADS:-16}"
 STREAM_FPS="${STREAM_FPS:-${VISION_FPS}}"
 CAPTURE_BACKEND="${CAPTURE_BACKEND:-gst-launch}"
 STOP_EXISTING="${STOP_EXISTING:-1}"
+ROBOT_HOST="${ROBOT_HOST:-192.168.0.213}"
+DEPTH_WS="${DEPTH_WS:-ws://${ROBOT_HOST}:8767/depth/stream}"
+CALIBRATION="${CALIBRATION:-}"
+ARM_URL="${ARM_URL:-http://${ROBOT_HOST}:8766}"
+ARM_TOKEN_FILE="${ARM_TOKEN_FILE:-}"
+TARGET_HZ="${TARGET_HZ:-15}"
+EXECUTE="${EXECUTE:-0}"
 
 if [[ ! -f "${MODEL}" ]]; then
   echo "Fine-tuned plushie model not found: ${MODEL}"
@@ -52,6 +59,18 @@ done
 PIPELINE="${PIPELINE:-udpsrc address=0.0.0.0 port=${UDP_PORT} buffer-size=1048576 ! application/x-rtp,media=video,encoding-name=H264,clock-rate=90000 ! queue ! rtpjitterbuffer latency=20 drop-on-latency=true ! rtph264depay ! h264parse ! avdec_h264 max-threads=8 ! videoconvert ! videoscale ! video/x-raw,width=${VISION_WIDTH},height=${VISION_HEIGHT},format=BGR ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! appsink sync=false drop=true max-buffers=1}"
 
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+
+tracking_args=()
+if [[ -n "${CALIBRATION}" ]]; then
+  tracking_args+=(--depth-ws "${DEPTH_WS}" --calibration "${CALIBRATION}" --arm-url "${ARM_URL}" --target-hz "${TARGET_HZ}")
+fi
+if [[ "${EXECUTE}" == "1" ]]; then
+  if [[ -z "${CALIBRATION}" || -z "${ARM_TOKEN_FILE}" ]]; then
+    echo "EXECUTE=1 requires CALIBRATION and ARM_TOKEN_FILE." >&2
+    exit 1
+  fi
+  tracking_args+=(--execute --arm-token-file "${ARM_TOKEN_FILE}")
+fi
 
 cleanup() {
   kill "${server_pid:-}" "${viewer_pid:-}" >/dev/null 2>&1 || true
@@ -102,6 +121,7 @@ echo "Processed stream:      http://${HOST}:${PORT}/stream.mjpg"
   --stream-fps "${STREAM_FPS}" \
   --expected-fps "${VISION_FPS}" \
   --capture-backend "${CAPTURE_BACKEND}" \
+  "${tracking_args[@]}" \
   "$@" &
 server_pid=$!
 
