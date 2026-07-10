@@ -28,7 +28,7 @@ The robot should run only the compressed RGB relay, RealSense depth service, and
 
 **Finding:** `G1RightArmIK` imports `pinocchio.casadi`, but the locked `pin==2.7.0` installation does not provide that module. This was reproduced with `uv run --group arm`; the current GB10 setup check passes because it imports only top-level `pinocchio` and `casadi`.
 
-**Files:** `pyproject.toml`, `uv.lock`, `scripts/setup_gb10_vision_server.sh`, `src/object_tracking/arm_tracking/ik_solver.py`
+**Files:** `pyproject.toml`, `uv.lock`, `scripts/gb10/setup.sh`, `src/object_tracking/arm_tracking/ik_solver.py`
 
 **Tasks:**
 
@@ -59,7 +59,7 @@ The robot should run only the compressed RGB relay, RealSense depth service, and
 
 **Finding:** the ROS depth source reports no serial or firmware. `bind_validated_calibration` substitutes the expected YAML serial when the live serial is absent and does not compare live ROS intrinsics, allowing a different camera with matching dimensions/depth scale to be stamped with the approved calibration ID.
 
-**Files:** `scripts/unitree_depth_service.py`
+**Files:** `scripts/robot/depth_service.py`
 
 **Tasks:**
 
@@ -118,7 +118,7 @@ The robot should run only the compressed RGB relay, RealSense depth service, and
 
 **Finding:** the aggregate robot launcher exits and kills all children when any child exits, but the runbook tells the operator to restart only the arm bridge with movement enabled.
 
-**Files:** `scripts/run_robot_grasping_services.sh`, `docs/ARM_TRACKING_RUNBOOK.md`
+**Files:** `scripts/robot/start.sh`, `docs/ARM_TRACKING_RUNBOOK.md`
 
 **Tasks:**
 
@@ -135,7 +135,7 @@ The robot should run only the compressed RGB relay, RealSense depth service, and
 Install the RealSense ROS or `pyrealsense2` system backend, then the minimal robot environment:
 
 ```bash
-./scripts/setup_robot_grasping_services.sh
+uv run g1 setup robot
 ```
 
 Start RGB relay, depth, and the disarmed arm bridge:
@@ -144,7 +144,7 @@ Start RGB relay, depth, and the disarmed arm bridge:
 CLIENT_IP=<GB10_IP> \
 ARM_TOKEN_FILE="$HOME/.config/g1-arm-token" \
 CALIBRATION=/secure/runtime/g1-camera.yaml \
-./scripts/run_robot_grasping_services.sh
+uv run g1 robot start
 ```
 
 This is the only service group that should run on the robot for the tracking pipeline. Do not install YOLO, Torch, training data, or the GB10 IK environment there.
@@ -154,7 +154,7 @@ This is the only service group that should run on the robot for the tracking pip
 Install and verify the inference/IK environment:
 
 ```bash
-./scripts/setup_gb10_vision_server.sh
+uv run g1 setup gb10
 ```
 
 Provision the ignored YOLO checkpoint, copy the validated calibration to a protected runtime path, then start dry-run processing:
@@ -162,7 +162,7 @@ Provision the ignored YOLO checkpoint, copy the validated calibration to a prote
 ```bash
 ROBOT_HOST=192.168.0.213 \
 CALIBRATION=/secure/runtime/g1-camera.yaml \
-./scripts/run_gb10_vision_server.sh
+uv run g1 gb10 start
 ```
 
 GB10 then hosts:

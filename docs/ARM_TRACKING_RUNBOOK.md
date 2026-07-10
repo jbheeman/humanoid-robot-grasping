@@ -19,7 +19,7 @@ The default robot address is `192.168.0.213`. Override it with `ROBOT_HOST` or t
 On GB10:
 
 ```bash
-./scripts/setup_gb10_vision_server.sh
+uv run g1 setup gb10
 ```
 
 This installs `vision`, `train`, and `arm` groups and fetches the Unitree sources pinned in `docs/PLAN.md`. The YOLO checkpoint is intentionally ignored by Git and must exist at:
@@ -31,7 +31,7 @@ models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt
 On the robot, install a system RealSense backend first (`realsense-ros`/`rclpy`, or `pyrealsense2`), then:
 
 ```bash
-./scripts/setup_robot_grasping_services.sh
+uv run g1 setup robot
 ```
 
 The robot environment is isolated in `robot/` and rejects Torch or Ultralytics. It contains no training or CUDA stack.
@@ -85,7 +85,7 @@ Start all robot services. The arm bridge is disarmed and movement-disabled:
 CLIENT_IP=GB10_IP \
 ARM_TOKEN_FILE="$HOME/.config/g1-arm-token" \
 CALIBRATION=/path/to/g1-camera.yaml \
-./scripts/run_robot_grasping_services.sh
+uv run g1 robot start
 ```
 
 The depth service first tries `/camera/camera/aligned_depth_to_color/image_raw`, then direct depth-only `librealsense`. Direct depth is registered to RGB on GB10 with the stored intrinsics/extrinsics. If neither source opens—such as when `videohub_pc4` blocks depth—the service fails closed.
@@ -95,7 +95,7 @@ Copy the calibration and token to GB10 over a protected channel; keep both outsi
 ```bash
 ROBOT_HOST=192.168.0.213 \
 CALIBRATION=/secure/runtime/g1-camera.yaml \
-./scripts/run_gb10_vision_server.sh
+uv run g1 gb10 start
 ```
 
 When the GB10 server starts, it prints a copy-paste LAN URL and SSH tunnel command for the MacBook. Open `http://GB10:8080/unitree_dual_viewer.html?single=1`. The research console shows annotated RGB, hardware-depth colormap, camera/YOLO/encode rates, depth age and RGB/depth skew, detections and tracks, measured/predicted/target XYZ, IK errors, arm state and loop timing, rejection reasons, calibration identity, and research-session statistics.
@@ -158,7 +158,7 @@ Code delivery does not claim physical movement acceptance. Before any movement, 
 Restart only the arm bridge with explicit movement authorization and the validated calibration ID:
 
 ```bash
-python scripts/unitree_arm_bridge.py --allow-movement \
+python scripts/robot/arm_bridge.py --allow-movement \
   --calibration /path/to/g1-camera.yaml --token-file "$HOME/.config/g1-arm-token"
 ```
 

@@ -73,7 +73,7 @@ markers = [
 ]
 
 [tool.ruff]
-extend-exclude = ["scripts/unitree_examples"]
+extend-exclude = ["scripts/vendor/unitree_examples"]
 line-length = 100
 target-version = "py310"
 
@@ -81,5 +81,4 @@ target-version = "py310"
 select = ["E4", "E7", "E9", "F"]
 
 [tool.ruff.lint.per-file-ignores]
-"scripts/g1_arms_forward.py" = ["F821"]
-"scripts/g1_loco.py" = ["E402"]
+"scripts/robot/arms_forward.py" = ["F821"]

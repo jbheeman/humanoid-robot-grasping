@@ -37,7 +37,7 @@ On the robot, provision the mode-0600 bearer token and start commissioning witho
 ARM_TOKEN_FILE="$HOME/.config/g1-arm-token" \
 G1_ROBOT_ID="g1-lab-01" \
 ALLOW_MOVEMENT=0 \
-./scripts/run_robot_arm_commissioning.sh
+uv run g1 arm commissioning
 ```
 
 On the MacBook:
@@ -69,7 +69,7 @@ G1_ROBOT_ID="g1-lab-01" \
 EXPECTED_MOTION_MODE="EXACT_MODE_FROM_PREFLIGHT" \
 ALLOW_MOVEMENT=1 \
 COMMISSIONING_ACK="I HAVE A SPOTTER AND PHYSICAL E-STOP" \
-./scripts/run_robot_arm_commissioning.sh
+uv run g1 arm commissioning
 ```
 
 The process refuses movement without the expected mode and startup acknowledgment. It never calls `MotionSwitcher.ReleaseMode()`.
@@ -135,7 +135,7 @@ ARM_HOME=/secure/runtime/g1-right-arm-home.json \
 G1_ROBOT_ID="g1-lab-01" \
 ROBOT_HOST=ROBOT_IP \
 CALIBRATION=/secure/runtime/g1-camera.yaml \
-./scripts/run_gb10_vision_server.sh
+uv run g1 gb10 start
 ```
 
 Tracking uses the profile only as an IK seed. It does not command the pose or bypass camera calibration.

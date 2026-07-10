@@ -26,7 +26,7 @@ This is the Unitree 29-DOF mapping. Slots 27 and 28 are not valid on a 23-DOF G1
 After fetching the pinned assets, audit URDF names, order, and limits:
 
 ```bash
-./scripts/fetch_unitree_arm_assets.sh
+uv run bash scripts/dev/fetch-arm-assets.sh
 uv run g1-tune joint-audit
 ```
 
@@ -44,7 +44,7 @@ Start in dry-run with a short label and notes:
 RESEARCH_LABEL=baseline_static \
 RESEARCH_NOTES="plushie 0.8m away, room light, table center" \
 RESEARCH_HZ=15 \
-./scripts/run_gb10_vision_server.sh
+uv run g1 gb10 start
 ```
 
 Use the same scene sequence for every comparison:
@@ -70,17 +70,17 @@ Change one parameter family at a time. Give each run a label and keep the physic
 Inference-size sweep:
 
 ```bash
-RESEARCH_LABEL=imgsz_640 IMGSZ=640 ./scripts/run_gb10_vision_server.sh
-RESEARCH_LABEL=imgsz_800 IMGSZ=800 ./scripts/run_gb10_vision_server.sh
-RESEARCH_LABEL=imgsz_960 IMGSZ=960 ./scripts/run_gb10_vision_server.sh
+RESEARCH_LABEL=imgsz_640 IMGSZ=640 uv run g1 gb10 start
+RESEARCH_LABEL=imgsz_800 IMGSZ=800 uv run g1 gb10 start
+RESEARCH_LABEL=imgsz_960 IMGSZ=960 uv run g1 gb10 start
 ```
 
 Detector-confidence sweep:
 
 ```bash
-RESEARCH_LABEL=conf_025 CONF=0.25 ./scripts/run_gb10_vision_server.sh
-RESEARCH_LABEL=conf_035 CONF=0.35 ./scripts/run_gb10_vision_server.sh
-RESEARCH_LABEL=conf_050 CONF=0.50 ./scripts/run_gb10_vision_server.sh
+RESEARCH_LABEL=conf_025 CONF=0.25 uv run g1 gb10 start
+RESEARCH_LABEL=conf_035 CONF=0.35 uv run g1 gb10 start
+RESEARCH_LABEL=conf_050 CONF=0.50 uv run g1 gb10 start
 ```
 
 Compare every recorded session in a directory:

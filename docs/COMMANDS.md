@@ -12,6 +12,8 @@ uv run g1 <group> <workflow> --help
 The underlying shell launchers remain in `scripts/` because the robot, GB10,
 and local workstation intentionally use different environments. They are
 stable automation entry points; `g1` is the shorter interactive interface.
+See [ARCHITECTURE.md](ARCHITECTURE.md) for the process and network ownership
+model.
 
 ## First-time setup
 
@@ -20,7 +22,7 @@ Run the setup command on the machine that will perform that role:
 ```bash
 uv run g1 setup robot     # Unitree robot: isolated SDK/depth/arm environment
 uv run g1 setup gb10      # GB10: CUDA/YOLO/IK/research server environment
-uv run g1 setup vision    # lightweight vision-only environment
+uv run g1 setup local     # lightweight vision-only environment
 ```
 
 Do not install the GB10 training group into the robot environment.
@@ -42,8 +44,10 @@ motion mode observed during preflight. See
 ## Perception and research
 
 ```bash
+uv run g1 robot start --client-ip <GB10_IP> --token-file <TOKEN>
+uv run g1 gb10 start --robot-host <ROBOT_IP> --dry-run
+uv run g1 local start --source realsense --device /dev/video0
 uv run g1 vision snapshot <robot-ip> --diagnose
-uv run g1 vision server
 uv run g1 stream viewer
 uv run g1 tune joint-audit
 uv run g1 tune analyze runs/research/arm_tracking

@@ -1,6 +1,6 @@
 # Third-Party Robot Sources
 
-The arm pipeline uses official Unitree sources without copying or modifying their license text in this repository. `scripts/fetch_unitree_arm_assets.sh` checks out the exact revisions below under ignored `.deps/` directories and verifies the upstream license and required model files are present.
+The arm pipeline uses official Unitree sources without copying or modifying their license text in this repository. `scripts/dev/fetch-arm-assets.sh` checks out the exact revisions below under ignored `.deps/` directories and verifies the upstream license and required model files are present.
 
 | Project | Revision | Use |
 | --- | --- | --- |

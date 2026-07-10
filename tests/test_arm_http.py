@@ -16,7 +16,7 @@ from object_tracking.arm_tracking.arm_commissioning import (
     CommissioningController,
 )
 from object_tracking.arm_tracking.joints import joint_contract_id
-from scripts.unitree_arm_bridge import make_handler
+from scripts.robot.arm_bridge import make_handler
 
 
 class Hardware:

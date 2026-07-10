@@ -164,7 +164,7 @@ def analyze_session(value: str | Path) -> dict[str, Any]:
             "Run controlled IMGSZ=640, 800, 960 trials; select the smallest size that preserves labeled recall.",
         )
         suggested_experiments.extend(
-            f"RESEARCH_LABEL=imgsz_{size} IMGSZ={size} ./scripts/run_gb10_vision_server.sh"
+            f"RESEARCH_LABEL=imgsz_{size} IMGSZ={size} uv run g1 gb10 start"
             for size in (640, 800, 960)
         )
     skew_p95 = _percentile(pair_skew, 95)
@@ -192,7 +192,7 @@ def analyze_session(value: str | Path) -> dict[str, Any]:
         )
         suggested_experiments.extend(
             f"RESEARCH_LABEL=conf_{int(confidence * 100):03d} CONF={confidence:.2f} "
-            "./scripts/run_gb10_vision_server.sh"
+            "uv run g1 gb10 start"
             for confidence in (0.25, 0.35, 0.50)
         )
     if switches > max(2, len(track_ids) // 20):

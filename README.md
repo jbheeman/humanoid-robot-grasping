@@ -6,6 +6,8 @@ The GB10 startup output prints the exact browser URL and SSH tunnel command for 
 
 For the shortest, discoverable command interface, use `uv run g1`. It groups setup, robot services, arm commissioning, streams, tuning, data, and training while preserving the existing host-specific scripts for automation. Start with `uv run g1 --help` and see [docs/COMMANDS.md](docs/COMMANDS.md).
 
+The three runtime roles and their network ownership are documented in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+
 Joint-order validation and movement-free tuning helpers are documented in [docs/TUNING_GUIDE.md](docs/TUNING_GUIDE.md). Use `uv run g1-tune joint-audit`, `uv run g1-tune analyze runs/research/arm_tracking`, and `uv run g1-tune compare runs/research/arm_tracking` to verify the 29-DOF contract and compare controlled dry-run trials.
 
 Before tuning moving-object tracking, use the separate camera-free right-arm commissioning workflow in [docs/ARM_COMMISSIONING_RUNBOOK.md](docs/ARM_COMMISSIONING_RUNBOOK.md). The robot-local wizard and `g1-arm` CLI provide verified 0.01 rad one-joint jogs, 0.05 rad operator-approved stages, a 0.30 rad per-joint session envelope, deadman release, event logs, and explicit promotion of a measured home pose.
@@ -16,7 +18,7 @@ From the project root:
 
 ```bash
 git switch aarav
-./scripts/setup_gb10_vision_server.sh
+uv run g1 setup gb10
 ```
 
 The GB10 setup installs the vision, training, calibration, and arm-IK groups in Python 3.12. The robot uses the isolated `robot/` environment for depth and arm services while the compressed GStreamer relay remains dependency-free. Install locomotion separately on other robot-network hosts when needed:
@@ -82,7 +84,7 @@ rsync -av \
 Then run from the remote host (required for G1 UDP/GStreamer):
 
 ```bash
-ssh <robot_ssh_user>@<robot_ssh_host> "cd /home/<robot_ssh_user>/project && ./scripts/setup_vision_server.sh && uv run vision <g1_ip> --no-ssh"
+ssh <robot_ssh_user>@<robot_ssh_host> "cd /home/<robot_ssh_user>/project && uv run g1 setup local && uv run vision <g1_ip> --no-ssh"
 ```
 
 Optional: track headless for testing:
@@ -127,7 +129,7 @@ Notes:
 Example local webcam path (non-Robot testing):
 
 ```bash
-uv run python scripts/run_manual_tracker.py --camera 0 --output runs/object_manual_test
+uv run python scripts/local/manual.py --camera 0 --output runs/object_manual_test
 ```
 
 ## Vision FastAPI stream
@@ -144,7 +146,7 @@ videohub_pc4 -> RTP multicast 230.1.1.1:1720 -> robot relay -> GB10 UDP 5600
 Do not open `/dev/video4`; `videohub_pc4` already owns it. Relay its multicast RTP packets to the GB10 address:
 
 ```bash
-CLIENT_IP=192.168.0.66 ./scripts/run_robot_vision_server.sh
+uv run g1 robot start --client-ip 192.168.0.66 --token-file <TOKEN>
 ```
 
 The default source is multicast `230.1.1.1:1720` on `wlan0`; the default destination port is UDP `5600`. Override `ROBOT_INTERFACE`, `MULTICAST_GROUP`, `MULTICAST_PORT`, or `CLIENT_PORT` only when the robot network differs.
@@ -156,19 +158,19 @@ The relay does not decode, resample, or rewrite frame timing. Camera mode remain
 Run the one-time GB10 setup:
 
 ```bash
-./scripts/setup_gb10_vision_server.sh
+uv run g1 setup gb10
 ```
 
 Optionally confirm that the GB10 can decode the live stream to a headless sink. This writes no frames to disk:
 
 ```bash
-./scripts/test_unitree_relay.sh
+uv run g1 gb10 relay-test
 ```
 
 Then start inference and the website:
 
 ```bash
-./scripts/run_gb10_vision_server.sh
+uv run g1 gb10 start
 ```
 
 The default checkpoint is the fine-tuned plush-animal model:
@@ -180,7 +182,7 @@ models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt
 The default tracking profile preserves the robot feed at `1280x720`, processes every frame, and serves the annotated stream at 30 FPS with JPEG quality 75. Override it only when bandwidth or inference load requires it:
 
 ```bash
-VISION_WIDTH=640 VISION_HEIGHT=360 VISION_FPS=30 JPEG_QUALITY=60 ./scripts/run_gb10_vision_server.sh
+VISION_WIDTH=640 VISION_HEIGHT=360 VISION_FPS=30 JPEG_QUALITY=60 uv run g1 gb10 start
 ```
 
 The GB10 uses external `gst-launch-1.0` for decoding, so pip OpenCV does not need GStreamer support. Useful endpoints are:
@@ -241,7 +243,7 @@ Capture frames from the running stream server:
 
 ```bash
 NOTE="plushie moving left to right" COUNT=20 INTERVAL=0.25 \
-  ./scripts/capture_training_frames.sh
+  uv run g1 data capture
 ```
 
 This calls `/capture` and writes raw images plus metadata to:
@@ -256,7 +258,7 @@ Label the captured frames in CVAT, Roboflow, or Label Studio, export YOLO detect
 Install public bootstrap datasets in the background:
 
 ```bash
-nohup ./scripts/install_all_plushie_datasets.sh > runs/dataset_install/nohup.log 2>&1 &
+nohup uv run g1 data install > runs/dataset_install/nohup.log 2>&1 &
 tail -f runs/dataset_install/install_all_plushie_datasets.log
 ```
 
@@ -265,7 +267,7 @@ The installer currently pulls COCO 2017 `teddy bear` plus Open Images `Teddy bea
 Create train-only augmented images that mimic the G1 feed: blur, motion smear, JPEG compression, sensor noise, gray-floor 1280x720 canvases, and smaller object scale. Validation data is left untouched.
 
 ```bash
-./scripts/augment_plushie_dataset.sh
+uv run g1 data augment
 ```
 
 After the default public-dataset install and augmentation pass, the local YOLO set is currently:
@@ -279,31 +281,31 @@ augmented train rows: 18966
 Useful capped smoke test:
 
 ```bash
-./scripts/augment_plushie_dataset.sh --max-source-images 20 --aug-per-image 3
+uv run g1 data augment --max-source-images 20 --aug-per-image 3
 ```
 
 Train the plushie detector:
 
 ```bash
-./scripts/train_plushie_detector.sh
+uv run g1 train detector
 ```
 
 Fast MVP training pass for same-day testing:
 
 ```bash
-MODEL=yolov8n.pt NAME=yolov8n_plushie_mvp EPOCHS=25 IMGSZ=960 BATCH=128 WORKERS=10 CACHE=disk RAM_RESERVE_GB=24 CPU_RESERVE_PERCENT=50 SAVE_PERIOD=5 PATIENCE=6 ./scripts/run_guarded_plushie_training.sh
+MODEL=yolov8n.pt NAME=yolov8n_plushie_mvp EPOCHS=25 IMGSZ=960 BATCH=128 WORKERS=10 CACHE=disk RAM_RESERVE_GB=24 CPU_RESERVE_PERCENT=50 SAVE_PERIOD=5 PATIENCE=6 uv run g1 train guarded
 ```
 
 Useful overrides:
 
 ```bash
-MODEL=yolo11x.pt EPOCHS=160 IMGSZ=1280 BATCH=16 SAVE_PERIOD=5 ./scripts/train_plushie_detector.sh
+MODEL=yolo11x.pt EPOCHS=160 IMGSZ=1280 BATCH=16 SAVE_PERIOD=5 uv run g1 train detector
 ```
 
 Recommended GB10 server training pass for the current COCO-derived dataset:
 
 ```bash
-MODEL=yolo11x.pt EPOCHS=160 IMGSZ=1280 BATCH=16 WORKERS=10 CACHE=auto RAM_RESERVE_GB=16 CPU_RESERVE_PERCENT=50 SAVE_PERIOD=5 PATIENCE=40 ./scripts/run_guarded_plushie_training.sh
+MODEL=yolo11x.pt EPOCHS=160 IMGSZ=1280 BATCH=16 WORKERS=10 CACHE=auto RAM_RESERVE_GB=16 CPU_RESERVE_PERCENT=50 SAVE_PERIOD=5 PATIENCE=40 uv run g1 train guarded
 ```
 
 For this augmented dataset, avoid `BATCH=-1 CACHE=ram` at `IMGSZ=1280`. AutoBatch probes oversized batches, and decoded RAM cache at 1280 can exceed the 120 GiB usable memory budget before model/data-loader overhead. `CACHE=auto` uses RAM cache only when the estimate fits the configured reserve; otherwise it uses disk cache and lets the OS page cache consume spare RAM safely. The guarded launcher adds cgroup limits: memory is capped to total RAM minus `RAM_RESERVE_GB`, swap is disabled for the training unit, and CPU quota leaves `CPU_RESERVE_PERCENT` for the rest of the system. On the GB10, `BATCH=16` was the best observed balance: it used about 58.5 GiB GPU memory without pushing host RAM into the danger zone. `BATCH=24` used about 87.6 GiB GPU memory but drove host memory low enough to touch swap, so do not use it for this dataset.
@@ -311,25 +313,25 @@ For this augmented dataset, avoid `BATCH=-1 CACHE=ram` at `IMGSZ=1280`. AutoBatc
 After adding Unitree-camera frames, fine-tune from the latest checkpoint for another 80-120 epochs:
 
 ```bash
-MODEL=models/plushie_detector/yolo11x_plushie/weights/best.pt EPOCHS=120 IMGSZ=1280 BATCH=16 WORKERS=10 CACHE=auto RAM_RESERVE_GB=16 CPU_RESERVE_PERCENT=50 NAME=yolo11x_plushie_unitree ./scripts/run_guarded_plushie_training.sh
+MODEL=models/plushie_detector/yolo11x_plushie/weights/best.pt EPOCHS=120 IMGSZ=1280 BATCH=16 WORKERS=10 CACHE=auto RAM_RESERVE_GB=16 CPU_RESERVE_PERCENT=50 NAME=yolo11x_plushie_unitree uv run g1 train guarded
 ```
 
 Resume the latest interrupted run:
 
 ```bash
-RESUME=1 ./scripts/train_plushie_detector.sh
+RESUME=1 uv run g1 train detector
 ```
 
 Evaluate the trained detector:
 
 ```bash
-./scripts/eval_plushie_detector.sh
+uv run g1 train evaluate
 ```
 
 Run the plushie stream. This uses `models/plushie_detector/yolo11x_plushie/weights/best.pt` if it exists. If no trained model exists yet, put a fallback model under `models/pretrained/` or set `MODEL` to an explicit path under `models/`.
 
 ```bash
-./scripts/run_plushie_stream.sh
+uv run g1 gb10 start
 ```
 
 Known dataset sources are tracked in [docs/PLUSHIE_DATASETS.md](docs/PLUSHIE_DATASETS.md).
@@ -399,8 +401,8 @@ uv run loco --dds-probe 192.168.0.4 --interface eno1 --loco-service-name ai_spor
 If `LocoClient` fails while creating a CycloneDDS topic, first run the project-free minimal constructor test:
 
 ```bash
-uv run python scripts/unitree_loco_minimal.py --robot-ip 192.168.0.4 --loco-service-name ai_sport
-uv run python scripts/unitree_loco_minimal.py --interface eno1 --loco-service-name ai_sport
+uv run python scripts/robot/loco_minimal.py --robot-ip 192.168.0.4 --loco-service-name ai_sport
+uv run python scripts/robot/loco_minimal.py --interface eno1 --loco-service-name ai_sport
 ```
 
 You can also run the same smoke test through the main CLI without sending movement commands:
@@ -451,7 +453,7 @@ If both probes return `3102` (`Request sending error`) on read-only methods, put
 If MotionSwitcher also returns `3102`, first classify the server-to-robot path from the machine that will send commands:
 
 ```bash
-PYTHONPATH=$PWD/src python3 scripts/robot_eth0_rpc_probe.py \
+PYTHONPATH=$PWD/src python3 scripts/dev/robot_network.py \
   --interfaces enP7s7,wlan0 \
   --ping-ip 192.168.0.213 \
   --domain-id 0 \
@@ -463,7 +465,7 @@ The probe script sets `PYTHONPATH=./src` for child commands, checks `object_trac
 Direct server-side read-only checks:
 
 ```bash
-PYTHONPATH=$PWD/src python3 scripts/g1_loco.py \
+uv run loco \
   --interface enP7s7 \
   --domain-id 0 \
   --timeout 15.0 \
@@ -471,7 +473,7 @@ PYTHONPATH=$PWD/src python3 scripts/g1_loco.py \
   diagnose \
   --loco-service-name sport
 
-PYTHONPATH=$PWD/src python3 scripts/g1_loco.py \
+uv run loco \
   --interface wlan0 \
   --domain-id 0 \
   --timeout 15.0 \
@@ -490,7 +492,7 @@ Diagnosis rules:
 
 ### Server-to-robot command path
 
-If `scripts/dds_discovery_probe.py` shows no DDS discovery output on the server interfaces, direct server-side Unitree SDK2 DDS is not reaching the robot. In that state, `probe_loco`, `check_motion_mode`, and `stop_move` from the server will return `3102` because no robot RPC participant is discovered.
+If `uv run g1 inspect dds` shows no DDS discovery output on the server interfaces, direct server-side Unitree SDK2 DDS is not reaching the robot. In that state, `probe_loco`, `check_motion_mode`, and `stop_move` from the server will return `3102` because no robot RPC participant is discovered.
 
 Use the robot-side HTTP bridge instead. It keeps DDS local to the robot and lets the external server send ordinary HTTP JSON over Wi-Fi.
 
@@ -499,22 +501,22 @@ On the robot:
 ```bash
 cd ~/humanoid-robot-grasping
 git pull
-python3 scripts/robot.py serve
+uv run g1 robot command serve
 ```
 
 From the server:
 
 ```bash
-python3 scripts/robot.py health
-python3 scripts/robot.py mode
-python3 scripts/robot.py probe
-python3 scripts/robot.py stop
+uv run g1 robot command health
+uv run g1 robot command mode
+uv run g1 robot command probe
+uv run g1 robot command stop
 ```
 
 If `wlan0` does not work inside the bridge, restart it with:
 
 ```bash
-python3 scripts/robot.py serve --interface eth0
+uv run g1 robot command serve --interface eth0
 ```
 
 The server still talks to `192.168.0.213:8765`; only the robot-local DDS interface changes.
@@ -522,16 +524,16 @@ The server still talks to `192.168.0.213:8765`; only the robot-local DDS interfa
 Movement is enabled by default for this robot-local bridge. Use `--read-only` when starting the bridge if you want to disable movement endpoints.
 
 ```bash
-python3 scripts/robot.py smoke-move
+uv run g1 robot command smoke-move
 ```
 
 Small bounded arm test:
 
 ```bash
-python3 scripts/robot.py arms-up 0.15
-python3 scripts/robot.py forward 0.05 --duration 0.4 --ramp 0.15
-python3 scripts/robot.py move --vx 0.05 --vy 0 --omega 0 --duration 0.4 --ramp 0.15
-python3 scripts/robot.py stop
+uv run g1 robot command arms-up 0.15
+uv run g1 robot command forward 0.05 --duration 0.4 --ramp 0.15
+uv run g1 robot command move --vx 0.05 --vy 0 --omega 0 --duration 0.4 --ramp 0.15
+uv run g1 robot command stop
 ```
 
 Avoid interactive keyboard control for now. Use one bounded command at a time (`forward`, `move`, `arms-up`, SDK examples), then send `stop` before the next test.
@@ -539,27 +541,27 @@ Avoid interactive keyboard control for now. Use one bounded command at a time (`
 Unitree SDK example actions can also be listed and run through the same bridge:
 
 ```bash
-python3 scripts/robot.py sdk-examples
-python3 scripts/robot.py sdk-example motion_switcher check_mode
-python3 scripts/robot.py sdk-example g1_loco high_stand
-python3 scripts/robot.py sdk-example g1_loco move_forward_tiny --speed 0.1 --duration 0.5
-python3 scripts/robot.py sdk-example g1_arm_action "hands up"
-python3 scripts/robot.py sdk-example g1_arm_action "release arm"
+uv run g1 robot command sdk-examples
+uv run g1 robot command sdk-example motion_switcher check_mode
+uv run g1 robot command sdk-example g1_loco high_stand
+uv run g1 robot command sdk-example g1_loco move_forward_tiny --speed 0.1 --duration 0.5
+uv run g1 robot command sdk-example g1_arm_action "hands up"
+uv run g1 robot command sdk-example g1_arm_action "release arm"
 ```
 
 The original SDK files these map to are `example/g1/high_level/g1_loco_client_example.py`, `example/g1/high_level/g1_arm_action_example.py`, and `example/motionSwitcher/motion_switcher_example.py`. The wrapper is allowlisted because the original examples are interactive loops and several actions move the robot immediately.
 
-Copied vendor examples are also available verbatim under `scripts/unitree_examples/`. Run these on the robot, not the server:
+Copied vendor examples are also available verbatim under `scripts/vendor/unitree_examples/`. Run these on the robot, not the server:
 
 ```bash
 cd ~/humanoid-robot-grasping
 git pull
 
-python3 scripts/robot.py vendor-example list
-python3 scripts/robot.py vendor-example motion_switcher
-python3 scripts/robot.py vendor-example g1_loco
-python3 scripts/robot.py vendor-example g1_arm_action
-python3 scripts/robot.py vendor-example g1_arm5
+uv run g1 robot command vendor-example list
+uv run g1 robot command vendor-example motion_switcher
+uv run g1 robot command vendor-example g1_loco
+uv run g1 robot command vendor-example g1_arm_action
+uv run g1 robot command vendor-example g1_arm5
 ```
 
 These are the Unitree examples unchanged. For `g1_loco`, type `list` at its prompt, then try IDs from the Unitree menu. For example, ID `3` is Unitree's `move forward` example and ID `5` is `move rotate`.
@@ -572,7 +574,7 @@ Only use robot-local checks to isolate low-level robot networking after server-s
 ssh unitree@192.168.0.213
 cd ~/humanoid-robot-grasping
 git pull
-python3 scripts/robot_eth0_rpc_probe.py --interfaces eth0,wlan0 --ping-ip 192.168.123.1
+python3 scripts/dev/robot_network.py --interfaces eth0,wlan0 --ping-ip 192.168.123.1
 ```
 
 If the robot does not show an obvious `ai_sport`/`loco` Linux service to start manually, use the SDK motion switcher path:
@@ -595,7 +597,7 @@ On the robot:
 cd ~/humanoid-robot-grasping
 git pull
 
-python3 scripts/robot.py shoulder-pitch \
+uv run g1 robot command shoulder-pitch \
   --side both \
   --sign 1 \
   --delta 0.25 \
@@ -606,7 +608,7 @@ python3 scripts/robot.py shoulder-pitch \
 Dry-run without DDS or movement:
 
 ```bash
-python3 scripts/robot.py shoulder-pitch --smoke --side both --sign 1 --delta 0.25
+uv run g1 robot command shoulder-pitch --smoke --side both --sign 1 --delta 0.25
 ```
 
 If the shoulder pitch direction is backwards, retry with `--sign -1` or `--direction negative`. If left/right need opposite directions, use `--left-sign 1 --right-sign -1` or the reverse. Start with a smaller `--delta 0.1` if you only want a small motion check.

@@ -3,7 +3,7 @@ import time
 import numpy as np
 from fastapi.testclient import TestClient
 
-from scripts.unitree_depth_service import CapturedDepth, DepthService, create_app
+from scripts.robot.depth_service import CapturedDepth, DepthService, create_app
 
 
 class FakeDepthSource:

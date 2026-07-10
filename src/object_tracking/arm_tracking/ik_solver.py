@@ -34,7 +34,7 @@ def default_urdf_path(repo_root: Path) -> Path:
 class G1RightArmIK:
     """Locked-waist G1 right-arm IK adapted from Unitree's pinned CasADi approach.
 
-    The upstream repository is fetched by scripts/fetch_unitree_arm_assets.sh so its
+    The upstream repository is fetched by scripts/dev/fetch-arm-assets.sh so its
     license, meshes, and exact revision remain intact under .deps.
     """
 
@@ -62,7 +62,7 @@ class G1RightArmIK:
         self.urdf_path = Path(urdf_path)
         if not self.urdf_path.is_file():
             raise IKUnavailable(
-                f"Pinned G1 URDF missing: {self.urdf_path}. Run scripts/fetch_unitree_arm_assets.sh."
+                f"Pinned G1 URDF missing: {self.urdf_path}. Run scripts/dev/fetch-arm-assets.sh."
             )
         self.position_tolerance_m = position_tolerance_m
         self.orientation_tolerance_rad = orientation_tolerance_rad

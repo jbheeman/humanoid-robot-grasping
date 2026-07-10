@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from object_tracking.g1_cli import ROUTES, build_parser
+from object_tracking.g1_cli import ROUTES, _role_launcher, build_parser
 
 
 def test_unified_cli_exposes_expected_workflows() -> None:
@@ -28,9 +28,32 @@ def test_unified_cli_exposes_expected_workflows() -> None:
         ("tune", "analyze"),
         ("tune", "joint-audit"),
         ("vision", "snapshot"),
+        ("gb10", "plushie"),
     ],
 )
 def test_routes_are_explicit(group: str, workflow: str) -> None:
     route = ROUTES[(group, workflow)]
     assert route.kind in {"module", "script"}
     assert route.target
+
+
+def test_robot_role_flags_configure_existing_launcher() -> None:
+    launcher, forwarded, env = _role_launcher(
+        ROUTES[("robot", "start")],
+        ["--client-ip", "192.168.0.66", "--token-file", "/tmp/token", "--arm-port", "9000"],
+    )
+
+    assert launcher.name == "start.sh"
+    assert forwarded == []
+    assert env["CLIENT_IP"] == "192.168.0.66"
+    assert env["ARM_TOKEN_FILE"] == "/tmp/token"
+    assert env["ARM_PORT"] == "9000"
+
+
+def test_local_realsense_role_builds_pipeline() -> None:
+    launcher, _forwarded, env = _role_launcher(
+        ROUTES[("local", "start")], ["--source", "realsense", "--device", "/dev/video9"]
+    )
+
+    assert launcher.name == "start.sh"
+    assert "v4l2src device=/dev/video9" in env["PIPELINE"]

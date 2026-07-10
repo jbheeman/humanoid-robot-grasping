@@ -394,7 +394,7 @@ Run this on Ubuntu:
 
 ```bash
 cd ~/Documents/project
-./scripts/run_yolo_stream.sh \
+uv run g1 local start \
   --model yolov8n.pt \
   --imgsz 320 \
   --conf 0.35 \

@@ -17,7 +17,7 @@ uv add opencv-contrib-python
 ## Run With Webcam
 
 ```bash
-uv run python scripts/run_manual_tracker.py --camera 0 --output runs/object_manual_test
+uv run python scripts/local/manual.py --camera 0 --output runs/object_manual_test
 ```
 
 Steps:

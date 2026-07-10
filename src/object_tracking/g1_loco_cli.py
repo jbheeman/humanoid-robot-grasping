@@ -448,7 +448,7 @@ def _smoke_loco_subprocess(
     dds_config_mode: str,
     timeout_s: float,
 ) -> dict[str, object]:
-    script = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "unitree_loco_minimal.py"
+    script = pathlib.Path(__file__).resolve().parents[2] / "scripts" / "robot" / "loco_minimal.py"
     if not script.exists():
         print(f"Minimal smoke script not found: {script}", file=sys.stderr)
         raise SystemExit(1)
@@ -778,7 +778,7 @@ def main() -> None:
             )
         except UnitreeG1Error as exc:
             print(f"Command failed: {exc}", file=sys.stderr)
-            print("Tip: run `uv run python scripts/unitree_loco_minimal.py --interface <dev>` for a project-free check.", file=sys.stderr)
+            print("Tip: run `uv run python scripts/robot/loco_minimal.py --interface <dev>` for a project-free check.", file=sys.stderr)
             raise SystemExit(1) from exc
         return
 
