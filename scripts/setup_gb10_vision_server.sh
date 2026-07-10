@@ -44,6 +44,9 @@ print("CasADi:", casadi.__version__)
 print("Pinocchio:", pinocchio.__version__)
 PY
 
+echo "Auditing G1 29-DOF URDF joint order and limits"
+"${VENV_DIR}/bin/g1-tune" joint-audit
+
 echo
 echo "GB10 vision environment is ready."
 echo "Next: ./scripts/run_gb10_vision_server.sh"

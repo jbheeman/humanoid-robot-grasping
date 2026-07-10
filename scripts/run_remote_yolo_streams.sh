@@ -39,6 +39,8 @@ EXECUTE="${EXECUTE:-0}"
 RESEARCH_RECORD="${RESEARCH_RECORD:-1}"
 RESEARCH_HZ="${RESEARCH_HZ:-5}"
 RESEARCH_ROOT="${RESEARCH_ROOT:-runs/research/arm_tracking}"
+RESEARCH_LABEL="${RESEARCH_LABEL:-}"
+RESEARCH_NOTES="${RESEARCH_NOTES:-}"
 GB10_LAN_IP="${GB10_LAN_IP:-}"
 
 if [[ ! -f "${MODEL}" ]]; then
@@ -69,7 +71,12 @@ if [[ -n "${CALIBRATION}" ]]; then
   tracking_args+=(--depth-ws "${DEPTH_WS}" --calibration "${CALIBRATION}" --arm-url "${ARM_URL}" --target-hz "${TARGET_HZ}")
 fi
 
-research_args=(--research-hz "${RESEARCH_HZ}" --research-root "${RESEARCH_ROOT}")
+research_args=(
+  --research-hz "${RESEARCH_HZ}"
+  --research-root "${RESEARCH_ROOT}"
+  --research-label "${RESEARCH_LABEL}"
+  --research-notes "${RESEARCH_NOTES}"
+)
 if [[ "${RESEARCH_RECORD}" == "1" ]]; then
   research_args+=(--research-record)
 else
@@ -131,6 +138,9 @@ echo "Tracking profile:    ${VISION_WIDTH}x${VISION_HEIGHT} at ${VISION_FPS} FPS
 echo "Inference cadence:   every ${INFER_EVERY} frame(s)"
 echo "Research recording:  ${RESEARCH_RECORD} at ${RESEARCH_HZ} Hz"
 echo "Research data root:  ${ROOT_DIR}/${RESEARCH_ROOT}"
+if [[ -n "${RESEARCH_LABEL}" ]]; then
+  echo "Experiment label:    ${RESEARCH_LABEL}"
+fi
 echo
 echo "ON YOUR MACBOOK (same local network), open:"
 echo "  http://${DISPLAY_HOST}:${VIEWER_PORT}/unitree_dual_viewer.html?single=1"

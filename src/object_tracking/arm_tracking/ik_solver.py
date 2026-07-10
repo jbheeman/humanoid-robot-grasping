@@ -6,18 +6,12 @@ from typing import Any, Sequence
 
 import numpy as np
 
+from .joints import RIGHT_ARM_JOINT_NAMES
+
 
 XR_TELEOPERATE_REVISION = "7dc9aa1a6edbf4a9f4f887d8ab6fc449ea5135f6"
 UNITREE_ROS_REVISION = "d96d8f63ae17a7108d4f7229c00ef875ba7129c9"
-RIGHT_ARM_JOINTS = (
-    "right_shoulder_pitch_joint",
-    "right_shoulder_roll_joint",
-    "right_shoulder_yaw_joint",
-    "right_elbow_joint",
-    "right_wrist_roll_joint",
-    "right_wrist_pitch_joint",
-    "right_wrist_yaw_joint",
-)
+RIGHT_ARM_JOINTS = RIGHT_ARM_JOINT_NAMES
 
 
 class IKUnavailable(RuntimeError):
@@ -103,6 +97,12 @@ class G1RightArmIK:
             self.collision_data = pin.GeometryData(self.collision_model)
         except Exception:
             self.model = pin.buildReducedModel(full_model, lock_ids, reference)
+        reduced_joint_order = tuple(self.model.names[1:])
+        if self.model.nq != 7 or reduced_joint_order != RIGHT_ARM_JOINTS:
+            raise IKUnavailable(
+                "Reduced URDF joint order does not match the seven-element right-arm command "
+                f"contract: expected {RIGHT_ARM_JOINTS}, got {reduced_joint_order}"
+            )
         self.data = self.model.createData()
         parent = self.model.getJointId("right_wrist_yaw_joint")
         self.ee_frame = self.model.addFrame(

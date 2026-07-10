@@ -4,6 +4,8 @@ The RealSense-guided right-arm pregrasp pipeline is implemented as a disarmed-by
 
 The GB10 startup output prints the exact browser URL and SSH tunnel command for a MacBook. Its research console combines live RGB/depth views with pipeline timing, detections, 3D targets, IK/arm state, rejection diagnostics, and downloadable JSONL telemetry stored under `runs/research/arm_tracking/`.
 
+Joint-order validation and movement-free tuning helpers are documented in [docs/TUNING_GUIDE.md](docs/TUNING_GUIDE.md). Use `uv run g1-tune joint-audit`, `uv run g1-tune analyze runs/research/arm_tracking`, and `uv run g1-tune compare runs/research/arm_tracking` to verify the 29-DOF contract and compare controlled dry-run trials.
+
 ## Setup
 
 From the project root:

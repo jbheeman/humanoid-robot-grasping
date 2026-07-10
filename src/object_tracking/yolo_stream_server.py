@@ -877,6 +877,8 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="Structured telemetry sampling rate (default: 5 Hz)",
     )
+    parser.add_argument("--research-label", default="", help="Human-readable experiment label")
+    parser.add_argument("--research-notes", default="", help="Short experimental condition notes")
     return parser
 
 
@@ -967,6 +969,22 @@ def main() -> None:
                 "depth_ws": args.depth_ws,
                 "arm_url": args.arm_url,
                 "calibration_file": args.calibration,
+                "experiment_label": args.research_label,
+                "experiment_notes": args.research_notes,
+                "configuration": {
+                    "imgsz": args.imgsz,
+                    "confidence": args.conf,
+                    "infer_every": args.infer_every,
+                    "jpeg_quality": args.jpeg_quality,
+                    "max_detections": args.max_det,
+                    "opencv_threads": args.opencv_threads,
+                    "torch_threads": args.torch_threads,
+                    "stream_fps": args.stream_fps,
+                    "expected_fps": args.expected_fps,
+                    "capture_backend": args.capture_backend,
+                    "target_hz": args.target_hz,
+                    "research_hz": args.research_hz,
+                },
             },
         )
         print(f"Research session: {research_session.session_id}")

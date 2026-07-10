@@ -8,12 +8,7 @@ import time
 from typing import Callable
 
 from .arm_bridge import ArmCommand, RobotState
-
-
-LEFT_ARM_INDICES = (15, 16, 17, 18, 19, 20, 21)
-RIGHT_ARM_INDICES = (22, 23, 24, 25, 26, 27, 28)
-ARM_INDICES = LEFT_ARM_INDICES + RIGHT_ARM_INDICES
-ARM_WEIGHT_INDEX = 29
+from .joints import ARM_INDICES, ARM_WEIGHT_INDEX
 
 
 class UnitreeArmHardware:

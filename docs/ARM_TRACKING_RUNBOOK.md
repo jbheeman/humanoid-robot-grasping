@@ -111,6 +111,8 @@ runs/research/arm_tracking/YYYYMMDD_HHMMSS_PID/
 
 This is separate from YOLO/VLM training outputs. It records structured observations and decisions, not raw images. Override it with `RESEARCH_ROOT`, change sampling with `RESEARCH_HZ`, or disable it with `RESEARCH_RECORD=0`.
 
+Label controlled experiments with `RESEARCH_LABEL` and `RESEARCH_NOTES`, then analyze the newest session with `uv run g1-tune analyze runs/research/arm_tracking`. See [TUNING_GUIDE.md](TUNING_GUIDE.md) for the joint audit, repeatable scene protocol, safe parameter sweeps, and run comparison.
+
 MacBook tunnel:
 
 ```bash

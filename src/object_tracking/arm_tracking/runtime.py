@@ -327,8 +327,8 @@ class ArmTrackingRuntime:
             self._reject(base_status, "support_plane_clearance", colormap)
             return
         if self.ik is None:
-            base_status.update({"ik_status": "unavailable", "reason": self.ik_error})
-            self.update_status(base_status, colormap)
+            base_status.update({"ik_status": "unavailable", "ik_error": self.ik_error})
+            self._reject(base_status, "ik_unavailable", colormap)
             return
         arm_state = self._arm_state() if self.config.execute else {}
         last_arm = arm_state.get("commanded_arm_q")

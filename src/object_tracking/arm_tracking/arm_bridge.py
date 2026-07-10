@@ -14,30 +14,9 @@ import threading
 import time
 from typing import Callable, Protocol, Sequence
 
-
-LEFT_ARM_JOINT_NAMES = (
-    "left_shoulder_pitch_joint",
-    "left_shoulder_roll_joint",
-    "left_shoulder_yaw_joint",
-    "left_elbow_joint",
-    "left_wrist_roll_joint",
-    "left_wrist_pitch_joint",
-    "left_wrist_yaw_joint",
-)
-RIGHT_ARM_JOINT_NAMES = tuple(name.replace("left_", "right_") for name in LEFT_ARM_JOINT_NAMES)
-ARM_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + RIGHT_ARM_JOINT_NAMES
-
-# G1 29-DOF limits from the Unitree description, narrowed again by
-# ``joint_limit_margin_rad`` before targets are accepted.  The right shoulder
-# roll range is mirrored from the left arm.
-DEFAULT_RIGHT_JOINT_LIMITS = (
-    (-3.0892, 2.6704),
-    (-2.2515, 1.5882),
-    (-2.6180, 2.6180),
-    (-1.0472, 2.0944),
-    (-1.9722, 1.9722),
-    (-1.6144, 1.6144),
-    (-1.6144, 1.6144),
+from .joints import (
+    DEFAULT_RIGHT_JOINT_LIMITS,
+    RIGHT_ARM_JOINT_NAMES,
 )
 
 
