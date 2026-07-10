@@ -843,6 +843,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default="0.0.0.0")
     parser.add_argument("--port", type=int, default=8000)
     parser.add_argument(
+        "--access-log",
+        action="store_true",
+        help="Print one Uvicorn line for every browser/API request (off by default).",
+    )
+    parser.add_argument(
         "--stream-fps",
         type=float,
         default=0.0,
@@ -1076,7 +1081,13 @@ def main() -> None:
 
     import uvicorn
 
-    uvicorn.run(app, host=args.host, port=args.port, log_level="info")
+    uvicorn.run(
+        app,
+        host=args.host,
+        port=args.port,
+        log_level="info",
+        access_log=args.access_log,
+    )
 
 
 if __name__ == "__main__":

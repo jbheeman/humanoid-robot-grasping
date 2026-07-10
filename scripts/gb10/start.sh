@@ -27,6 +27,7 @@ MAX_DET="${MAX_DET:-20}"
 OPENCV_THREADS="${OPENCV_THREADS:-16}"
 TORCH_THREADS="${TORCH_THREADS:-16}"
 STREAM_FPS="${STREAM_FPS:-${VISION_FPS}}"
+ACCESS_LOG="${ACCESS_LOG:-0}"
 CAPTURE_BACKEND="${CAPTURE_BACKEND:-gst-launch}"
 STOP_EXISTING="${STOP_EXISTING:-1}"
 ROBOT_HOST="${ROBOT_HOST:-192.168.0.213}"
@@ -71,6 +72,11 @@ export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 tracking_args=()
 if [[ -n "${CALIBRATION}" ]]; then
   tracking_args+=(--depth-ws "${DEPTH_WS}" --calibration "${CALIBRATION}" --arm-url "${ARM_URL}" --target-hz "${TARGET_HZ}")
+fi
+
+access_log_args=()
+if [[ "${ACCESS_LOG}" == "1" ]]; then
+  access_log_args+=(--access-log)
 fi
 
 research_args=(
@@ -185,6 +191,7 @@ echo
   --stream-fps "${STREAM_FPS}" \
   --expected-fps "${VISION_FPS}" \
   --capture-backend "${CAPTURE_BACKEND}" \
+  "${access_log_args[@]}" \
   "${tracking_args[@]}" \
   "${research_args[@]}" \
   "$@" &
