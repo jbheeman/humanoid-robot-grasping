@@ -138,7 +138,7 @@ The camera stays owned by Unitree's `videohub_pc4` task. Video remains compresse
 
 ```text
 videohub_pc4 -> RTP multicast 230.1.1.1:1720 -> robot relay -> GB10 UDP 5600
-             -> GStreamer decode -> fine-tuned YOLOv8 -> FastAPI/viewer -> Mac SSH tunnel
+             -> GStreamer decode -> fine-tuned YOLO11 -> FastAPI/viewer -> Mac SSH tunnel
 ```
 
 ### Robot: compressed RTP relay
@@ -176,7 +176,7 @@ uv run g1 gb10 start
 The default checkpoint is the fine-tuned plush-animal model:
 
 ```text
-models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt
+models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt
 ```
 
 The default tracking profile preserves the robot feed at `1280x720`, processes every frame, and serves the annotated stream at 30 FPS with JPEG quality 75. Override it only when bandwidth or inference load requires it:
@@ -234,9 +234,8 @@ Training artifacts and pretrained model downloads are intentionally rooted under
 
 ```text
 models/pretrained/yolo11x.pt
-models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt
-models/plushie_detector/yolo11x_plushie/weights/best.pt
-models/plushie_detector/yolo11x_plushie/weights/last.pt
+models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt
+models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/last.pt
 ```
 
 Capture frames from the running stream server:
@@ -313,7 +312,7 @@ For this augmented dataset, avoid `BATCH=-1 CACHE=ram` at `IMGSZ=1280`. AutoBatc
 After adding Unitree-camera frames, fine-tune from the latest checkpoint for another 80-120 epochs:
 
 ```bash
-MODEL=models/plushie_detector/yolo11x_plushie/weights/best.pt EPOCHS=120 IMGSZ=1280 BATCH=16 WORKERS=10 CACHE=auto RAM_RESERVE_GB=16 CPU_RESERVE_PERCENT=50 NAME=yolo11x_plushie_unitree uv run g1 train guarded
+MODEL=models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt EPOCHS=120 IMGSZ=1280 BATCH=16 WORKERS=10 CACHE=auto RAM_RESERVE_GB=16 CPU_RESERVE_PERCENT=50 NAME=yolo11x_plushie_unitree uv run g1 train guarded
 ```
 
 Resume the latest interrupted run:
@@ -328,7 +327,7 @@ Evaluate the trained detector:
 uv run g1 train evaluate
 ```
 
-Run the plushie stream. This uses `models/plushie_detector/yolo11x_plushie/weights/best.pt` if it exists. If no trained model exists yet, put a fallback model under `models/pretrained/` or set `MODEL` to an explicit path under `models/`.
+Run the plushie stream. This uses `models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt` if it exists. If no trained model exists yet, put a fallback model under `models/pretrained/` or set `MODEL` to an explicit path under `models/`.
 
 ```bash
 uv run g1 gb10 start

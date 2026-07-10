@@ -25,7 +25,7 @@ uv run g1 setup gb10
 This installs `vision`, `train`, and `arm` groups and fetches the Unitree sources pinned in `docs/PLAN.md`. The YOLO checkpoint is intentionally ignored by Git and must exist at:
 
 ```text
-models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt
+models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt
 ```
 
 On the robot, install a system RealSense backend first (`realsense-ros`/`rclpy`, or `pyrealsense2`), then:

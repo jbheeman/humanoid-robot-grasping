@@ -6,7 +6,7 @@ VENV_DIR="${ROOT_DIR}/.venv"
 
 cd "${ROOT_DIR}"
 
-MODEL="${MODEL:-models/plushie_detector/yolo11x_plushie/weights/best.pt}"
+MODEL="${MODEL:-models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt}"
 DATA="${DATA:-data/plushie/plushie.yaml}"
 IMGSZ="${IMGSZ:-960}"
 PROJECT="${PROJECT:-models/plushie_detector_eval}"

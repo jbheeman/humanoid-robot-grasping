@@ -12,7 +12,7 @@ fi
 
 cd "${ROOT_DIR}"
 
-TRAINED_MODEL="${ROOT_DIR}/models/plushie_detector/yolo11x_plushie/weights/best.pt"
+TRAINED_MODEL="${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt"
 if [[ -z "${MODEL:-}" ]]; then
   if [[ -f "${TRAINED_MODEL}" ]]; then
     MODEL="${TRAINED_MODEL}"

@@ -18,12 +18,10 @@ if ! command -v gst-launch-1.0 >/dev/null 2>&1; then
   exit 1
 fi
 
-if ! pgrep -x videohub_pc4 >/dev/null 2>&1; then
-  echo "videohub_pc4 is not running. Start the Unitree camera task first."
-  exit 1
-fi
-
-echo "Relaying Unitree H264 RTP without opening /dev/video4"
+# The source may be Unitree's videohub_pc4 or a replacement producer such as
+# rgb-30fps.sh.  The relay intentionally validates neither process name nor
+# camera device ownership: it only joins the configured multicast stream.
+echo "Relaying H264 RTP without opening /dev/video4"
 echo "  source: ${MULTICAST_GROUP}:${MULTICAST_PORT} on ${ROBOT_INTERFACE}"
 echo "  target: ${CLIENT_IP}:${CLIENT_PORT}"
 

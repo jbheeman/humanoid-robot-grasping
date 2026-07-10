@@ -30,7 +30,7 @@
 ### GB10 Perception and Control
 
 - Build the 3D arm-tracking pipeline around the committed YOLO server and tracker; the previously referenced uncommitted prototype is not present in the repository.
-- Continue using `models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt`.
+- Continue using `models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt`.
 - Pair each decoded RGB frame with the nearest depth frame, rejecting pairs more than 100 ms apart.
 - Estimate object depth using valid-depth clustering and a robust median from the central detection region.
 - Deproject the pixel and Z16 depth using RealSense intrinsics, then transform the point into the locked-waist G1 base frame.
