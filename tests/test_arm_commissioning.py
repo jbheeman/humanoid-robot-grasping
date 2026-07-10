@@ -137,8 +137,10 @@ def test_commissioning_requires_verified_mode_and_ownership(tmp_path) -> None:
     ("changes", "code"),
     [
         ({"controller_ownership_verified": False}, "controller_ownership_unverified"),
-        ({"motor_status_verified": False}, "motor_status_unverified"),
-        ({"motor_state_healthy": False}, "motor_state_fault"),
+        (
+            {"motor_status_verified": True, "motor_state_healthy": False},
+            "motor_state_fault",
+        ),
     ],
 )
 def test_commissioning_rejects_unverified_live_gates(tmp_path, changes, code) -> None:

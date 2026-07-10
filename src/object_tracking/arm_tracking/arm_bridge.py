@@ -492,11 +492,8 @@ class ArmBridgeController:
                 self._enter_fault("competing_arm_controller", now)
             elif (
                 self.control_mode is ArmControlMode.COMMISSIONING
-                and not robot.motor_status_verified
-            ):
-                self._enter_fault("motor_status_unverified", now)
-            elif (
-                self.control_mode is ArmControlMode.COMMISSIONING and not robot.motor_state_healthy
+                and robot.motor_status_verified
+                and not robot.motor_state_healthy
             ):
                 self._enter_fault("motor_state_fault", now)
 
@@ -698,12 +695,14 @@ class ArmBridgeController:
                 "Exclusive arm controller ownership has not been verified",
                 code="controller_ownership_unverified",
             )
-        if require_commissioning_verification and not robot.motor_status_verified:
-            raise ArmBridgeError(
-                "Motor status fields have not been verified",
-                code="motor_status_unverified",
-            )
-        if require_commissioning_verification and not robot.motor_state_healthy:
+        # Some deployed G1 firmware publishes joint state but no temperature/
+        # lost diagnostic fields. Missing fields are not a fault; a diagnostic
+        # fault that *is* actually reported remains a hard commissioning gate.
+        if (
+            require_commissioning_verification
+            and robot.motor_status_verified
+            and not robot.motor_state_healthy
+        ):
             raise ArmBridgeError(
                 "Motor status reports a commissioning fault",
                 code="motor_state_fault",
