@@ -1,3 +1,4 @@
+.gpu-sim-venv/
 .sim-venv/
 .tools/
 .venv/
