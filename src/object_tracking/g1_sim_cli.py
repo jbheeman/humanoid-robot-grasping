@@ -54,7 +54,7 @@ def _load() -> tuple[Any, Any, list[int], list[int], list[int]]:
     path = root() / MODEL_REL
     if not path.is_file():
         raise FileNotFoundError(f"{path} is missing; run scripts/sim/setup.sh")
-    wrapper = path.parent / ".g1_suspended.xml"
+    wrapper = path.parent / f".g1_suspended_{os.getpid()}.xml"
     wrapper.write_text(
         '<mujoco model="g1_suspended"><include file="g1_29dof.xml"/>'
         '<equality><weld name="hanger" body1="pelvis"/></equality></mujoco>'
