@@ -18,14 +18,21 @@ candidate is evaluated across all 42 combinations of seven joints and six
 signed amplitudes; ranking uses the 95th percentile normalized RMSE so small
 wrist movements cannot unfairly dominate the result.
 
-For a long shared-GPU run that scales batches toward 11 GB total VRAM, run
-`scripts/sim/gpu-run.sh adaptive --hours 24`. The supervisor samples total
-GPU memory four times per second. It keeps a 1 GiB soft margin below the
+For a convergence-based run that can scale near the full 12 GB card, run
+`scripts/sim/gpu-run.sh adaptive`. The supervisor samples total GPU memory
+four times per second. It keeps a 512 MiB allocator margin below a 12,000 MiB
 hard ceiling, grows the next process-isolated batch when capacity is available, and
-terminates and retries smaller if total usage reaches 11 GB. Each child exit
+terminates and retries smaller if total usage reaches the pressure limit. Each child exit
 releases JAX compilation caches and device buffers. It cannot force unrelated
-applications to release VRAM, so it waits when less than 512 MiB launch
+applications to release VRAM, so it waits when less than 256 MiB launch
 headroom remains.
+
+Each batch independently samples `kp`, `kd`, `vmax`, and `amax`; half
+of later candidates explore around the best checkpoint and half continue
+global exploration. The lowest robust tracking-error result is always written
+to `runs/simulation-gpu/best-checkpoint.json`. The default run stops after
+one hour without at least 0.5% improvement, or after six hours maximum, and
+automatically resumes its search around an existing checkpoint.
 
 The pelvis is welded. MJX 3.3 does not support one collision pair in Unitree's
 mesh model, so contacts are disabled. Results are suitable only as a second
