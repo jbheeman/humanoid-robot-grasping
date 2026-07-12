@@ -45,6 +45,14 @@ def test_cpu_sweep_memory_guard_has_a_safe_default() -> None:
     assert args.min_available_mib == 2048
 
 
+def test_validation_uses_independent_replays_by_default() -> None:
+    args = __import__("object_tracking.g1_sim_cli", fromlist=["parser"]).parser().parse_args(
+        ["validate"]
+    )
+    assert args.seeds == 64
+    assert args.workers >= 1
+
+
 def test_encoder_telemetry_calibration_is_read_only(tmp_path) -> None:
     telemetry = tmp_path / "telemetry.json"
     telemetry.write_text(

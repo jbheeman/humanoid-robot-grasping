@@ -455,6 +455,51 @@ def status(args: argparse.Namespace) -> int:
     return 0
 
 
+def validate(args: argparse.Namespace) -> int:
+    """Stress-test the latest simulated candidate under independent random seeds.
+
+    This is deliberately a read-only simulation gate, not a gain promotion path.
+    A single favorable randomized rollout is not evidence that a candidate will
+    transfer to the physical G1.
+    """
+    latest = root() / OUTPUT_REL / "latest.json"
+    if not latest.is_file():
+        raise SystemExit("No sweep checkpoint exists to validate.")
+    pointer = json.loads(latest.read_text())
+    checkpoint = json.loads((root() / pointer["run"] / "checkpoint.json").read_text())
+    best = checkpoint.get("best") or {}
+    raw = best.get("candidate")
+    if not isinstance(raw, dict):
+        raise SystemExit("Latest sweep has no candidate to validate.")
+    candidate = Candidate(**raw)
+    _simulation()
+    context = multiprocessing.get_context("fork")
+    seeds = [args.seed + index * 100_003 for index in range(args.seeds)]
+    with ProcessPoolExecutor(max_workers=args.workers, mp_context=context) as pool:
+        samples = list(pool.map(evaluate, [candidate] * len(seeds), seeds))
+    scores = [sample["score"] for sample in samples]
+    errors = [sample["p95_error"] for sample in samples]
+    failures = [sample["failure_rate"] for sample in samples]
+    report = {
+        "schema_version": 1,
+        "source_run": pointer["run"],
+        "candidate": raw,
+        "randomized_replays": len(samples),
+        "score_median": float(statistics.median(scores)),
+        "score_p95": float(np.percentile(scores, 95)),
+        "p95_error_median": float(statistics.median(errors)),
+        "p95_error_p95": float(np.percentile(errors, 95)),
+        "failure_rate_mean": float(statistics.mean(failures)),
+        "failure_rate_worst": float(max(failures)),
+        "real_robot_validated": False,
+        "promotion": "blocked_pending_guarded_encoder_telemetry",
+    }
+    destination = root() / pointer["run"] / "robust_validation.json"
+    _atomic_json(destination, report)
+    print(json.dumps(report, indent=2))
+    return 0
+
+
 def calibrate(args: argparse.Namespace) -> int:
     """Summarize guarded real encoder telemetry; never contacts the robot."""
     source = Path(args.telemetry)
@@ -537,6 +582,11 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status")
     s.add_argument("--verbose", action="store_true", help="include every trial in the checkpoint")
     s.set_defaults(func=status)
+    v = sub.add_parser("validate")
+    v.add_argument("--workers", type=int, default=min(16, os.cpu_count() or 1))
+    v.add_argument("--seeds", type=int, default=64)
+    v.add_argument("--seed", type=int, default=10_000)
+    v.set_defaults(func=validate)
     c = sub.add_parser("calibrate")
     c.add_argument("telemetry", help="guarded seven-joint encoder telemetry JSON")
     c.set_defaults(func=calibrate)
