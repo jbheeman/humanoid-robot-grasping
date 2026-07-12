@@ -11,7 +11,7 @@ if [[ ! -d "$DEPS/.git" ]]; then
   git clone --filter=blob:none --no-checkout https://github.com/unitreerobotics/unitree_mujoco.git "$DEPS"
 fi
 git -C "$DEPS" sparse-checkout init --cone
-git -C "$DEPS" sparse-checkout set unitree_robots/g1 LICENSE
+git -C "$DEPS" sparse-checkout set --skip-checks unitree_robots/g1 LICENSE
 git -C "$DEPS" fetch --depth=1 origin "$REV"
 git -C "$DEPS" checkout --detach "$REV"
 
