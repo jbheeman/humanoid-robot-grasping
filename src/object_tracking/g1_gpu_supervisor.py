@@ -64,6 +64,8 @@ def run(args: argparse.Namespace) -> int:
     signal.signal(signal.SIGTERM, _terminate_active)
     signal.signal(signal.SIGINT, _terminate_active)
     output = root() / "runs/simulation-gpu/adaptive-status.json"
+    best_path = root() / "runs/simulation-gpu/best-checkpoint.json"
+    latest_path = root() / "runs/simulation-gpu/latest.json"
     log_dir = root() / "runs/simulation-gpu/adaptive"
     log_dir.mkdir(parents=True, exist_ok=True)
     candidates = args.initial_candidates
@@ -72,7 +74,17 @@ def run(args: argparse.Namespace) -> int:
     stop_at = started + args.hours * 3600
     history: list[dict[str, Any]] = []
     status: dict[str, Any] = {}
+    best_payload: dict[str, Any] | None = None
+    best_score = float("inf")
+    if best_path.is_file():
+        best_payload = json.loads(best_path.read_text())
+        best_score = float(best_payload["best_normalized_p95_rmse"])
+    last_improvement = started
+    stop_reason = "maximum_hours"
     while time.time() < stop_at:
+        if time.time() - last_improvement >= args.plateau_hours * 3600:
+            stop_reason = "no_improvement"
+            break
         before, total = read_vram(args.nvidia_smi)
         pressure_limit = args.target_total_mib - args.soft_headroom_mib
         if total < args.target_total_mib:
@@ -93,6 +105,10 @@ def run(args: argparse.Namespace) -> int:
                     str(candidates),
                     "--steps",
                     str(args.steps),
+                    "--seed",
+                    str(args.seed + batch),
+                    "--checkpoint",
+                    str(best_path),
                 ],
                 stdout=stream,
                 stderr=subprocess.STDOUT,
@@ -118,6 +134,23 @@ def run(args: argparse.Namespace) -> int:
             return_code = process.wait()
             _ACTIVE_PROCESS = None
         after, _ = read_vram(args.nvidia_smi)
+        improved = False
+        meaningful_improvement = False
+        if not aborted and return_code == 0 and latest_path.is_file():
+            result = json.loads(latest_path.read_text())
+            score = float(result["best_normalized_p95_rmse"])
+            if score < best_score:
+                meaningful_improvement = score < best_score * (
+                    1.0 - args.minimum_relative_improvement
+                )
+                best_score = score
+                best_payload = result
+                best_payload["checkpoint_batch"] = batch
+                best_payload["checkpointed_at"] = datetime.now(timezone.utc).isoformat()
+                _write(best_path, best_payload)
+                improved = True
+                if meaningful_improvement:
+                    last_improvement = time.time()
         entry = {
             "batch": batch,
             "candidates": candidates,
@@ -127,6 +160,9 @@ def run(args: argparse.Namespace) -> int:
             "vram_after_mib": after,
             "aborted_for_vram": aborted,
             "return_code": return_code,
+            "improved_global_best": improved,
+            "meaningful_improvement": meaningful_improvement,
+            "global_best_score": None if best_payload is None else best_score,
             "log": str(log_path.relative_to(root())),
             "finished_at": datetime.now(timezone.utc).isoformat(),
         }
@@ -148,31 +184,39 @@ def run(args: argparse.Namespace) -> int:
             "detected_total_vram_mib": total,
             "next_candidates": candidates,
             "elapsed_hours": (time.time() - started) / 3600,
+            "hours_since_improvement": (time.time() - last_improvement) / 3600,
+            "best_checkpoint": str(best_path.relative_to(root())),
+            "global_best_score": None if best_payload is None else best_score,
             "history": history,
         }
         _write(output, status)
         print(
             f"batch={batch} candidates={entry['candidates']} peak={peak}MiB "
-            f"after={after}MiB rc={return_code} next={candidates}",
+            f"after={after}MiB rc={return_code} next={candidates} "
+            f"best={best_score:.6f} improved={improved}",
             flush=True,
         )
     status["status"] = "complete"
+    status["stop_reason"] = stop_reason
     _write(output, status)
     return 0
 
 
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
-    p.add_argument("--hours", type=float, default=24.0)
+    p.add_argument("--hours", type=float, default=6.0)
+    p.add_argument("--plateau-hours", type=float, default=1.0)
+    p.add_argument("--minimum-relative-improvement", type=float, default=0.005)
+    p.add_argument("--seed", type=int, default=20260712)
     p.add_argument("--steps", type=int, default=1500)
     p.add_argument("--initial-candidates", type=int, default=64)
     p.add_argument("--min-candidates", type=int, default=8)
     p.add_argument("--max-candidates", type=int, default=1024)
-    p.add_argument("--target-total-mib", type=int, default=11264)
-    p.add_argument("--launch-headroom-mib", type=int, default=512)
-    p.add_argument("--soft-headroom-mib", type=int, default=1024)
+    p.add_argument("--target-total-mib", type=int, default=12000)
+    p.add_argument("--launch-headroom-mib", type=int, default=256)
+    p.add_argument("--soft-headroom-mib", type=int, default=512)
     p.add_argument("--poll-seconds", type=float, default=0.25)
-    p.add_argument("--jax-memory-fraction", type=float, default=0.55)
+    p.add_argument("--jax-memory-fraction", type=float, default=0.90)
     p.add_argument("--nvidia-smi", default="/usr/lib/wsl/lib/nvidia-smi")
     p.set_defaults(func=run)
     return p

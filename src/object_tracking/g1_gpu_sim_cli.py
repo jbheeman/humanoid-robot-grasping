@@ -70,10 +70,35 @@ def benchmark(args: argparse.Namespace) -> int:
     environments = args.candidates * scenarios
     data = jax.tree.map(lambda x: jnp.repeat(x[None, ...], environments, axis=0), one)
     qpos_i, qvel_i, act_i = map(jnp.asarray, (qpos, qvel, actuators))
-    candidate_kp = jnp.linspace(35.0, 80.0, args.candidates)
-    candidate_kd = jnp.linspace(3.5, 0.8, args.candidates)
+    rng = np.random.default_rng(args.seed)
+    bounds = {
+        "kp": (30.0, 100.0),
+        "kd": (0.5, 5.0),
+        "vmax": (0.05, 0.30),
+        "amax": (0.25, 3.0),
+    }
+    values = {
+        name: rng.uniform(lower, upper, args.candidates)
+        for name, (lower, upper) in bounds.items()
+    }
+    if args.checkpoint and Path(args.checkpoint).is_file():
+        previous = json.loads(Path(args.checkpoint).read_text()).get("best_candidate", {})
+        local_count = args.candidates // 2
+        for name, (lower, upper) in bounds.items():
+            if name in previous:
+                values[name][-local_count:] = np.clip(
+                    rng.normal(previous[name], (upper - lower) * 0.08, local_count),
+                    lower,
+                    upper,
+                )
+    candidate_kp = jnp.asarray(values["kp"])
+    candidate_kd = jnp.asarray(values["kd"])
+    candidate_vmax = jnp.asarray(values["vmax"])
+    candidate_amax = jnp.asarray(values["amax"])
     kp = jnp.repeat(candidate_kp, scenarios)
     kd = jnp.repeat(candidate_kd, scenarios)
+    vmax = jnp.repeat(candidate_vmax, scenarios)
+    amax = jnp.repeat(candidate_amax, scenarios)
     amplitudes = jnp.asarray((-0.05, -0.03, -0.01, 0.01, 0.03, 0.05))
     requested = data.qpos[:, qpos_i]
     scenario_ids = jnp.tile(jnp.arange(scenarios), args.candidates)
@@ -82,25 +107,48 @@ def benchmark(args: argparse.Namespace) -> int:
     requested = requested.at[jnp.arange(environments), joints].add(scenario_amplitudes)
     torque_limits = jnp.asarray(TORQUE_LIMITS)
 
+    baseline = data.qpos[:, qpos_i]
+    dt = 0.002
+
     def body(carry, _):
-        d, error_sum = carry
+        d, error_sum, target, command_velocity = carry
         q = d.qpos[:, qpos_i]
         dq = d.qvel[:, qvel_i]
-        error = requested - q
-        tau = jnp.clip(kp[:, None] * error - kd[:, None] * dq, -torque_limits, torque_limits)
+        desired_velocity = jnp.clip((requested - target) / dt, -vmax[:, None], vmax[:, None])
+        command_velocity += jnp.clip(
+            desired_velocity - command_velocity,
+            -amax[:, None] * dt,
+            amax[:, None] * dt,
+        )
+        target += command_velocity * dt
+        tracking_error = target - q
+        tau = jnp.clip(
+            kp[:, None] * tracking_error - kd[:, None] * dq,
+            -torque_limits,
+            torque_limits,
+        )
         d = d.replace(ctrl=d.ctrl.at[:, act_i].set(tau))
         d = jax.vmap(mjx.step, in_axes=(None, 0))(model, d)
-        selected = error[jnp.arange(environments), joints]
+        final_error = requested - d.qpos[:, qpos_i]
+        selected = final_error[jnp.arange(environments), joints]
         normalized = selected / jnp.abs(scenario_amplitudes)
-        return (d, error_sum + normalized * normalized), None
+        return (d, error_sum + normalized * normalized, target, command_velocity), None
 
     run = jax.jit(
         lambda d: jax.lax.scan(
-            body, (d, jnp.zeros(environments)), None, length=args.steps
+            body,
+            (
+                d,
+                jnp.zeros(environments),
+                baseline,
+                jnp.zeros((environments, 7)),
+            ),
+            None,
+            length=args.steps,
         )[0]
     )
     started = time.perf_counter()
-    final, error_sum = run(data)
+    final, error_sum, _, _ = run(data)
     jax.block_until_ready(final.qpos)
     elapsed = time.perf_counter() - started
     normalized_rmse = np.asarray(jnp.sqrt(error_sum / args.steps)).reshape(
@@ -123,6 +171,8 @@ def benchmark(args: argparse.Namespace) -> int:
         "best_candidate": {
             "kp": float(candidate_kp[best_index]),
             "kd": float(candidate_kd[best_index]),
+            "vmax": float(candidate_vmax[best_index]),
+            "amax": float(candidate_amax[best_index]),
         },
         "best_scenario_normalized_rmse": normalized_rmse[best_index].tolist(),
         "median_candidate_score": float(np.median(candidate_scores)),
@@ -145,6 +195,8 @@ def parser() -> argparse.ArgumentParser:
     b = sub.add_parser("benchmark")
     b.add_argument("--candidates", type=int, default=32)
     b.add_argument("--steps", type=int, default=1500)
+    b.add_argument("--seed", type=int, default=1)
+    b.add_argument("--checkpoint")
     b.set_defaults(func=benchmark)
     return p
 
