@@ -65,7 +65,7 @@ def run(args: argparse.Namespace) -> int:
         pressure_limit = args.target_total_mib - args.soft_headroom_mib
         if total < args.target_total_mib:
             raise RuntimeError("target VRAM exceeds the detected GPU capacity")
-        if before >= args.target_total_mib - args.launch_headroom_mib:
+        if before >= pressure_limit - args.launch_headroom_mib:
             time.sleep(args.poll_seconds)
             continue
         batch += 1
