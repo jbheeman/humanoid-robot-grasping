@@ -9,4 +9,8 @@ export PYTHONPATH="$ROOT/src${PYTHONPATH:+:$PYTHONPATH}"
 export XLA_PYTHON_CLIENT_PREALLOCATE=false
 export XLA_PYTHON_CLIENT_MEM_FRACTION="${G1_GPU_MEMORY_FRACTION:-0.50}"
 export JAX_PLATFORMS=cuda
+if [[ "${1:-}" == "adaptive" ]]; then
+  shift
+  exec "$PY" -m object_tracking.g1_gpu_supervisor "$@"
+fi
 exec "$PY" -m object_tracking.g1_gpu_sim_cli "$@"

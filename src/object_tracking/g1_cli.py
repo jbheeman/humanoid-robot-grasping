@@ -154,6 +154,11 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("sim", "status"): Route(
         "module", "object_tracking.g1_sim_cli", "show the latest sweep checkpoint", ("status",)
     ),
+    ("sim", "gpu-adaptive"): Route(
+        "module",
+        "object_tracking.g1_gpu_supervisor",
+        "run VRAM-aware batched MJX simulation",
+    ),
 }
 
 
