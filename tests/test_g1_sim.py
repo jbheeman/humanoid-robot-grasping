@@ -1,4 +1,7 @@
-from object_tracking.g1_sim_cli import Candidate, REVISION, _candidate, _wrapper_xml
+import argparse
+import json
+
+from object_tracking.g1_sim_cli import Candidate, REVISION, _candidate, _wrapper_xml, calibrate
 
 
 def test_candidate_sampling_is_deterministic_and_bounded() -> None:
@@ -26,3 +29,16 @@ def test_cpu_sweep_memory_guard_has_a_safe_default() -> None:
         ["sweep"]
     )
     assert args.min_available_mib == 2048
+
+
+def test_encoder_telemetry_calibration_is_read_only(tmp_path) -> None:
+    telemetry = tmp_path / "telemetry.json"
+    telemetry.write_text(
+        json.dumps(
+            [
+                {"timestamp": 0.0, "commanded_q": [0.0] * 7, "measured_q": [0.0] * 7},
+                {"timestamp": 0.1, "commanded_q": [0.1] * 7, "measured_q": [0.05] * 7},
+            ]
+        )
+    )
+    assert calibrate(argparse.Namespace(telemetry=str(telemetry))) == 0

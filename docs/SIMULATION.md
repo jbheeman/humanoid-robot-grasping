@@ -45,3 +45,20 @@ automatically. Before real use, replay a guarded 0.01 rad commissioning jog for
 each joint, capture encoder response, compare p95 error/overshoot/settling and
 torque, then promote one change at a time. Keep the existing arm authorization,
 limit, slew, following-error, drift, and e-stop gates enabled.
+
+## Encoder calibration and guarded validation
+
+Simulation does not replace measured encoder validation. Export one guarded
+seven-joint telemetry JSON file with `timestamp`, `commanded_q`, and
+`measured_q` arrays, then run:
+
+```bash
+scripts/sim/run.sh calibrate guarded_encoder_telemetry.json
+```
+
+Review the generated RMSE and p95 errors before changing any physical gains.
+Use 0.01 rad guarded jogs first, one joint at a time, with the existing
+authorization, following-error, drift, and emergency-stop gates enabled.
+The simulator deliberately prioritizes shoulders and elbow because they are
+the current high-error links; wrists remain in the evaluation but have lower
+ranking weight.

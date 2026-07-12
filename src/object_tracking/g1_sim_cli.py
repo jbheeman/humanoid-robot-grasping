@@ -27,6 +27,7 @@ REVISION = "ae6a8403e272733e9996ef59990880330496177f"
 MODEL_REL = Path(".deps/unitree_mujoco/unitree_robots/g1/g1_29dof.xml")
 OUTPUT_REL = Path("runs/simulation")
 TORQUE_LIMITS = (25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0)
+JOINT_PRIORITY = (1.4, 1.4, 1.2, 1.6, 0.9, 0.9, 0.9)
 _CACHED_SIM: tuple[Any, list[int], list[int], list[int], np.ndarray, np.ndarray] | None = None
 
 
@@ -110,13 +111,18 @@ def _trial(payload: tuple[dict[str, float], int, float, int]) -> dict[str, Any]:
     model, data, qpos, qvel, actuators = _simulation()
     rng = random.Random(seed)
     model.opt.gravity[2] *= rng.uniform(0.98, 1.02)
-    model.dof_damping[:] *= rng.uniform(0.85, 1.15)
+    model.dof_damping[:] *= rng.uniform(0.80, 1.20)
     mujoco.mj_forward(model, data)
     baseline = data.qpos[qpos].copy()
     requested = baseline.copy()
     requested[joint_index] += amplitude
     target = baseline.copy()
     velocity = np.zeros(7)
+    delay_steps = rng.randint(0, 3)
+    delayed_targets = [baseline.copy()] * delay_steps
+    torque_scale = rng.uniform(0.88, 1.0)
+    position_noise = rng.uniform(0.00025, 0.001)
+    velocity_noise = rng.uniform(0.002, 0.01)
     dt = float(model.opt.timestep)
     errors, torques, velocities, drift = [], [], [], []
     settled_at = None
@@ -127,9 +133,15 @@ def _trial(payload: tuple[dict[str, float], int, float, int]) -> dict[str, Any]:
             desired_v = np.clip(delta / 0.004, -c.vmax, c.vmax)
             velocity += np.clip(desired_v - velocity, -c.amax * 0.004, c.amax * 0.004)
             target += velocity * 0.004
-        q = data.qpos[qpos]
-        dq = data.qvel[qvel]
-        tau = c.kp * (target - q) - c.kd * dq
+            delayed_targets.append(target.copy())
+        control_target = delayed_targets.pop(0) if delayed_targets else target
+        q = data.qpos[qpos] + np.asarray(
+            [rng.uniform(-position_noise, position_noise) for _ in qpos]
+        )
+        dq = data.qvel[qvel] + np.asarray(
+            [rng.uniform(-velocity_noise, velocity_noise) for _ in qvel]
+        )
+        tau = torque_scale * (c.kp * (control_target - q) - c.kd * dq)
         tau = np.clip(tau, -np.asarray(TORQUE_LIMITS), np.asarray(TORQUE_LIMITS))
         data.ctrl[actuators] = tau
         mujoco.mj_step(model, data)
@@ -160,6 +172,12 @@ def _trial(payload: tuple[dict[str, float], int, float, int]) -> dict[str, Any]:
         "peak_torque": max(torques),
         "peak_velocity": max(abs(v) for v in velocities),
         "nonselected_drift": max(drift),
+        "domain_randomization": {
+            "delay_steps": delay_steps,
+            "torque_scale": torque_scale,
+            "position_noise_rad": position_noise,
+            "velocity_noise_rad_s": velocity_noise,
+        },
     }
     if not result["ok"]:
         result["failure"] = "settle_or_drift"
@@ -175,7 +193,22 @@ def evaluate(candidate: Candidate, seed: int) -> dict[str, Any]:
     trials = [_trial(item) for item in scenarios]
     valid = [x for x in trials if x.get("ok")]
     failure_rate = 1.0 - len(valid) / len(trials)
-    p95 = float(np.percentile([x.get("p95_error", 1.0) for x in trials], 95))
+    weighted_errors = [
+        x.get("p95_error", 1.0)
+        * JOINT_PRIORITY[RIGHT_ARM_JOINT_NAMES.index(x.get("joint", RIGHT_ARM_JOINT_NAMES[0]))]
+        for x in trials
+    ]
+    p95 = float(np.percentile(weighted_errors, 95))
+    shoulder_elbow_p95 = float(
+        np.percentile(
+            [
+                x.get("p95_error", 1.0)
+                for x in trials
+                if x.get("joint") in RIGHT_ARM_JOINT_NAMES[:4]
+            ],
+            95,
+        )
+    )
     score = p95 + 0.05 * failure_rate + 0.02 * statistics.mean(
         x.get("overshoot", 1.0) for x in trials
     )
@@ -183,6 +216,7 @@ def evaluate(candidate: Candidate, seed: int) -> dict[str, Any]:
         "candidate": asdict(candidate),
         "score": score,
         "p95_error": p95,
+        "shoulder_elbow_p95_error": shoulder_elbow_p95,
         "failure_rate": failure_rate,
         "trials": trials,
     }
@@ -338,6 +372,36 @@ def status(args: argparse.Namespace) -> int:
     return 0
 
 
+def calibrate(args: argparse.Namespace) -> int:
+    """Summarize guarded real encoder telemetry; never contacts the robot."""
+    source = Path(args.telemetry)
+    payload = json.loads(source.read_text())
+    samples = payload.get("samples", payload) if isinstance(payload, dict) else payload
+    if not isinstance(samples, list) or not samples:
+        raise SystemExit("telemetry must be a JSON list or an object containing non-empty samples")
+    timestamps = [float(sample["timestamp"]) for sample in samples]
+    measured = [sample["measured_q"] for sample in samples]
+    commanded = [sample["commanded_q"] for sample in samples]
+    if any(len(values) != 7 for values in measured + commanded):
+        raise SystemExit("every measured_q and commanded_q sample must contain seven right-arm joints")
+    errors = np.asarray(commanded, dtype=float) - np.asarray(measured, dtype=float)
+    summary = {
+        "schema_version": 1,
+        "source": str(source),
+        "samples": len(samples),
+        "duration_s": timestamps[-1] - timestamps[0],
+        "sample_hz": (len(samples) - 1) / max(timestamps[-1] - timestamps[0], 1e-9),
+        "per_joint_rmse_rad": np.sqrt(np.mean(errors * errors, axis=0)).tolist(),
+        "per_joint_p95_error_rad": np.percentile(np.abs(errors), 95, axis=0).tolist(),
+        "real_robot_validated": False,
+        "next_step": "review this telemetry before promoting any simulated gain",
+    }
+    destination = root() / "runs/simulation/telemetry/latest_fit.json"
+    _atomic_json(destination, summary)
+    print(json.dumps(summary, indent=2))
+    return 0
+
+
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     sub = p.add_subparsers(dest="command", required=True)
@@ -368,6 +432,9 @@ def parser() -> argparse.ArgumentParser:
     s = sub.add_parser("status")
     s.add_argument("--verbose", action="store_true", help="include every trial in the checkpoint")
     s.set_defaults(func=status)
+    c = sub.add_parser("calibrate")
+    c.add_argument("telemetry", help="guarded seven-joint encoder telemetry JSON")
+    c.set_defaults(func=calibrate)
     return p
 
 

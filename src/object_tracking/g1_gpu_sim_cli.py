@@ -169,7 +169,9 @@ def benchmark(args: argparse.Namespace) -> int:
     normalized_rmse = np.asarray(jnp.sqrt(error_sum / args.steps)).reshape(
         args.candidates, scenarios
     )
-    candidate_scores = np.percentile(normalized_rmse, 95, axis=1)
+    joint_weights = np.repeat(np.asarray((1.4, 1.4, 1.2, 1.6, 0.9, 0.9, 0.9)), 6)
+    raw_candidate_scores = np.percentile(normalized_rmse, 95, axis=1)
+    candidate_scores = np.percentile(normalized_rmse * joint_weights, 95, axis=1)
     best_index = int(candidate_scores.argmin())
     elite_indices = np.argsort(candidate_scores)[: min(16, args.candidates)]
 
@@ -194,6 +196,8 @@ def benchmark(args: argparse.Namespace) -> int:
         "wall_seconds_including_compile": elapsed,
         "steps_per_second": environments * args.steps / elapsed,
         "best_normalized_p95_rmse": float(candidate_scores[best_index]),
+        "best_raw_normalized_p95_rmse": float(raw_candidate_scores[best_index]),
+        "shoulder_elbow_prioritized": True,
         "best_candidate": candidate_payload(best_index),
         "elite_candidates": [candidate_payload(int(index)) for index in elite_indices],
         "best_scenario_normalized_rmse": normalized_rmse[best_index].tolist(),
