@@ -121,6 +121,11 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("tune", "joint-audit"): Route(
         "module", "object_tracking.tuning_cli", "audit the 29-DOF joint contract", ("joint-audit",)
     ),
+    ("tune", "future-eval"): Route(
+        "module",
+        "object_tracking.future_prediction_cli",
+        "score offline bunny future-position predictions",
+    ),
     ("vision", "snapshot"): Route(
         "module", "object_tracking.g1_vision_cli", "capture or diagnose a G1 camera stream"
     ),

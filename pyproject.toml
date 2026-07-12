@@ -50,6 +50,7 @@ g1-scan = "object_tracking.g1_scan_cli:main"
 arm-calibration = "object_tracking.arm_tracking.calibration_cli:main"
 g1-tune = "object_tracking.tuning_cli:main"
 g1-arm = "object_tracking.arm_commissioning_cli:main"
+g1-future-eval = "object_tracking.future_prediction_cli:main"
 g1 = "object_tracking.g1_cli:main"
 
 [build-system]
