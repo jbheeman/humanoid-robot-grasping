@@ -6,11 +6,20 @@ from datetime import datetime, timezone
 import json
 import os
 from pathlib import Path
+import signal
 import subprocess
 import time
 from typing import Any
 
 from object_tracking.g1_sim_cli import root
+
+_ACTIVE_PROCESS: subprocess.Popen[str] | None = None
+
+
+def _terminate_active(_signum: int, _frame: Any) -> None:
+    if _ACTIVE_PROCESS is not None and _ACTIVE_PROCESS.poll() is None:
+        os.killpg(_ACTIVE_PROCESS.pid, signal.SIGTERM)
+    raise SystemExit(128 + _signum)
 
 
 def read_vram(command: str) -> tuple[int, int]:
@@ -51,6 +60,9 @@ def _write(path: Path, payload: dict[str, Any]) -> None:
 
 
 def run(args: argparse.Namespace) -> int:
+    global _ACTIVE_PROCESS
+    signal.signal(signal.SIGTERM, _terminate_active)
+    signal.signal(signal.SIGINT, _terminate_active)
     output = root() / "runs/simulation-gpu/adaptive-status.json"
     log_dir = root() / "runs/simulation-gpu/adaptive"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -86,7 +98,9 @@ def run(args: argparse.Namespace) -> int:
                 stderr=subprocess.STDOUT,
                 text=True,
                 env=child_env,
+                start_new_session=True,
             )
+            _ACTIVE_PROCESS = process
             peak = before
             aborted = False
             while process.poll() is None:
@@ -95,13 +109,14 @@ def run(args: argparse.Namespace) -> int:
                 peak = max(peak, used)
                 if used >= pressure_limit:
                     aborted = True
-                    process.terminate()
+                    os.killpg(process.pid, signal.SIGTERM)
                     try:
                         process.wait(timeout=10)
                     except subprocess.TimeoutExpired:
-                        process.kill()
+                        os.killpg(process.pid, signal.SIGKILL)
                     break
             return_code = process.wait()
+            _ACTIVE_PROCESS = None
         after, _ = read_vram(args.nvidia_smi)
         entry = {
             "batch": batch,
