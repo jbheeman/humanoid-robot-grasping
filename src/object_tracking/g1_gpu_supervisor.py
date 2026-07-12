@@ -37,9 +37,9 @@ def next_candidate_count(
     if aborted:
         return max(minimum, int(current * 0.60))
     spare = target_mib - peak_mib
-    if spare < 256:
+    if spare < 512:
         return current
-    factor = 1.15 if spare < 768 else (1.40 if spare < 2048 else 1.80)
+    factor = 1.05 if spare < 1024 else (1.15 if spare < 2048 else 1.35)
     return min(maximum, max(current + 1, int(current * factor)))
 
 
@@ -119,7 +119,7 @@ def run(args: argparse.Namespace) -> int:
         candidates = next_candidate_count(
             candidates,
             peak_mib=peak,
-            target_mib=args.target_total_mib,
+            target_mib=args.target_total_mib - args.soft_headroom_mib,
             aborted=aborted or return_code != 0,
             minimum=args.min_candidates,
             maximum=args.max_candidates,
@@ -153,7 +153,8 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--max-candidates", type=int, default=1024)
     p.add_argument("--target-total-mib", type=int, default=11264)
     p.add_argument("--launch-headroom-mib", type=int, default=512)
-    p.add_argument("--poll-seconds", type=float, default=1.0)
+    p.add_argument("--soft-headroom-mib", type=int, default=512)
+    p.add_argument("--poll-seconds", type=float, default=0.25)
     p.add_argument("--jax-memory-fraction", type=float, default=0.55)
     p.add_argument("--nvidia-smi", default="/usr/lib/wsl/lib/nvidia-smi")
     p.set_defaults(func=run)

@@ -20,8 +20,8 @@ wrist movements cannot unfairly dominate the result.
 
 For a long shared-GPU run that scales batches toward 11 GB total VRAM, run
 `scripts/sim/gpu-run.sh adaptive --hours 24`. The supervisor samples total
-GPU memory every second. It
-grows the next process-isolated batch when capacity is available and
+GPU memory four times per second. It keeps a 512 MiB soft margin below the
+hard ceiling, grows the next process-isolated batch when capacity is available, and
 terminates and retries smaller if total usage reaches 11 GB. Each child exit
 releases JAX compilation caches and device buffers. It cannot force unrelated
 applications to release VRAM, so it waits when less than 512 MiB launch
