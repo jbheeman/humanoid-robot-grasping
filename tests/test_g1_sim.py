@@ -43,6 +43,7 @@ def test_cpu_sweep_memory_guard_has_a_safe_default() -> None:
         ["sweep"]
     )
     assert args.min_available_mib == 2048
+    assert args.replays_per_candidate == 1
 
 
 def test_validation_uses_independent_replays_by_default() -> None:

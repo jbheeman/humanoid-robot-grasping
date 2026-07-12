@@ -223,6 +223,27 @@ def evaluate(candidate: Candidate, seed: int) -> dict[str, Any]:
     }
 
 
+def evaluate_repeated(payload: tuple[Candidate, int, int]) -> dict[str, Any]:
+    """Score a candidate by its worst practical randomized replay metrics."""
+    candidate, seed, replays = payload
+    samples = [evaluate(candidate, seed + replay * 100_003) for replay in range(replays)]
+    if replays == 1:
+        return samples[0]
+    scores = [sample["score"] for sample in samples]
+    errors = [sample["p95_error"] for sample in samples]
+    shoulder_elbow = [sample["shoulder_elbow_p95_error"] for sample in samples]
+    failures = [sample["failure_rate"] for sample in samples]
+    return {
+        "candidate": asdict(candidate),
+        "score": float(np.percentile(scores, 90)),
+        "p95_error": float(np.percentile(errors, 90)),
+        "shoulder_elbow_p95_error": float(np.percentile(shoulder_elbow, 90)),
+        "failure_rate": float(max(failures)),
+        "randomized_replays": replays,
+        "trials": [trial for sample in samples for trial in sample["trials"]],
+    }
+
+
 def _atomic_json(path: Path, payload: Any) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp = path.with_suffix(".tmp")
@@ -363,7 +384,11 @@ def sweep(args: argparse.Namespace) -> int:
         with ProcessPoolExecutor(
             max_workers=args.workers, mp_context=process_context
         ) as pool:
-            evaluated = list(pool.map(evaluate, batch, range(args.seed + index, args.seed + index + len(batch))))
+            payloads = [
+                (candidate, args.seed + candidate_index, args.replays_per_candidate)
+                for candidate_index, candidate in enumerate(batch, start=index)
+            ]
+            evaluated = list(pool.map(evaluate_repeated, payloads))
         for item in evaluated:
             results.append(item)
             item["method"] = method
@@ -389,6 +414,7 @@ def sweep(args: argparse.Namespace) -> int:
             "maximum_hours": args.max_hours,
             "plateau_hours": args.plateau_hours,
             "no_material_improvement_hours": (time.time() - best_time) / 3600,
+            "replays_per_candidate": args.replays_per_candidate,
         }
         _atomic_json(run / "checkpoint.json", summary)
         _atomic_json(latest, {"run": str(run.relative_to(root()))})
@@ -563,6 +589,12 @@ def parser() -> argparse.ArgumentParser:
     w.add_argument("--plateau-hours", type=float, default=12.0)
     w.add_argument("--max-candidates", type=int)
     w.add_argument(
+        "--replays-per-candidate",
+        type=int,
+        default=1,
+        help="independent randomized replays aggregated into every candidate score",
+    )
+    w.add_argument(
         "--min-available-mib",
         type=int,
         default=2048,
@@ -597,6 +629,8 @@ def main(argv: list[str] | None = None) -> int:
     args = parser().parse_args(argv)
     if getattr(args, "workers", 1) < 1:
         raise SystemExit("--workers must be positive")
+    if getattr(args, "replays_per_candidate", 1) < 1:
+        raise SystemExit("--replays-per-candidate must be positive")
     return int(args.func(args))
 
 
