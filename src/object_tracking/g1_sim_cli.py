@@ -240,6 +240,13 @@ def sweep(args: argparse.Namespace) -> int:
         }
         _atomic_json(run / "checkpoint.json", summary)
         _atomic_json(latest, {"run": str(run.relative_to(root()))})
+        elapsed = max(time.time() - started, 0.001)
+        print(
+            f"[{summary['elapsed_hours']:.2f}h] evaluated={index} "
+            f"rate={index / elapsed * 3600:.0f}/h "
+            f"best_score={best['score']:.6f} failures={best['failure_rate']:.1%}",
+            flush=True,
+        )
         if time.time() - started >= args.min_hours * 3600 and time.time() - best_time >= args.plateau_hours * 3600:
             break
     summary["status"] = "complete"
@@ -251,13 +258,35 @@ def sweep(args: argparse.Namespace) -> int:
     return 0
 
 
-def status(_: argparse.Namespace) -> int:
+def status(args: argparse.Namespace) -> int:
     latest = root() / OUTPUT_REL / "latest.json"
     if not latest.is_file():
         print("No sweep has been started.")
         return 1
     pointer = json.loads(latest.read_text())
-    print((root() / pointer["run"] / "checkpoint.json").read_text(), end="")
+    checkpoint = json.loads((root() / pointer["run"] / "checkpoint.json").read_text())
+    if args.verbose:
+        print(json.dumps(checkpoint, indent=2, sort_keys=True))
+        return 0
+    elapsed = float(checkpoint.get("elapsed_hours", 0.0))
+    evaluated = int(checkpoint.get("evaluated", 0))
+    best = checkpoint.get("best") or {}
+    compact = {
+        "status": checkpoint.get("status"),
+        "started_at": checkpoint.get("started_at"),
+        "elapsed_hours": round(elapsed, 3),
+        "minimum_hours": 48,
+        "maximum_hours": 72,
+        "minimum_remaining_hours": round(max(0.0, 48 - elapsed), 3),
+        "evaluated": evaluated,
+        "candidates_per_hour": round(evaluated / elapsed) if elapsed else 0,
+        "best_candidate": best.get("candidate"),
+        "best_score": best.get("score"),
+        "best_p95_error": best.get("p95_error"),
+        "best_failure_rate": best.get("failure_rate"),
+        "real_robot_validated": checkpoint.get("real_robot_validated", False),
+    }
+    print(json.dumps(compact, indent=2))
     return 0
 
 
@@ -278,6 +307,7 @@ def parser() -> argparse.ArgumentParser:
     w.add_argument("--max-candidates", type=int)
     w.set_defaults(func=sweep)
     s = sub.add_parser("status")
+    s.add_argument("--verbose", action="store_true", help="include every trial in the checkpoint")
     s.set_defaults(func=status)
     return p
 
