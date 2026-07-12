@@ -62,6 +62,7 @@ def run(args: argparse.Namespace) -> int:
     status: dict[str, Any] = {}
     while time.time() < stop_at:
         before, total = read_vram(args.nvidia_smi)
+        pressure_limit = args.target_total_mib - args.soft_headroom_mib
         if total < args.target_total_mib:
             raise RuntimeError("target VRAM exceeds the detected GPU capacity")
         if before >= args.target_total_mib - args.launch_headroom_mib:
@@ -92,7 +93,7 @@ def run(args: argparse.Namespace) -> int:
                 time.sleep(args.poll_seconds)
                 used, _ = read_vram(args.nvidia_smi)
                 peak = max(peak, used)
-                if used >= args.target_total_mib:
+                if used >= pressure_limit:
                     aborted = True
                     process.terminate()
                     try:
@@ -128,6 +129,7 @@ def run(args: argparse.Namespace) -> int:
             "schema_version": 1,
             "status": "running",
             "target_total_vram_mib": args.target_total_mib,
+            "pressure_limit_vram_mib": pressure_limit,
             "detected_total_vram_mib": total,
             "next_candidates": candidates,
             "elapsed_hours": (time.time() - started) / 3600,
@@ -153,7 +155,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--max-candidates", type=int, default=1024)
     p.add_argument("--target-total-mib", type=int, default=11264)
     p.add_argument("--launch-headroom-mib", type=int, default=512)
-    p.add_argument("--soft-headroom-mib", type=int, default=512)
+    p.add_argument("--soft-headroom-mib", type=int, default=1024)
     p.add_argument("--poll-seconds", type=float, default=0.25)
     p.add_argument("--jax-memory-fraction", type=float, default=0.55)
     p.add_argument("--nvidia-smi", default="/usr/lib/wsl/lib/nvidia-smi")
