@@ -4,7 +4,7 @@ from object_tracking.g1_gpu_supervisor import next_candidate_count
 def test_adaptive_batch_grows_when_vram_is_available() -> None:
     assert next_candidate_count(
         64, peak_mib=5000, target_mib=11264, aborted=False, minimum=8, maximum=1024
-    ) == 86
+    ) == 96
 
 
 def test_adaptive_batch_backs_off_after_pressure() -> None:

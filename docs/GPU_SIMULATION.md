@@ -28,10 +28,10 @@ applications to release VRAM, so it waits when less than 256 MiB launch
 headroom remains.
 
 Each batch independently samples `kp`, `kd`, `vmax`, and `amax`; half
-of later candidates explore around the best checkpoint and half continue
+of later candidates explore around the best 16 checkpointed candidates and half continue
 global exploration. The lowest robust tracking-error result is always written
 to `runs/simulation-gpu/best-checkpoint.json`. The default run stops after
-one hour without at least 0.5% improvement, or after six hours maximum, and
+30 minutes without at least 0.5% improvement, or after six hours maximum, and
 automatically resumes its search around an existing checkpoint.
 
 The pelvis is welded. MJX 3.3 does not support one collision pair in Unitree's

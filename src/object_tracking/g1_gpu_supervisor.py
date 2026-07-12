@@ -48,7 +48,7 @@ def next_candidate_count(
     spare = target_mib - peak_mib
     if spare < 512:
         return current
-    factor = 1.05 if spare < 1024 else (1.15 if spare < 2048 else 1.35)
+    factor = 1.05 if spare < 1024 else (1.20 if spare < 2048 else 1.50)
     return min(maximum, max(current + 1, int(current * factor)))
 
 
@@ -205,7 +205,7 @@ def run(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("--hours", type=float, default=6.0)
-    p.add_argument("--plateau-hours", type=float, default=1.0)
+    p.add_argument("--plateau-hours", type=float, default=0.5)
     p.add_argument("--minimum-relative-improvement", type=float, default=0.005)
     p.add_argument("--seed", type=int, default=20260712)
     p.add_argument("--steps", type=int, default=1500)

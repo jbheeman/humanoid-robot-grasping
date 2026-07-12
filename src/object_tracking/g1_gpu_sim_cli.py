@@ -82,12 +82,17 @@ def benchmark(args: argparse.Namespace) -> int:
         for name, (lower, upper) in bounds.items()
     }
     if args.checkpoint and Path(args.checkpoint).is_file():
-        previous = json.loads(Path(args.checkpoint).read_text()).get("best_candidate", {})
+        checkpoint = json.loads(Path(args.checkpoint).read_text())
+        elites = checkpoint.get("elite_candidates") or [checkpoint.get("best_candidate", {})]
         local_count = args.candidates // 2
+        elite_indices = rng.integers(0, len(elites), local_count)
         for name, (lower, upper) in bounds.items():
-            if name in previous:
+            centers = np.asarray(
+                [elites[index].get(name, (lower + upper) / 2) for index in elite_indices]
+            )
+            if len(centers):
                 values[name][-local_count:] = np.clip(
-                    rng.normal(previous[name], (upper - lower) * 0.08, local_count),
+                    rng.normal(centers, (upper - lower) * 0.06, local_count),
                     lower,
                     upper,
                 )
@@ -156,6 +161,17 @@ def benchmark(args: argparse.Namespace) -> int:
     )
     candidate_scores = np.percentile(normalized_rmse, 95, axis=1)
     best_index = int(candidate_scores.argmin())
+    elite_indices = np.argsort(candidate_scores)[: min(16, args.candidates)]
+
+    def candidate_payload(index: int) -> dict[str, float]:
+        return {
+            "kp": float(candidate_kp[index]),
+            "kd": float(candidate_kd[index]),
+            "vmax": float(candidate_vmax[index]),
+            "amax": float(candidate_amax[index]),
+            "score": float(candidate_scores[index]),
+        }
+
     result = {
         "schema_version": 1,
         "backend": "mujoco-mjx",
@@ -168,12 +184,8 @@ def benchmark(args: argparse.Namespace) -> int:
         "wall_seconds_including_compile": elapsed,
         "steps_per_second": environments * args.steps / elapsed,
         "best_normalized_p95_rmse": float(candidate_scores[best_index]),
-        "best_candidate": {
-            "kp": float(candidate_kp[best_index]),
-            "kd": float(candidate_kd[best_index]),
-            "vmax": float(candidate_vmax[best_index]),
-            "amax": float(candidate_amax[best_index]),
-        },
+        "best_candidate": candidate_payload(best_index),
+        "elite_candidates": [candidate_payload(int(index)) for index in elite_indices],
         "best_scenario_normalized_rmse": normalized_rmse[best_index].tolist(),
         "median_candidate_score": float(np.median(candidate_scores)),
         "real_robot_validated": False,
