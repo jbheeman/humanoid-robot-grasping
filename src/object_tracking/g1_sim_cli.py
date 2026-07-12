@@ -375,10 +375,27 @@ def status(args: argparse.Namespace) -> int:
 def calibrate(args: argparse.Namespace) -> int:
     """Summarize guarded real encoder telemetry; never contacts the robot."""
     source = Path(args.telemetry)
-    payload = json.loads(source.read_text())
-    samples = payload.get("samples", payload) if isinstance(payload, dict) else payload
+    if source.suffix == ".jsonl":
+        raw_samples = [json.loads(line) for line in source.read_text().splitlines() if line.strip()]
+        samples = []
+        for sample in raw_samples:
+            measured = sample.get("measured_arm_q")
+            commanded = sample.get("commanded_arm_q")
+            if not isinstance(measured, list) or not isinstance(commanded, list):
+                continue
+            if len(measured) == 14 and len(commanded) == 14:
+                measured, commanded = measured[-7:], commanded[-7:]
+            timestamp = sample.get("timestamp")
+            if isinstance(timestamp, str):
+                timestamp = datetime.fromisoformat(timestamp.replace("Z", "+00:00")).timestamp()
+            samples.append(
+                {"timestamp": timestamp, "measured_q": measured, "commanded_q": commanded}
+            )
+    else:
+        payload = json.loads(source.read_text())
+        samples = payload.get("samples", payload) if isinstance(payload, dict) else payload
     if not isinstance(samples, list) or not samples:
-        raise SystemExit("telemetry must be a JSON list or an object containing non-empty samples")
+        raise SystemExit("telemetry must contain non-empty commanded and measured joint samples")
     timestamps = [float(sample["timestamp"]) for sample in samples]
     measured = [sample["measured_q"] for sample in samples]
     commanded = [sample["commanded_q"] for sample in samples]

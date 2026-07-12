@@ -42,3 +42,26 @@ def test_encoder_telemetry_calibration_is_read_only(tmp_path) -> None:
         )
     )
     assert calibrate(argparse.Namespace(telemetry=str(telemetry))) == 0
+
+
+def test_commissioning_jsonl_calibration_extracts_right_arm(tmp_path) -> None:
+    telemetry = tmp_path / "telemetry.jsonl"
+    telemetry.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-07-12T00:00:00+00:00",
+                "commanded_arm_q": [0.0] * 7 + [0.1] * 7,
+                "measured_arm_q": [0.0] * 7 + [0.05] * 7,
+            }
+        )
+        + "\n"
+        + json.dumps(
+            {
+                "timestamp": "2026-07-12T00:00:00.100000+00:00",
+                "commanded_arm_q": [0.0] * 7 + [0.1] * 7,
+                "measured_arm_q": [0.0] * 7 + [0.05] * 7,
+            }
+        )
+        + "\n"
+    )
+    assert calibrate(argparse.Namespace(telemetry=str(telemetry))) == 0

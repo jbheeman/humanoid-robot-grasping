@@ -48,12 +48,13 @@ limit, slew, following-error, drift, and e-stop gates enabled.
 
 ## Encoder calibration and guarded validation
 
-Simulation does not replace measured encoder validation. Export one guarded
-seven-joint telemetry JSON file with `timestamp`, `commanded_q`, and
-`measured_q` arrays, then run:
+Simulation does not replace measured encoder validation. The existing guarded
+commissioning recorder writes `telemetry.jsonl` at 20 Hz with 14-arm bridge
+vectors; the calibration command automatically selects the seven right-arm
+slots. After a guarded session, run:
 
 ```bash
-scripts/sim/run.sh calibrate guarded_encoder_telemetry.json
+scripts/sim/run.sh calibrate +  runs/research/arm_commissioning/SESSION_ID/telemetry.jsonl
 ```
 
 Review the generated RMSE and p95 errors before changing any physical gains.
