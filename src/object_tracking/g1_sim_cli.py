@@ -10,6 +10,7 @@ from dataclasses import asdict, dataclass
 from datetime import datetime, timezone
 import json
 import math
+import multiprocessing
 import os
 from pathlib import Path
 import random
@@ -25,6 +26,7 @@ REVISION = "ae6a8403e272733e9996ef59990880330496177f"
 MODEL_REL = Path(".deps/unitree_mujoco/unitree_robots/g1/g1_29dof.xml")
 OUTPUT_REL = Path("runs/simulation")
 TORQUE_LIMITS = (25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0)
+_CACHED_SIM: tuple[Any, list[int], list[int], list[int], np.ndarray, np.ndarray] | None = None
 
 
 def root() -> Path:
@@ -78,12 +80,33 @@ def _load() -> tuple[Any, Any, list[int], list[int], list[int]]:
     return model, data, qpos, qvel, actuators
 
 
+def _simulation() -> tuple[Any, Any, list[int], list[int], list[int]]:
+    """Reuse one model per worker; forked immutable mesh pages stay shared."""
+    import mujoco
+
+    global _CACHED_SIM
+    if _CACHED_SIM is None:
+        model, _, qpos, qvel, actuators = _load()
+        _CACHED_SIM = (
+            model,
+            qpos,
+            qvel,
+            actuators,
+            model.opt.gravity.copy(),
+            model.dof_damping.copy(),
+        )
+    model, qpos, qvel, actuators, gravity, damping = _CACHED_SIM
+    model.opt.gravity[:] = gravity
+    model.dof_damping[:] = damping
+    return model, mujoco.MjData(model), qpos, qvel, actuators
+
+
 def _trial(payload: tuple[dict[str, float], int, float, int]) -> dict[str, Any]:
     import mujoco
 
     raw, joint_index, amplitude, seed = payload
     c = Candidate(**raw)
-    model, data, qpos, qvel, actuators = _load()
+    model, data, qpos, qvel, actuators = _simulation()
     rng = random.Random(seed)
     model.opt.gravity[2] *= rng.uniform(0.98, 1.02)
     model.dof_damping[:] *= rng.uniform(0.85, 1.15)
@@ -219,9 +242,13 @@ def sweep(args: argparse.Namespace) -> int:
     best_time = started
     index = 0
     deadline = started + args.max_hours * 3600
+    _simulation()
+    process_context = multiprocessing.get_context("fork")
     while time.time() < deadline and (args.max_candidates is None or index < args.max_candidates):
         batch = [_candidate(index + i, args.seed) for i in range(args.workers)]
-        with ProcessPoolExecutor(max_workers=args.workers) as pool:
+        with ProcessPoolExecutor(
+            max_workers=args.workers, mp_context=process_context
+        ) as pool:
             evaluated = list(pool.map(evaluate, batch, range(args.seed + index, args.seed + index + len(batch))))
         for item in evaluated:
             results.append(item)
