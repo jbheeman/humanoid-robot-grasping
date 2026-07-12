@@ -66,16 +66,20 @@ def doctor(_: argparse.Namespace) -> int:
 def benchmark(args: argparse.Namespace) -> int:
     jax, jnp, mjx, model, qpos, qvel, actuators = _load()
     one = mjx.make_data(model)
-    data = jax.tree.map(lambda x: jnp.repeat(x[None, ...], args.envs, axis=0), one)
+    scenarios = 7 * 6
+    environments = args.candidates * scenarios
+    data = jax.tree.map(lambda x: jnp.repeat(x[None, ...], environments, axis=0), one)
     qpos_i, qvel_i, act_i = map(jnp.asarray, (qpos, qvel, actuators))
-    kp = jnp.linspace(35.0, 80.0, args.envs)
-    kd = jnp.linspace(0.8, 3.5, args.envs)
+    candidate_kp = jnp.linspace(35.0, 80.0, args.candidates)
+    candidate_kd = jnp.linspace(3.5, 0.8, args.candidates)
+    kp = jnp.repeat(candidate_kp, scenarios)
+    kd = jnp.repeat(candidate_kd, scenarios)
     amplitudes = jnp.asarray((-0.05, -0.03, -0.01, 0.01, 0.03, 0.05))
     requested = data.qpos[:, qpos_i]
-    joints = jnp.arange(args.envs) % 7
-    requested = requested.at[jnp.arange(args.envs), joints].add(
-        amplitudes[jnp.arange(args.envs) % 6]
-    )
+    scenario_ids = jnp.tile(jnp.arange(scenarios), args.candidates)
+    joints = scenario_ids // 6
+    scenario_amplitudes = amplitudes[scenario_ids % 6]
+    requested = requested.at[jnp.arange(environments), joints].add(scenario_amplitudes)
     torque_limits = jnp.asarray(TORQUE_LIMITS)
 
     def body(carry, _):
@@ -87,32 +91,41 @@ def benchmark(args: argparse.Namespace) -> int:
         d = d.replace(ctrl=d.ctrl.at[:, act_i].set(tau))
         d = jax.vmap(mjx.step, in_axes=(None, 0))(model, d)
         selected = error[jnp.arange(args.envs), joints]
-        return (d, error_sum + selected * selected), None
+        normalized = selected / jnp.abs(scenario_amplitudes)
+        return (d, error_sum + normalized * normalized), None
 
-    run = jax.jit(lambda d: jax.lax.scan(body, (d, jnp.zeros(args.envs)), None, length=args.steps)[0])
+    run = jax.jit(
+        lambda d: jax.lax.scan(
+            body, (d, jnp.zeros(environments)), None, length=args.steps
+        )[0]
+    )
     started = time.perf_counter()
     final, error_sum = run(data)
     jax.block_until_ready(final.qpos)
     elapsed = time.perf_counter() - started
-    rmse = np.asarray(jnp.sqrt(error_sum / args.steps))
-    best_index = int(rmse.argmin())
+    normalized_rmse = np.asarray(jnp.sqrt(error_sum / args.steps)).reshape(
+        args.candidates, scenarios
+    )
+    candidate_scores = np.percentile(normalized_rmse, 95, axis=1)
+    best_index = int(candidate_scores.argmin())
     result = {
         "schema_version": 1,
         "backend": "mujoco-mjx",
         "device": str(jax.devices("gpu")[0]),
-        "environments": args.envs,
+        "candidates": args.candidates,
+        "scenarios_per_candidate": scenarios,
+        "environments": environments,
         "steps_per_environment": args.steps,
-        "simulated_steps": args.envs * args.steps,
+        "simulated_steps": environments * args.steps,
         "wall_seconds_including_compile": elapsed,
-        "steps_per_second": args.envs * args.steps / elapsed,
-        "best_rmse": float(rmse.min()),
+        "steps_per_second": environments * args.steps / elapsed,
+        "best_normalized_p95_rmse": float(candidate_scores[best_index]),
         "best_candidate": {
-            "kp": float(kp[best_index]),
-            "kd": float(kd[best_index]),
-            "joint": RIGHT_ARM_JOINT_NAMES[best_index % 7],
-            "amplitude": float(amplitudes[best_index % 6]),
+            "kp": float(candidate_kp[best_index]),
+            "kd": float(candidate_kd[best_index]),
         },
-        "median_rmse": float(np.median(rmse)),
+        "best_scenario_normalized_rmse": normalized_rmse[best_index].tolist(),
+        "median_candidate_score": float(np.median(candidate_scores)),
         "real_robot_validated": False,
         "contacts_enabled": False,
         "created_at": datetime.now(timezone.utc).isoformat(),
@@ -130,8 +143,8 @@ def parser() -> argparse.ArgumentParser:
     d = sub.add_parser("doctor")
     d.set_defaults(func=doctor)
     b = sub.add_parser("benchmark")
-    b.add_argument("--envs", type=int, default=256)
-    b.add_argument("--steps", type=int, default=500)
+    b.add_argument("--candidates", type=int, default=32)
+    b.add_argument("--steps", type=int, default=1500)
     b.set_defaults(func=benchmark)
     return p
 
