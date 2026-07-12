@@ -1,16 +1,23 @@
 import argparse
 import json
 
-from object_tracking.g1_sim_cli import Candidate, REVISION, _candidate, _wrapper_xml, calibrate
+from object_tracking.g1_sim_cli import (
+    Candidate,
+    REVISION,
+    _candidate,
+    _candidate_batch,
+    _wrapper_xml,
+    calibrate,
+)
 
 
 def test_candidate_sampling_is_deterministic_and_bounded() -> None:
     assert _candidate(5, 7) == _candidate(5, 7)
     c = _candidate(5, 7)
-    assert 30 <= c.kp <= 80
-    assert 0.5 <= c.kd <= 4
-    assert 0.05 <= c.vmax <= 0.25
-    assert 0.25 <= c.amax <= 2
+    assert 20 <= c.kp <= 110
+    assert 0.3 <= c.kd <= 6
+    assert 0.03 <= c.vmax <= 0.35
+    assert 0.15 <= c.amax <= 4
 
 
 def test_wrapper_welds_pelvis_and_never_adds_robot_io() -> None:
@@ -22,6 +29,13 @@ def test_wrapper_welds_pelvis_and_never_adds_robot_io() -> None:
 
 def test_candidate_schema() -> None:
     assert Candidate(60, 1.5, 0.1, 0.5).kp == 60
+
+
+def test_sobol_candidate_batch_is_deterministic_and_diverse() -> None:
+    first = _candidate_batch(0, 8, 7, method="sobol", elites=[], best=None)
+    second = _candidate_batch(0, 8, 7, method="sobol", elites=[], best=None)
+    assert first == second
+    assert len({candidate.kp for candidate in first}) == 8
 
 
 def test_cpu_sweep_memory_guard_has_a_safe_default() -> None:

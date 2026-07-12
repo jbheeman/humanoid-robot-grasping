@@ -28,6 +28,7 @@ MODEL_REL = Path(".deps/unitree_mujoco/unitree_robots/g1/g1_29dof.xml")
 OUTPUT_REL = Path("runs/simulation")
 TORQUE_LIMITS = (25.0, 25.0, 25.0, 25.0, 25.0, 5.0, 5.0)
 JOINT_PRIORITY = (1.4, 1.4, 1.2, 1.6, 0.9, 0.9, 0.9)
+SEARCH_BOUNDS = ((20.0, 110.0), (0.3, 6.0), (0.03, 0.35), (0.15, 4.0))
 _CACHED_SIM: tuple[Any, list[int], list[int], list[int], np.ndarray, np.ndarray] | None = None
 
 
@@ -257,23 +258,74 @@ def smoke(args: argparse.Namespace) -> int:
 
 
 def _candidate(index: int, seed: int, elites: list[dict[str, float]] = []) -> Candidate:
-    # Low-discrepancy-like deterministic sampling without materializing an unbounded grid.
+    """Random candidate with optional local refinement around a shared elite."""
     rng = random.Random(seed + index * 104729)
     candidate = Candidate(
-        kp=rng.uniform(30.0, 80.0),
-        kd=rng.uniform(0.5, 4.0),
-        vmax=rng.uniform(0.05, 0.25),
-        amax=rng.uniform(0.25, 2.0),
+        kp=rng.uniform(*SEARCH_BOUNDS[0]),
+        kd=rng.uniform(*SEARCH_BOUNDS[1]),
+        vmax=rng.uniform(*SEARCH_BOUNDS[2]),
+        amax=rng.uniform(*SEARCH_BOUNDS[3]),
     )
     if elites and index % 2:
         elite = elites[index % len(elites)]
         candidate = Candidate(
-            kp=min(80.0, max(30.0, rng.gauss(elite["kp"], 4.0))),
-            kd=min(4.0, max(0.5, rng.gauss(elite["kd"], 0.35))),
-            vmax=min(0.25, max(0.05, rng.gauss(elite["vmax"], 0.025))),
-            amax=min(2.0, max(0.25, rng.gauss(elite["amax"], 0.25))),
+            kp=np.clip(rng.gauss(elite["kp"], 7.0), *SEARCH_BOUNDS[0]),
+            kd=np.clip(rng.gauss(elite["kd"], 0.5), *SEARCH_BOUNDS[1]),
+            vmax=np.clip(rng.gauss(elite["vmax"], 0.035), *SEARCH_BOUNDS[2]),
+            amax=np.clip(rng.gauss(elite["amax"], 0.4), *SEARCH_BOUNDS[3]),
         )
     return candidate
+
+
+def _candidate_batch(
+    index: int,
+    count: int,
+    seed: int,
+    *,
+    method: str,
+    elites: list[dict[str, float]],
+    best: dict[str, Any] | None,
+) -> list[Candidate]:
+    if method == "random":
+        return [_candidate(index + offset, seed, elites) for offset in range(count)]
+    if method == "exploit":
+        seeds = elites + ([] if best is None else [best["candidate"]])
+        return [_candidate(index + offset, seed + 7919, seeds) for offset in range(count)]
+    if method != "sobol":
+        raise ValueError(f"unknown search method: {method}")
+    try:
+        from scipy.stats import qmc
+
+        sampler = qmc.Sobol(d=4, scramble=True, seed=seed)
+        if index:
+            sampler.fast_forward(index)
+        points = qmc.scale(sampler.random(count), *zip(*SEARCH_BOUNDS, strict=True))
+    except ModuleNotFoundError:
+        # Keep the minimal local environment functional; sim hosts install SciPy.
+        primes = (2, 3, 5, 7)
+
+        def radical_inverse(value: int, base: int) -> float:
+            fraction = 0.0
+            denominator = 1.0
+            while value:
+                denominator *= base
+                value, remainder = divmod(value, base)
+                fraction += remainder / denominator
+            return fraction
+
+        unit = np.asarray(
+            [
+                [radical_inverse(index + offset + seed + 1, base) for base in primes]
+                for offset in range(count)
+            ]
+        )
+        points = np.asarray(
+            [
+                lower + unit[:, dimension] * (upper - lower)
+                for dimension, (lower, upper) in enumerate(SEARCH_BOUNDS)
+            ]
+        ).T
+    return [Candidate(*map(float, point)) for point in points]
 
 
 def sweep(args: argparse.Namespace) -> int:
@@ -285,6 +337,11 @@ def sweep(args: argparse.Namespace) -> int:
     best: dict[str, Any] | None = None
     best_time = started
     index = 0
+    iteration = 0
+    methods = tuple(item.strip() for item in args.methods.split(",") if item.strip())
+    if not methods or any(item not in {"sobol", "random", "exploit"} for item in methods):
+        raise SystemExit("--methods must contain sobol, random, and/or exploit")
+    method_best: dict[str, dict[str, Any]] = {}
     deadline = started + args.max_hours * 3600
     _simulation()
     process_context = multiprocessing.get_context("fork")
@@ -299,16 +356,23 @@ def sweep(args: argparse.Namespace) -> int:
             time.sleep(5)
             continue
         elites = exchange_candidates(args.exchange_ref)
-        batch = [_candidate(index + i, args.seed, elites) for i in range(args.workers)]
+        method = methods[iteration % len(methods)]
+        batch = _candidate_batch(
+            index, args.workers, args.seed, method=method, elites=elites, best=best
+        )
         with ProcessPoolExecutor(
             max_workers=args.workers, mp_context=process_context
         ) as pool:
             evaluated = list(pool.map(evaluate, batch, range(args.seed + index, args.seed + index + len(batch))))
         for item in evaluated:
             results.append(item)
+            item["method"] = method
+            if method not in method_best or item["score"] < method_best[method]["score"]:
+                method_best[method] = item
             if best is None or item["score"] < best["score"] * 0.99:
                 best, best_time = item, time.time()
         index += len(batch)
+        iteration += 1
         summary = {
             "schema_version": 1,
             "status": "running",
@@ -319,6 +383,8 @@ def sweep(args: argparse.Namespace) -> int:
             "model_revision": REVISION,
             "real_robot_validated": False,
             "exchange_elites": len(elites),
+            "method": method,
+            "method_best": method_best,
         }
         _atomic_json(run / "checkpoint.json", summary)
         _atomic_json(latest, {"run": str(run.relative_to(root()))})
@@ -326,7 +392,7 @@ def sweep(args: argparse.Namespace) -> int:
         print(
             f"[{summary['elapsed_hours']:.2f}h] evaluated={index} "
             f"rate={index / elapsed * 3600:.0f}/h "
-            f"best_score={best['score']:.6f} failures={best['failure_rate']:.1%}",
+            f"method={method} best_score={best['score']:.6f} failures={best['failure_rate']:.1%}",
             flush=True,
         )
         if time.time() - started >= args.min_hours * 3600 and time.time() - best_time >= args.plateau_hours * 3600:
@@ -439,6 +505,11 @@ def parser() -> argparse.ArgumentParser:
         type=int,
         default=2048,
         help="pause before launching a batch when available system RAM is lower",
+    )
+    w.add_argument(
+        "--methods",
+        default="sobol,random,exploit",
+        help="comma-separated global/local search methods cycled per batch",
     )
     w.add_argument(
         "--exchange-ref",
