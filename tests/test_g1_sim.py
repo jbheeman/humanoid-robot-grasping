@@ -19,3 +19,10 @@ def test_wrapper_welds_pelvis_and_never_adds_robot_io() -> None:
 
 def test_candidate_schema() -> None:
     assert Candidate(60, 1.5, 0.1, 0.5).kp == 60
+
+
+def test_cpu_sweep_memory_guard_has_a_safe_default() -> None:
+    args = __import__("object_tracking.g1_sim_cli", fromlist=["parser"]).parser().parse_args(
+        ["sweep"]
+    )
+    assert args.min_available_mib == 2048

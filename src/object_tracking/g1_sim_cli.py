@@ -255,6 +255,15 @@ def sweep(args: argparse.Namespace) -> int:
     _simulation()
     process_context = multiprocessing.get_context("fork")
     while time.time() < deadline and (args.max_candidates is None or index < args.max_candidates):
+        import psutil
+
+        if psutil.virtual_memory().available < args.min_available_mib * 1024 * 1024:
+            print(
+                f"memory guard: waiting for {args.min_available_mib} MiB available RAM",
+                flush=True,
+            )
+            time.sleep(5)
+            continue
         elites = exchange_candidates(args.exchange_ref)
         batch = [_candidate(index + i, args.seed, elites) for i in range(args.workers)]
         with ProcessPoolExecutor(
@@ -344,6 +353,12 @@ def parser() -> argparse.ArgumentParser:
     w.add_argument("--max-hours", type=float, default=72.0)
     w.add_argument("--plateau-hours", type=float, default=12.0)
     w.add_argument("--max-candidates", type=int)
+    w.add_argument(
+        "--min-available-mib",
+        type=int,
+        default=2048,
+        help="pause before launching a batch when available system RAM is lower",
+    )
     w.add_argument(
         "--exchange-ref",
         default="origin/sim:simulation/exchange/elite_candidates.json",
