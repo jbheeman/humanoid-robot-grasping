@@ -12,6 +12,7 @@ import time
 from typing import Any
 
 from object_tracking.g1_sim_cli import root
+from object_tracking.g1_exchange import exchange_candidates
 
 _ACTIVE_PROCESS: subprocess.Popen[str] | None = None
 
@@ -65,6 +66,7 @@ def run(args: argparse.Namespace) -> int:
     signal.signal(signal.SIGINT, _terminate_active)
     output = root() / "runs/simulation-gpu/adaptive-status.json"
     best_path = root() / "runs/simulation-gpu/best-checkpoint.json"
+    exchange_path = root() / "runs/simulation-gpu/exchange-elites.json"
     latest_path = root() / "runs/simulation-gpu/latest.json"
     log_dir = root() / "runs/simulation-gpu/adaptive"
     log_dir.mkdir(parents=True, exist_ok=True)
@@ -93,6 +95,13 @@ def run(args: argparse.Namespace) -> int:
             time.sleep(args.poll_seconds)
             continue
         batch += 1
+        exchange_path.write_text(
+            json.dumps(
+                {"schema_version": 1, "candidates": exchange_candidates(args.exchange_ref)},
+                indent=2,
+            )
+            + "\n"
+        )
         log_path = log_dir / f"batch-{batch:05d}.log"
         child_env = os.environ.copy()
         child_env["G1_GPU_MEMORY_FRACTION"] = str(args.jax_memory_fraction)
@@ -109,6 +118,8 @@ def run(args: argparse.Namespace) -> int:
                     str(args.seed + batch),
                     "--checkpoint",
                     str(best_path),
+                    "--exchange",
+                    str(exchange_path),
                 ],
                 stdout=stream,
                 stderr=subprocess.STDOUT,
@@ -218,6 +229,7 @@ def parser() -> argparse.ArgumentParser:
     p.add_argument("--poll-seconds", type=float, default=0.25)
     p.add_argument("--jax-memory-fraction", type=float, default=0.90)
     p.add_argument("--nvidia-smi", default="/usr/lib/wsl/lib/nvidia-smi")
+    p.add_argument("--exchange-ref", default="origin/sim:simulation/exchange/elite_candidates.json")
     p.set_defaults(func=run)
     return p
 

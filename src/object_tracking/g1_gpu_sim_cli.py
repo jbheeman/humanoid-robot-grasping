@@ -12,6 +12,7 @@ import numpy as np
 
 from object_tracking.arm_tracking.joints import RIGHT_ARM_JOINT_NAMES
 from object_tracking.g1_sim_cli import MODEL_REL, REVISION, TORQUE_LIMITS, root
+from object_tracking.g1_exchange import merge_elites
 
 
 def _load():
@@ -84,6 +85,15 @@ def benchmark(args: argparse.Namespace) -> int:
     if args.checkpoint and Path(args.checkpoint).is_file():
         checkpoint = json.loads(Path(args.checkpoint).read_text())
         elites = checkpoint.get("elite_candidates") or [checkpoint.get("best_candidate", {})]
+    else:
+        elites = []
+    if args.exchange and Path(args.exchange).is_file():
+        try:
+            exchange = json.loads(Path(args.exchange).read_text()).get("candidates", [])
+        except json.JSONDecodeError:
+            exchange = []
+        elites = merge_elites(elites, exchange)
+    if elites:
         local_count = args.candidates // 2
         elite_indices = rng.integers(0, len(elites), local_count)
         for name, (lower, upper) in bounds.items():
@@ -209,6 +219,7 @@ def parser() -> argparse.ArgumentParser:
     b.add_argument("--steps", type=int, default=1500)
     b.add_argument("--seed", type=int, default=1)
     b.add_argument("--checkpoint")
+    b.add_argument("--exchange", help="local compact exchange JSON")
     b.set_defaults(func=benchmark)
     return p
 

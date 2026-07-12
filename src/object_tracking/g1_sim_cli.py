@@ -21,6 +21,7 @@ from typing import Any
 import numpy as np
 
 from object_tracking.arm_tracking.joints import RIGHT_ARM_JOINT_NAMES
+from object_tracking.g1_exchange import exchange_candidates
 
 REVISION = "ae6a8403e272733e9996ef59990880330496177f"
 MODEL_REL = Path(".deps/unitree_mujoco/unitree_robots/g1/g1_29dof.xml")
@@ -221,15 +222,24 @@ def smoke(args: argparse.Namespace) -> int:
     return 0 if result["failure_rate"] < 1.0 else 1
 
 
-def _candidate(index: int, seed: int) -> Candidate:
+def _candidate(index: int, seed: int, elites: list[dict[str, float]] = []) -> Candidate:
     # Low-discrepancy-like deterministic sampling without materializing an unbounded grid.
     rng = random.Random(seed + index * 104729)
-    return Candidate(
+    candidate = Candidate(
         kp=rng.uniform(30.0, 80.0),
         kd=rng.uniform(0.5, 4.0),
         vmax=rng.uniform(0.05, 0.25),
         amax=rng.uniform(0.25, 2.0),
     )
+    if elites and index % 2:
+        elite = elites[index % len(elites)]
+        candidate = Candidate(
+            kp=min(80.0, max(30.0, rng.gauss(elite["kp"], 4.0))),
+            kd=min(4.0, max(0.5, rng.gauss(elite["kd"], 0.35))),
+            vmax=min(0.25, max(0.05, rng.gauss(elite["vmax"], 0.025))),
+            amax=min(2.0, max(0.25, rng.gauss(elite["amax"], 0.25))),
+        )
+    return candidate
 
 
 def sweep(args: argparse.Namespace) -> int:
@@ -245,7 +255,8 @@ def sweep(args: argparse.Namespace) -> int:
     _simulation()
     process_context = multiprocessing.get_context("fork")
     while time.time() < deadline and (args.max_candidates is None or index < args.max_candidates):
-        batch = [_candidate(index + i, args.seed) for i in range(args.workers)]
+        elites = exchange_candidates(args.exchange_ref)
+        batch = [_candidate(index + i, args.seed, elites) for i in range(args.workers)]
         with ProcessPoolExecutor(
             max_workers=args.workers, mp_context=process_context
         ) as pool:
@@ -264,6 +275,7 @@ def sweep(args: argparse.Namespace) -> int:
             "best": best,
             "model_revision": REVISION,
             "real_robot_validated": False,
+            "exchange_elites": len(elites),
         }
         _atomic_json(run / "checkpoint.json", summary)
         _atomic_json(latest, {"run": str(run.relative_to(root()))})
@@ -332,6 +344,11 @@ def parser() -> argparse.ArgumentParser:
     w.add_argument("--max-hours", type=float, default=72.0)
     w.add_argument("--plateau-hours", type=float, default=12.0)
     w.add_argument("--max-candidates", type=int)
+    w.add_argument(
+        "--exchange-ref",
+        default="origin/sim:simulation/exchange/elite_candidates.json",
+        help="Git object containing compact cross-host candidate elites",
+    )
     w.set_defaults(func=sweep)
     s = sub.add_parser("status")
     s.add_argument("--verbose", action="store_true", help="include every trial in the checkpoint")
