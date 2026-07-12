@@ -90,7 +90,7 @@ def benchmark(args: argparse.Namespace) -> int:
         tau = jnp.clip(kp[:, None] * error - kd[:, None] * dq, -torque_limits, torque_limits)
         d = d.replace(ctrl=d.ctrl.at[:, act_i].set(tau))
         d = jax.vmap(mjx.step, in_axes=(None, 0))(model, d)
-        selected = error[jnp.arange(args.envs), joints]
+        selected = error[jnp.arange(environments), joints]
         normalized = selected / jnp.abs(scenario_amplitudes)
         return (d, error_sum + normalized * normalized), None
 
