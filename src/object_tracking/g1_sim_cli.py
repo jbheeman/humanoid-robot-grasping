@@ -385,6 +385,10 @@ def sweep(args: argparse.Namespace) -> int:
             "exchange_elites": len(elites),
             "method": method,
             "method_best": method_best,
+            "minimum_hours": args.min_hours,
+            "maximum_hours": args.max_hours,
+            "plateau_hours": args.plateau_hours,
+            "no_material_improvement_hours": (time.time() - best_time) / 3600,
         }
         _atomic_json(run / "checkpoint.json", summary)
         _atomic_json(latest, {"run": str(run.relative_to(root()))})
@@ -396,6 +400,11 @@ def sweep(args: argparse.Namespace) -> int:
             flush=True,
         )
         if time.time() - started >= args.min_hours * 3600 and time.time() - best_time >= args.plateau_hours * 3600:
+            print(
+                f"stopping: no material best-score improvement for "
+                f"{args.plateau_hours:g}h after the {args.min_hours:g}h minimum",
+                flush=True,
+            )
             break
     summary["status"] = "complete"
     _atomic_json(run / "checkpoint.json", summary)
@@ -423,9 +432,17 @@ def status(args: argparse.Namespace) -> int:
         "status": checkpoint.get("status"),
         "started_at": checkpoint.get("started_at"),
         "elapsed_hours": round(elapsed, 3),
-        "minimum_hours": 48,
-        "maximum_hours": 72,
-        "minimum_remaining_hours": round(max(0.0, 48 - elapsed), 3),
+        "minimum_hours": checkpoint.get("minimum_hours"),
+        "maximum_hours": checkpoint.get("maximum_hours"),
+        "minimum_remaining_hours": (
+            round(max(0.0, float(checkpoint["minimum_hours"]) - elapsed), 3)
+            if checkpoint.get("minimum_hours") is not None
+            else None
+        ),
+        "plateau_hours": checkpoint.get("plateau_hours"),
+        "no_material_improvement_hours": round(
+            float(checkpoint.get("no_material_improvement_hours", 0.0)), 3
+        ),
         "evaluated": evaluated,
         "candidates_per_hour": round(evaluated / elapsed) if elapsed else 0,
         "best_candidate": best.get("candidate"),
