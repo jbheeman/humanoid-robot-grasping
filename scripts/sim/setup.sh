@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+REV="ae6a8403e272733e9996ef59990880330496177f"
+DEPS="$ROOT/.deps/unitree_mujoco"
+VENV="$ROOT/.sim-venv"
+
+if [[ ! -d "$DEPS/.git" ]]; then
+  mkdir -p "$ROOT/.deps"
+  git clone --filter=blob:none --no-checkout https://github.com/unitreerobotics/unitree_mujoco.git "$DEPS"
+fi
+git -C "$DEPS" sparse-checkout init --cone
+git -C "$DEPS" sparse-checkout set unitree_robots/g1 LICENSE
+git -C "$DEPS" fetch --depth=1 origin "$REV"
+git -C "$DEPS" checkout --detach "$REV"
+
+python3 -m venv "$VENV"
+"$VENV/bin/python" -m pip install --upgrade pip
+"$VENV/bin/python" -m pip install --group "$ROOT/pyproject.toml:sim" -e "$ROOT"
+"$VENV/bin/python" -m object_tracking.g1_sim_cli doctor

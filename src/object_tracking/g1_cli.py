@@ -88,6 +88,9 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("setup", "robot"): Route(
         "script", "scripts/robot/setup.sh", "install the isolated robot environment"
     ),
+    ("setup", "sim"): Route(
+        "script", "scripts/sim/setup.sh", "install the isolated MuJoCo simulation environment"
+    ),
     ("setup", "vision"): Route(
         "script", "scripts/local/setup.sh", "install the lightweight vision environment"
     ),
@@ -139,6 +142,18 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("local", "start"): Route(
         "script", "scripts/local/start.sh", "serve a local camera stream"
     ),
+    ("sim", "doctor"): Route(
+        "module", "object_tracking.g1_sim_cli", "check simulation resources", ("doctor",)
+    ),
+    ("sim", "smoke"): Route(
+        "module", "object_tracking.g1_sim_cli", "run a short deterministic simulation", ("smoke",)
+    ),
+    ("sim", "sweep"): Route(
+        "module", "object_tracking.g1_sim_cli", "tune right-arm motion in MuJoCo", ("sweep",)
+    ),
+    ("sim", "status"): Route(
+        "module", "object_tracking.g1_sim_cli", "show the latest sweep checkpoint", ("status",)
+    ),
 }
 
 
@@ -178,6 +193,7 @@ def build_parser() -> argparse.ArgumentParser:
         "vision": "G1 camera and GB10 perception workflows",
         "gb10": "GB10 inference and browser server",
         "local": "local camera and replay server",
+        "sim": "read-only suspended G1 simulation and tuning",
     }
     for group, help_text in groups.items():
         child = subparsers.add_parser(group, help=help_text, description=help_text)

@@ -1,3 +1,5 @@
+.sim-venv/
+.tools/
 .venv/
 .streamlit-venv/
 venv/

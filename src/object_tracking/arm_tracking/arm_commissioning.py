@@ -29,7 +29,6 @@ from .visualization import visualization_state
 # movement-capable launch command is the acknowledgement; the browser has no
 # second text gate.
 OPERATOR_ACK = "I HAVE CLEARED THE ROBOT AREA"
-SHOULDER_JOINT_NAMES = RIGHT_ARM_JOINT_NAMES[:3]
 
 
 class CommissioningPhase(str, Enum):
@@ -52,7 +51,7 @@ class CommissioningConfig:
     settle_dwell_s: float = 0.5
     motion_timeout_s: float = 5.0
     nonselected_drift_rad: float = 0.01
-    movable_joint_names: tuple[str, ...] = SHOULDER_JOINT_NAMES
+    movable_joint_names: tuple[str, ...] = RIGHT_ARM_JOINT_NAMES
     research_root: Path = Path("runs/research/arm_commissioning")
     profile_path: Path = Path.home() / ".config/g1-grasping/right-arm-home.json"
 
@@ -281,7 +280,7 @@ class CommissioningController:
             if name not in self.config.movable_joint_names:
                 raise ArmBridgeError(
                     "Only shoulder joints are enabled for this commissioning run",
-                    code="shoulder_only",
+                    code="joint_not_enabled",
                 )
             if isinstance(direction, bool) or direction not in (-1, 1):
                 raise ArmBridgeError("direction must be -1 or 1", code="invalid_direction")

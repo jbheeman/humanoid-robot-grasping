@@ -65,7 +65,7 @@ class Hardware:
         self.state = replace(self.state, arm_q=arm_q, received_at=self.clock.value)
 
 
-def setup(tmp_path, *, movable_joint_names=RIGHT_ARM_JOINT_NAMES[:3]):
+def setup(tmp_path, *, movable_joint_names=RIGHT_ARM_JOINT_NAMES):
     clock = Clock()
     hardware = Hardware(clock)
     bridge = ArmBridgeController(
@@ -193,8 +193,10 @@ def test_one_joint_jog_settles_and_requires_confirmation(tmp_path) -> None:
     assert report["measured_q"] == pytest.approx([0.01, 0, 0, 0, 0, 0, 0])
 
 
-def test_commissioning_rejects_non_shoulder_jogs(tmp_path) -> None:
-    clock, _hardware, _bridge, commissioning = setup(tmp_path)
+def test_commissioning_rejects_joints_not_enabled_by_configuration(tmp_path) -> None:
+    clock, _hardware, _bridge, commissioning = setup(
+        tmp_path, movable_joint_names=RIGHT_ARM_JOINT_NAMES[:3]
+    )
     session_id = create_and_enable(clock, _hardware, _bridge, commissioning)
 
     with pytest.raises(ArmBridgeError) as rejected:
@@ -205,7 +207,7 @@ def test_commissioning_rejects_non_shoulder_jogs(tmp_path) -> None:
             direction=1,
         )
 
-    assert rejected.value.code == "shoulder_only"
+    assert rejected.value.code == "joint_not_enabled"
 
 def test_sign_check_requires_matching_encoder_delta(tmp_path) -> None:
     clock, hardware, bridge, commissioning = setup(tmp_path)
