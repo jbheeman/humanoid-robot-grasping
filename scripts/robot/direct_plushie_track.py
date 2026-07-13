@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import os
 import time
 import sys
@@ -30,9 +31,91 @@ for candidate in (str(ROOT_DIR), str(ROOT_DIR / "src")):
     if candidate not in sys.path:
         sys.path.insert(0, candidate)
 
-from object_tracking.arm_tracking.arm_bridge import ArmCommand, RobotState
-from object_tracking.arm_tracking.arm_unitree import UnitreeArmHardware
-from object_tracking.arm_tracking.joints import DEFAULT_RIGHT_JOINT_LIMITS
+from object_tracking.arm_tracking.arm_bridge import ArmCommand, RobotState  # noqa: E402
+from object_tracking.arm_tracking.arm_unitree import UnitreeArmHardware  # noqa: E402
+from object_tracking.arm_tracking.geometry import (  # noqa: E402
+    CameraIntrinsics,
+    RigidTransform,
+    deproject_pixel,
+)
+from object_tracking.arm_tracking.joints import DEFAULT_RIGHT_JOINT_LIMITS  # noqa: E402
+
+
+# Factory values read from the head-mounted Intel RealSense D435I
+# (serial 254322072511, firmware 5.15.1.55).  They describe the active
+# /dev/video4 RGB profile, not an independently calibrated camera-to-arm
+# transform.  The URDF transform terminates at d435_link, therefore the
+# conventional RealSense optical-frame conversion below remains provisional
+# until verified against a physical target.
+D435I_RGB_960X540 = CameraIntrinsics(
+    width=960,
+    height=540,
+    fx=683.121,
+    fy=683.505,
+    ppx=490.993,
+    ppy=292.158,
+    distortion_model="none",
+)
+TORSO_TO_D435_LINK = RigidTransform.from_xyz_rpy(
+    (0.0576235, 0.01753, 0.42987),
+    (0.0, 0.8307767, 0.0),
+)
+
+
+def _d435_optical_to_link() -> RigidTransform:
+    """Return the standard RealSense optical-frame -> camera-link convention.
+
+    Optical is (+x right, +y down, +z forward); the URDF camera link follows
+    ROS body axes (+x forward, +y left, +z up).  Translation is zero because
+    this is a pure frame-axis conversion.
+    """
+
+    return RigidTransform(
+        rotation=[
+            [0.0, 0.0, 1.0],
+            [-1.0, 0.0, 0.0],
+            [0.0, -1.0, 0.0],
+        ],
+        translation=(0.0, 0.0, 0.0),
+    )
+
+
+D435_OPTICAL_TO_TORSO = _d435_optical_to_link().then(TORSO_TO_D435_LINK)
+
+
+def _scale_rgb_intrinsics(width: float, height: float) -> CameraIntrinsics:
+    """Scale the factory RGB calibration only for a resize of the same image."""
+
+    sx = width / D435I_RGB_960X540.width
+    sy = height / D435I_RGB_960X540.height
+    return CameraIntrinsics(
+        width=round(width),
+        height=round(height),
+        fx=D435I_RGB_960X540.fx * sx,
+        fy=D435I_RGB_960X540.fy * sy,
+        ppx=D435I_RGB_960X540.ppx * sx,
+        ppy=D435I_RGB_960X540.ppy * sy,
+        distortion_model="none",
+    )
+
+
+def _torso_bearing_from_rgb_pixel(
+    pixel_xy: tuple[float, float], intrinsics: CameraIntrinsics
+) -> tuple[float, float]:
+    """Return torso-frame azimuth/elevation (radians) for an RGB pixel ray.
+
+    This uses a unit-depth deprojection: it is a direction only and does not
+    infer object range.  Positive azimuth is torso-left; positive elevation is
+    upward.  It is suitable for bounded visual servoing, not 3-D grasping.
+    """
+
+    optical_ray = deproject_pixel(pixel_xy, 1.0, intrinsics)
+    torso_ray = D435_OPTICAL_TO_TORSO.rotation @ optical_ray
+    horizontal = math.hypot(float(torso_ray[0]), float(torso_ray[1]))
+    return (
+        math.atan2(float(torso_ray[1]), float(torso_ray[0])),
+        math.atan2(float(torso_ray[2]), horizontal),
+    )
 
 
 def _clamp(value: float, lo: float, hi: float) -> float:
@@ -78,9 +161,9 @@ class TrackerConfig:
     reverse_x: bool = False
     reverse_y: bool = False
     slew_step_rad: float = 0.003
-    aim_x_px: float = 480.0
-    aim_y_px: float = 335.0
-    deadband_px: float = 35.0
+    aim_x_px: float = D435I_RGB_960X540.ppx
+    aim_y_px: float = D435I_RGB_960X540.ppy
+    deadband_rad: float = math.radians(2.5)
     pitch_envelope_rad: float = 0.12
     yaw_envelope_rad: float = 0.16
     lock_frames: int = 6
@@ -264,6 +347,12 @@ def _main() -> int:
     parser.add_argument("--interface", default="eth0")
     parser.add_argument("--domain-id", type=int, default=0)
     parser.add_argument(
+        "--geometry-only",
+        action="store_true",
+        default=os.environ.get("TRACK_GEOMETRY_ONLY", "0") == "1",
+        help="print the factory D435I ray model and exit without opening DDS or commanding an arm",
+    )
+    parser.add_argument(
         "--reverse-x",
         action="store_true",
         default=os.environ.get("TRACK_REVERSE_X", "0") == "1",
@@ -279,9 +368,24 @@ def _main() -> int:
         default=float(os.environ.get("TRACK_SLEW_STEP_RAD", "0.003")),
         help="hard per-update joint limit used to reduce jerk",
     )
-    parser.add_argument("--aim-x-px", type=float, default=float(os.environ.get("TRACK_AIM_X_PX", "480")))
-    parser.add_argument("--aim-y-px", type=float, default=float(os.environ.get("TRACK_AIM_Y_PX", "335")))
-    parser.add_argument("--deadband-px", type=float, default=float(os.environ.get("TRACK_DEADBAND_PX", "35")))
+    parser.add_argument(
+        "--aim-x-px",
+        type=float,
+        default=float(os.environ.get("TRACK_AIM_X_PX", str(D435I_RGB_960X540.ppx))),
+        help="RGB pixel ray to use as the shoulder visual-lock reference",
+    )
+    parser.add_argument(
+        "--aim-y-px",
+        type=float,
+        default=float(os.environ.get("TRACK_AIM_Y_PX", str(D435I_RGB_960X540.ppy))),
+        help="RGB pixel ray to use as the shoulder visual-lock reference",
+    )
+    parser.add_argument(
+        "--deadband-deg",
+        type=float,
+        default=float(os.environ.get("TRACK_DEADBAND_DEG", "2.5")),
+        help="angular optical-ray deadband; replaces resize-dependent pixel deadband",
+    )
     parser.add_argument(
         "--pitch-envelope-rad",
         type=float,
@@ -330,13 +434,16 @@ def _main() -> int:
         slew_step_rad=max(0.001, min(abs(args.slew_step_rad), abs(args.max_step_rad))),
         aim_x_px=args.aim_x_px,
         aim_y_px=args.aim_y_px,
-        deadband_px=max(0.0, args.deadband_px),
+        deadband_rad=max(0.0, math.radians(args.deadband_deg)),
         pitch_envelope_rad=max(0.01, abs(args.pitch_envelope_rad)),
         yaw_envelope_rad=max(0.01, abs(args.yaw_envelope_rad)),
         lock_frames=max(1, args.lock_frames),
         kp=max(0.0, args.kp),
         kd=max(0.0, args.kd),
     )
+    rgb_intrinsics = _scale_rgb_intrinsics(cfg.frame_width, cfg.frame_height)
+    if not (0.0 <= cfg.aim_x_px < cfg.frame_width and 0.0 <= cfg.aim_y_px < cfg.frame_height):
+        raise ValueError("aim pixel must lie inside the RGB frame")
 
     # Point SDK2 import path at the robot checkout if a standard path exists.
     default_sdk_path = Path.home() / "unitree_sdk2_python"
@@ -347,7 +454,25 @@ def _main() -> int:
         if p not in existing.split(":"):
             os.environ["PYTHONPATH"] = f"{p}:{existing}" if existing else p
 
+    aim_azimuth, aim_elevation = _torso_bearing_from_rgb_pixel(
+        (cfg.aim_x_px, cfg.aim_y_px), rgb_intrinsics
+    )
     print("Direct SDK2 tracking will use interface {}, domain {}".format(cfg.interface, cfg.domain_id))
+    print(
+        "D435I factory geometry: RGB {}x{} fx={:.3f} fy={:.3f}; "
+        "aim torso ray az={:.1f}deg el={:.1f}deg (URDF mount, provisional optical-frame conversion)".format(
+            rgb_intrinsics.width,
+            rgb_intrinsics.height,
+            rgb_intrinsics.fx,
+            rgb_intrinsics.fy,
+            math.degrees(aim_azimuth),
+            math.degrees(aim_elevation),
+        ),
+        flush=True,
+    )
+    if args.geometry_only:
+        print("geometry-only: no DDS connection and no robot command", flush=True)
+        return 0
     hardware = UnitreeArmHardware(interface=cfg.interface, domain_id=cfg.domain_id)
     hardware.start()
 
@@ -450,18 +575,24 @@ def _main() -> int:
                         print(f"locking target {track_id!r}: {stable_frames}/{cfg.lock_frames}", flush=True)
                     else:
                         cx, cy = smoothed_center
-                        err_x_px = cx - cfg.aim_x_px
-                        err_y_px = cy - cfg.aim_y_px
+                        target_azimuth, target_elevation = _torso_bearing_from_rgb_pixel(
+                            (cx, cy), rgb_intrinsics
+                        )
+                        # The fixed head camera cannot observe an arm-centering
+                        # error.  Use its calibrated *bearing* relative to the
+                        # selected visual-lock ray, never a time-integrated
+                        # pixel error.  This keeps all shoulder motion inside
+                        # the fixed envelope around the initial measured pose.
+                        err_azimuth = target_azimuth - aim_azimuth
+                        err_elevation = target_elevation - aim_elevation
 
-                        def deadband(error_px: float) -> float:
-                            if abs(error_px) <= cfg.deadband_px:
+                        def deadband(error_rad: float) -> float:
+                            if abs(error_rad) <= cfg.deadband_rad:
                                 return 0.0
-                            return error_px - (cfg.deadband_px if error_px > 0 else -cfg.deadband_px)
+                            return error_rad - math.copysign(cfg.deadband_rad, error_rad)
 
-                        err_x = deadband(err_x_px) / (cfg.frame_width * 0.5)
-                        err_y = deadband(err_y_px) / (cfg.frame_height * 0.5)
-                        yaw_delta = -err_x * cfg.gain_x
-                        pitch_delta = err_y * cfg.gain_y
+                        yaw_delta = -deadband(err_azimuth) * cfg.gain_x
+                        pitch_delta = deadband(err_elevation) * cfg.gain_y
                         if cfg.reverse_x:
                             yaw_delta = -yaw_delta
                         if cfg.reverse_y:
@@ -482,7 +613,8 @@ def _main() -> int:
                         conf = float(track.get("confidence", 0.0) or 0.0)
                         print(
                             f"track={track_id} cls={track.get('class_name')} conf={conf:.2f} "
-                            f"cx={cx:.1f} cy={cy:.1f} aim=({cfg.aim_x_px:.0f},{cfg.aim_y_px:.0f}) "
+                            f"cx={cx:.1f} cy={cy:.1f} "
+                            f"ray=(az={math.degrees(target_azimuth):.1f}deg,el={math.degrees(target_elevation):.1f}deg) "
                             f"target_pitch={desired_q[0]:.3f} target_yaw={desired_q[2]:.3f}",
                             flush=True,
                         )
