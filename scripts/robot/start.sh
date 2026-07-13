@@ -7,7 +7,8 @@ CLIENT_IP="${CLIENT_IP:-${GB10_HOST:-}}"
 ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0}"
 HARDWARE_INTERFACE="${HARDWARE_INTERFACE:-eth0}"
 UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
-ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}"
+HARDWARE_DOMAIN_ID="${HARDWARE_DOMAIN_ID:-0}"
 CALIBRATION="${CALIBRATION:-}"
 RGB_MODE="${RGB_MODE:-unitree}"
 ALLOW_MOVEMENT="${ALLOW_MOVEMENT:-0}"
@@ -62,7 +63,7 @@ node_args=(
   --depth-capture-fps "${DEPTH_CAPTURE_FPS}"
   --depth-publish-fps "${DEPTH_PUBLISH_FPS}"
   --hardware-interface "${HARDWARE_INTERFACE}"
-  --hardware-domain-id "${ROS_DOMAIN_ID}"
+  --hardware-domain-id "${HARDWARE_DOMAIN_ID}"
 )
 if [[ -n "${CALIBRATION}" ]]; then
   node_args+=(--calibration "${CALIBRATION}")

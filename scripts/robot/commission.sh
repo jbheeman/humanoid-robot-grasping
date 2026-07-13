@@ -7,7 +7,8 @@ CLIENT_IP="${CLIENT_IP:-${GB10_HOST:-}}"
 ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0}"
 HARDWARE_INTERFACE="${HARDWARE_INTERFACE:-eth0}"
 UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
-ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}"
+HARDWARE_DOMAIN_ID="${HARDWARE_DOMAIN_ID:-0}"
 ALLOW_MOVEMENT="${ALLOW_MOVEMENT:-0}"
 EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-}"
 G1_ROBOT_ID="${G1_ROBOT_ID:-}"
@@ -61,7 +62,7 @@ args=(
   --depth-source "${DEPTH_SOURCE}"
   --disable-depth
   --hardware-interface "${HARDWARE_INTERFACE}"
-  --hardware-domain-id "${ROS_DOMAIN_ID}"
+  --hardware-domain-id "${HARDWARE_DOMAIN_ID}"
 )
 if [[ -n "${CALIBRATION}" ]]; then
   args+=(--calibration "${CALIBRATION}")
@@ -80,6 +81,7 @@ echo "Expected mode:       ${EXPECTED_MOTION_MODE:-unconfigured}"
 echo "ROS interface:       ${ROBOT_INTERFACE}"
 echo "Motor DDS interface: ${HARDWARE_INTERFACE}"
 echo "ROS domain:          ${ROS_DOMAIN_ID}"
+echo "Motor DDS domain:    ${HARDWARE_DOMAIN_ID}"
 echo "Research data:       ${COMMISSIONING_ROOT}"
 echo "Promoted home:       ${COMMISSIONING_PROFILE}"
 echo
