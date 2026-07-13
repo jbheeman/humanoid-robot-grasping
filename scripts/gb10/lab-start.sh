@@ -5,7 +5,9 @@ set -euo pipefail
 # status endpoints frequently and those successful requests are not actionable.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
-export ROBOT_HOST="${ROBOT_HOST:-192.168.123.164}"
+# Project ROS telemetry uses the G1 Wi-Fi LAN.  Native Unitree motor control
+# stays local on the robot's eth0 and is never exposed to GB10.
+export ROBOT_HOST="${ROBOT_HOST:-192.168.0.213}"
 export ROS_INTERFACE="${ROS_INTERFACE:-auto}"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}"
 export MODEL="${MODEL:-${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt}"

@@ -41,7 +41,7 @@ Start the ROS client, YOLO server, research recorder, and single browser UI:
 bash scripts/gb10/lab-start.sh
 ```
 
-The default robot peer is `192.168.123.164`; the UI is
+The default robot ROS peer is `192.168.0.213`; the UI is
 `http://<GB10_IP>:8000/`. Override a changed address or model with environment
 variables:
 
