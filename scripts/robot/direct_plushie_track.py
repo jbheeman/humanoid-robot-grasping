@@ -74,7 +74,7 @@ class TrackerConfig:
     startup_raise_rad: float = 0.10
     startup_raise_seconds: float = 1.0
     reverse_x: bool = False
-    reverse_y: bool = True
+    reverse_y: bool = False
     slew_step_rad: float = 0.003
     aim_x_px: float = 480.0
     aim_y_px: float = 335.0
@@ -213,7 +213,7 @@ def _main() -> int:
     parser.add_argument(
         "--reverse-y",
         action="store_true",
-        default=os.environ.get("TRACK_REVERSE_Y", "1") == "1",
+        default=os.environ.get("TRACK_REVERSE_Y", "0") == "1",
     )
     parser.add_argument(
         "--slew-step-rad",
