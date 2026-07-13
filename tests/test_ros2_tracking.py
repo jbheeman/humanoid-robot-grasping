@@ -38,11 +38,28 @@ class FakeClient:
 
 
 class FakePublisher:
-    def __init__(self) -> None:
+    def __init__(self, node: "FakeNode", topic: str) -> None:
+        self._node = node
+        self._topic = topic
         self.messages: list[object] = []
 
     def publish(self, message: object) -> None:
         self.messages.append(message)
+        if self._topic != "/g1/commissioning/request":
+            return
+        response = self._node.commissioning_response
+        callback = self._node.callbacks.get("/g1/commissioning/response")
+        if callback is None:
+            return
+        callback(
+            SimpleNamespace(
+                request_id=message.request_id,
+                ok=response.ok,
+                error_code=response.error_code,
+                message=response.message,
+                report_json=response.report_json,
+            )
+        )
 
 
 class FakeNode:
@@ -50,10 +67,13 @@ class FakeNode:
         self.publishers: list[FakePublisher] = []
         self.clients: list[FakeClient] = []
         self.callbacks: dict[str, object] = {}
+        self.commissioning_response = SimpleNamespace(
+            ok=True, error_code="", message="", report_json="{}"
+        )
 
     def create_publisher(self, message_type: type, topic: str, qos: object) -> FakePublisher:
-        del message_type, topic, qos
-        publisher = FakePublisher()
+        del message_type, qos
+        publisher = FakePublisher(self, topic)
         self.publishers.append(publisher)
         return publisher
 
@@ -103,6 +123,17 @@ class CommissioningCommand:
     Request = Message
 
 
+class CommissioningRequest(Message):
+    def __init__(self) -> None:
+        self.request_id = ""
+        self.operation = ""
+        self.request_json = ""
+
+
+class CommissioningResponse(Message):
+    pass
+
+
 class Policy:
     KEEP_LAST = 1
     RELIABLE = 2
@@ -115,6 +146,8 @@ def _types() -> dict[str, object]:
         "ArmState": Message,
         "ArmTarget": Message,
         "CommissioningState": Message,
+        "CommissioningRequest": CommissioningRequest,
+        "CommissioningResponse": CommissioningResponse,
         "CompressedDepth": Message,
         "ArmControl": ArmControl,
         "CommissioningCommand": CommissioningCommand,
@@ -136,9 +169,11 @@ def test_target_and_service_calls_use_ros_entities() -> None:
     transport.heartbeat_arm("session")
     transport.stop_arm("done")
 
-    assert runner.node.clients[0].requests[0].operation == "enable"
-    assert runner.node.clients[0].requests[1].operation == "heartbeat"
-    assert runner.node.clients[0].requests[2].operation == "stop"
+    assert [request.operation for request in runner.node.clients[0].requests] == [
+        "enable",
+        "heartbeat",
+        "stop",
+    ]
     target = runner.node.publishers[0].messages[0]
     assert target.sequence == 9
     assert target.pipeline_age_ms == 12
@@ -220,6 +255,20 @@ def test_rejected_service_response_surfaces_robot_error() -> None:
         assert "not standing" in str(exc)
     else:
         raise AssertionError("expected the rejected ROS service response to raise")
+
+
+def test_commissioning_uses_topic_request_response() -> None:
+    runner = FakeRunner()
+    transport = RosTrackingTransport(runner=runner, types=_types())
+    transport.start()
+    runner.node.commissioning_response.report_json = json.dumps({"phase": "CREATED"})
+
+    assert transport.commissioning("create", {"operator": "operator"}) == {
+        "phase": "CREATED"
+    }
+    request = runner.node.publishers[1].messages[0]
+    assert request.operation == "create"
+    assert json.loads(request.request_json) == {"operator": "operator"}
 
 
 def test_arm_state_topic_expires_using_local_monotonic_time() -> None:

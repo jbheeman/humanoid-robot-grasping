@@ -9,6 +9,8 @@ rosidl_generate_interfaces(${PROJECT_NAME}
   "msg/ArmState.msg"
   "msg/CompressedDepth.msg"
   "msg/CommissioningState.msg"
+  "msg/CommissioningRequest.msg"
+  "msg/CommissioningResponse.msg"
   "srv/ArmControl.srv"
   "srv/CommissioningCommand.srv"
 )

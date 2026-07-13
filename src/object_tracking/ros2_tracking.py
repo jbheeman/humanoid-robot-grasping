@@ -8,6 +8,7 @@ from __future__ import annotations
 
 from dataclasses import asdict
 import json
+import secrets
 import struct
 import threading
 import time
@@ -22,8 +23,9 @@ ARM_TARGET_TOPIC = "/g1/arm/target"
 ARM_STATE_TOPIC = "/g1/arm/state"
 DEPTH_TOPIC = "/g1/depth"
 ARM_CONTROL_SERVICE = "/g1/arm/control"
-COMMISSIONING_COMMAND_SERVICE = "/g1/commissioning/command"
 COMMISSIONING_STATE_TOPIC = "/g1/commissioning/state"
+COMMISSIONING_REQUEST_TOPIC = "/g1/commissioning/request"
+COMMISSIONING_RESPONSE_TOPIC = "/g1/commissioning/response"
 _HEADER_LENGTH = struct.Struct("!I")
 
 
@@ -40,10 +42,12 @@ def _load_types() -> dict[str, Any]:
         from g1_control_interfaces.msg import (
             ArmState,
             ArmTarget,
+            CommissioningRequest,
+            CommissioningResponse,
             CommissioningState,
             CompressedDepth,
         )
-        from g1_control_interfaces.srv import ArmControl, CommissioningCommand
+        from g1_control_interfaces.srv import ArmControl
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
@@ -58,9 +62,10 @@ def _load_types() -> dict[str, Any]:
         "ArmState": ArmState,
         "ArmTarget": ArmTarget,
         "CommissioningState": CommissioningState,
+        "CommissioningRequest": CommissioningRequest,
+        "CommissioningResponse": CommissioningResponse,
         "CompressedDepth": CompressedDepth,
         "ArmControl": ArmControl,
-        "CommissioningCommand": CommissioningCommand,
         "QoSProfile": QoSProfile,
         "ReliabilityPolicy": ReliabilityPolicy,
         "DurabilityPolicy": DurabilityPolicy,
@@ -95,7 +100,9 @@ class RosTrackingTransport:
         self._node: Optional[object] = None
         self._target_publisher: Optional[object] = None
         self._arm_client: Optional[object] = None
-        self._commissioning_client: Optional[object] = None
+        self._commissioning_request_publisher: Optional[object] = None
+        self._commissioning_waiters: dict[str, tuple[threading.Event, dict[str, Any]]] = {}
+        self._commissioning_waiters_lock = threading.Lock()
         self._entities: list[tuple[str, object]] = []
         self._depth_condition = threading.Condition()
         self._latest_depth: Optional[tuple[object, float]] = None
@@ -153,10 +160,16 @@ class RosTrackingTransport:
                     self._on_commissioning_state,
                     qos,
                 )
-                arm_client = node.create_client(types["ArmControl"], ARM_CONTROL_SERVICE)
-                commissioning_client = node.create_client(
-                    types["CommissioningCommand"], COMMISSIONING_COMMAND_SERVICE
+                commissioning_request_publisher = node.create_publisher(
+                    types["CommissioningRequest"], COMMISSIONING_REQUEST_TOPIC, qos
                 )
+                commissioning_response_subscription = node.create_subscription(
+                    types["CommissioningResponse"],
+                    COMMISSIONING_RESPONSE_TOPIC,
+                    self._on_commissioning_response,
+                    qos,
+                )
+                arm_client = node.create_client(types["ArmControl"], ARM_CONTROL_SERVICE)
             except Exception:
                 if self._owns_runner:
                     runner.close()
@@ -166,13 +179,14 @@ class RosTrackingTransport:
             self._node = node
             self._target_publisher = target_publisher
             self._arm_client = arm_client
-            self._commissioning_client = commissioning_client
+            self._commissioning_request_publisher = commissioning_request_publisher
             self._entities = [
                 ("destroy_subscription", arm_subscription),
                 ("destroy_subscription", depth_subscription),
                 ("destroy_subscription", commissioning_subscription),
+                ("destroy_subscription", commissioning_response_subscription),
                 ("destroy_client", arm_client),
-                ("destroy_client", commissioning_client),
+                ("destroy_publisher", commissioning_request_publisher),
                 ("destroy_publisher", target_publisher),
             ]
             self._started = True
@@ -190,7 +204,7 @@ class RosTrackingTransport:
             self._node = None
             self._target_publisher = None
             self._arm_client = None
-            self._commissioning_client = None
+            self._commissioning_request_publisher = None
         with self._depth_condition:
             self._latest_depth = None
             self._depth_condition.notify_all()
@@ -292,12 +306,37 @@ class RosTrackingTransport:
 
     def commissioning(self, command: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._require_started()
-        request = self._types["CommissioningCommand"].Request()
+        publisher = self._commissioning_request_publisher
+        if publisher is None:
+            raise RosTrackingError("commissioning request publisher is unavailable")
+        request_id = secrets.token_urlsafe(18)
+        ready = threading.Event()
+        result: dict[str, Any] = {}
+        with self._commissioning_waiters_lock:
+            self._commissioning_waiters[request_id] = (ready, result)
+        request = self._types["CommissioningRequest"]()
+        request.request_id = request_id
         request.operation = str(command)
         request.request_json = json.dumps(
             payload, separators=(",", ":"), sort_keys=True, allow_nan=False
         )
-        return self._call_service(self._commissioning_client, request, "commissioning")
+        publisher.publish(request)
+        if not ready.wait(self._service_timeout_s):
+            with self._commissioning_waiters_lock:
+                self._commissioning_waiters.pop(request_id, None)
+            raise RosTrackingError(
+                f"commissioning timed out after {self._service_timeout_s:.1f}s",
+                code="service_timeout",
+            )
+        if not result.get("ok"):
+            raise RosTrackingError(
+                str(result.get("message") or "commissioning was rejected"),
+                code=str(result.get("error_code") or "rejected"),
+            )
+        report = result.get("report")
+        if not isinstance(report, dict):
+            raise RosTrackingError("commissioning returned malformed JSON")
+        return report
 
     def _arm_call(
         self,
@@ -389,6 +428,25 @@ class RosTrackingTransport:
         )
         with self._state_lock:
             self._latest_commissioning_state = report
+
+    def _on_commissioning_response(self, message: object) -> None:
+        request_id = str(getattr(message, "request_id", ""))
+        with self._commissioning_waiters_lock:
+            waiter = self._commissioning_waiters.pop(request_id, None)
+        if waiter is None:
+            return
+        ready, result = waiter
+        try:
+            report = json.loads(str(message.report_json or "{}"))
+        except (AttributeError, json.JSONDecodeError, TypeError):
+            report = None
+        result.update(
+            ok=bool(getattr(message, "ok", False)),
+            error_code=str(getattr(message, "error_code", "")),
+            message=str(getattr(message, "message", "")),
+            report=report,
+        )
+        ready.set()
 
     @staticmethod
     def _message_report(message: object, fallback: dict[str, Any]) -> dict[str, Any]:

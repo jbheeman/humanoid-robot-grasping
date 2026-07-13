@@ -42,7 +42,6 @@ ARM_TARGET_TOPIC = "/g1/arm/target"
 ARM_STATE_TOPIC = "/g1/arm/state"
 DEPTH_TOPIC = "/g1/depth"
 ARM_CONTROL_SERVICE = "/g1/arm/control"
-COMMISSIONING_COMMAND_SERVICE = "/g1/commissioning/command"
 COMMISSIONING_STATE_TOPIC = "/g1/commissioning/state"
 _HEADER_LENGTH = struct.Struct("!I")
 
@@ -101,10 +100,12 @@ def _imports() -> dict[str, Any]:
         from g1_control_interfaces.msg import (
             ArmState,
             ArmTarget,
+            CommissioningRequest,
+            CommissioningResponse,
             CommissioningState,
             CompressedDepth,
         )
-        from g1_control_interfaces.srv import ArmControl, CommissioningCommand
+        from g1_control_interfaces.srv import ArmControl
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
@@ -119,9 +120,10 @@ def _imports() -> dict[str, Any]:
         "ArmState": ArmState,
         "ArmTarget": ArmTarget,
         "CommissioningState": CommissioningState,
+        "CommissioningRequest": CommissioningRequest,
+        "CommissioningResponse": CommissioningResponse,
         "CompressedDepth": CompressedDepth,
         "ArmControl": ArmControl,
-        "CommissioningCommand": CommissioningCommand,
         "QoSProfile": QoSProfile,
         "ReliabilityPolicy": ReliabilityPolicy,
         "DurabilityPolicy": DurabilityPolicy,
@@ -231,17 +233,21 @@ class RobotRosNode:
         self.commissioning_state_publisher = self.node.create_publisher(
             self.types["CommissioningState"], COMMISSIONING_STATE_TOPIC, qos
         )
+        self.commissioning_response_publisher = self.node.create_publisher(
+            self.types["CommissioningResponse"], "/g1/commissioning/response", qos
+        )
         self.depth_publisher = None
         self.node.create_subscription(
             self.types["ArmTarget"], ARM_TARGET_TOPIC, self._on_target, qos
         )
-        self.node.create_service(
-            self.types["ArmControl"], ARM_CONTROL_SERVICE, self._on_arm_control
+        self.node.create_subscription(
+            self.types["CommissioningRequest"],
+            "/g1/commissioning/request",
+            self._on_commissioning_request,
+            qos,
         )
         self.node.create_service(
-            self.types["CommissioningCommand"],
-            COMMISSIONING_COMMAND_SERVICE,
-            self._on_commissioning_command,
+            self.types["ArmControl"], ARM_CONTROL_SERVICE, self._on_arm_control
         )
         self.node.create_timer(0.05, self._publish_state)
         self.node.create_timer(0.1, self._publish_commissioning_state)
@@ -322,68 +328,85 @@ class RobotRosNode:
         response.report_json = _safe_json(report)
         return response
 
-    def _on_commissioning_command(self, request: object, response: object) -> object:
+    def _run_commissioning_command(
+        self, operation_raw: object, request_json: object
+    ) -> dict[str, Any]:
         if self.commissioning is None:
-            return self._service_error(
-                response,
-                ArmBridgeError("Commissioning mode is not active", code="mode_mismatch"),
-            )
+            raise ArmBridgeError("Commissioning mode is not active", code="mode_mismatch")
+        payload = json.loads(str(request_json or "{}"))
+        if not isinstance(payload, dict):
+            raise ArmBridgeError("Commissioning payload must be an object")
+        operation = str(operation_raw).strip().lower().replace("-", "_")
+        session_id = str(payload.get("session_id") or "")
+        handlers = {
+            "state": lambda: self.commissioning.report(),
+            "create_session": lambda: self.commissioning.create_session(
+                operator_ack=payload.get("operator_ack"),
+                operator=payload.get("operator"),
+                client_id=payload.get("client_id"),
+            ),
+            "enable": lambda: self.commissioning.enable(session_id),
+            "heartbeat": lambda: self.commissioning.heartbeat(session_id),
+            "jog": lambda: self.commissioning.jog(
+                session_id,
+                sequence=payload.get("sequence"),
+                joint_name=payload.get("joint_name"),
+                direction=payload.get("direction"),
+                kind=str(payload.get("kind") or "jog"),
+            ),
+            "confirm": lambda: self.commissioning.confirm_motion(
+                session_id,
+                sequence=payload.get("sequence"),
+                outcome=payload.get("outcome"),
+                notes=payload.get("notes", ""),
+            ),
+            "checkpoint": lambda: self.commissioning.checkpoint(
+                session_id, label=payload.get("label")
+            ),
+            "capture_candidate": lambda: self.commissioning.capture_candidate(
+                session_id, label=payload.get("label")
+            ),
+            "replay_step": lambda: self.commissioning.replay_step(
+                session_id, sequence=payload.get("sequence")
+            ),
+            "validate_replay": lambda: self.commissioning.validate_replay(session_id),
+            "stop": lambda: self.commissioning.stop(
+                session_id, reason=str(payload.get("reason") or "operator_stop")
+            ),
+            "promote": lambda: self.commissioning.promote(session_id),
+        }
         try:
-            payload = json.loads(request.request_json or "{}")
-            if not isinstance(payload, dict):
-                raise ArmBridgeError("Commissioning payload must be an object")
-            operation = str(request.operation).strip().lower().replace("-", "_")
-            session_id = str(payload.get("session_id") or "")
-            handlers = {
-                "state": lambda: self.commissioning.report(),
-                "create_session": lambda: self.commissioning.create_session(
-                    operator_ack=payload.get("operator_ack"),
-                    operator=payload.get("operator"),
-                    client_id=payload.get("client_id"),
-                ),
-                "enable": lambda: self.commissioning.enable(session_id),
-                "heartbeat": lambda: self.commissioning.heartbeat(session_id),
-                "jog": lambda: self.commissioning.jog(
-                    session_id,
-                    sequence=payload.get("sequence"),
-                    joint_name=payload.get("joint_name"),
-                    direction=payload.get("direction"),
-                    kind=str(payload.get("kind") or "jog"),
-                ),
-                "confirm": lambda: self.commissioning.confirm_motion(
-                    session_id,
-                    sequence=payload.get("sequence"),
-                    outcome=payload.get("outcome"),
-                    notes=payload.get("notes", ""),
-                ),
-                "checkpoint": lambda: self.commissioning.checkpoint(
-                    session_id, label=payload.get("label")
-                ),
-                "capture_candidate": lambda: self.commissioning.capture_candidate(
-                    session_id, label=payload.get("label")
-                ),
-                "replay_step": lambda: self.commissioning.replay_step(
-                    session_id, sequence=payload.get("sequence")
-                ),
-                "validate_replay": lambda: self.commissioning.validate_replay(session_id),
-                "stop": lambda: self.commissioning.stop(
-                    session_id, reason=str(payload.get("reason") or "operator_stop")
-                ),
-                "promote": lambda: self.commissioning.promote(session_id),
-            }
-            try:
-                report = handlers[operation]()
-            except KeyError as exc:
-                raise ArmBridgeError(
-                    "Unknown commissioning operation", code="invalid_request"
-                ) from exc
+            return handlers[operation]()
+        except KeyError as exc:
+            raise ArmBridgeError(
+                "Unknown commissioning operation", code="invalid_request"
+            ) from exc
+
+    def _on_commissioning_request(self, request: object) -> None:
+        """Serve GB10 commissioning commands over correlated ROS topics.
+
+        Foxy/Fast DDS and Jazzy/CycloneDDS exchange the project topics
+        correctly, while their generated custom service wire format is not
+        compatible on this G1 image.  Keep the existing controller semantics
+        and translate only the transport envelope here.
+        """
+        response = self.types["CommissioningResponse"]()
+        response.request_id = str(getattr(request, "request_id", ""))
+        try:
+            report = self._run_commissioning_command(
+                getattr(request, "operation", ""), getattr(request, "request_json", "{}")
+            )
         except Exception as exc:
-            return self._service_error(response, exc)
-        response.ok = True
-        response.error_code = ""
-        response.message = ""
-        response.report_json = _safe_json(report)
-        return response
+            response.ok = False
+            response.error_code = str(getattr(exc, "code", "bridge_failure"))
+            response.message = str(exc)
+            response.report_json = "{}"
+        else:
+            response.ok = True
+            response.error_code = ""
+            response.message = ""
+            response.report_json = _safe_json(report)
+        self.commissioning_response_publisher.publish(response)
 
     def _publish_state(self) -> None:
         report = self.controller.state_report()
