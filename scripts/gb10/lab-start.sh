@@ -9,7 +9,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 # stays local on the robot's eth0 and is never exposed to GB10.
 export ROBOT_HOST="${ROBOT_HOST:-192.168.0.213}"
 export ROS_INTERFACE="${ROS_INTERFACE:-auto}"
-export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 export MODEL="${MODEL:-${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt}"
 export VISION_WIDTH="${VISION_WIDTH:-960}"
 export VISION_HEIGHT="${VISION_HEIGHT:-540}"
