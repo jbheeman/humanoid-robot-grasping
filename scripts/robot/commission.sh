@@ -16,6 +16,8 @@ COMMISSIONING_ROOT="${COMMISSIONING_ROOT:-${ROOT_DIR}/runs/research/arm_commissi
 COMMISSIONING_PROFILE="${COMMISSIONING_PROFILE:-${HOME}/.config/g1-grasping/right-arm-home.json}"
 DEPTH_SOURCE="${DEPTH_SOURCE:-auto}"
 RGB_MODE="${RGB_MODE:-unitree}"
+# Keep rclpy separate from the native SDK2 CycloneDDS domain in this process.
+export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 
 if [[ ! -x "${ROBOT_PYTHON}" ]]; then
   echo "Missing robot environment: ${ROBOT_PYTHON}" >&2

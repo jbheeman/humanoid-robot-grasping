@@ -31,7 +31,10 @@ g1_source_ros() {
   source "${unitree_setup}"
   source "${project_setup}"
   set -u
-  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+  # Robot-local native Unitree SDK2 already owns a CycloneDDS domain.  The
+  # robot's project ROS node therefore uses Fast DDS by default; GB10 keeps
+  # CycloneDDS unless its launcher explicitly chooses otherwise.
+  export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 }
 
 g1_configure_cyclonedds() {
@@ -47,6 +50,14 @@ g1_configure_cyclonedds() {
   local peers_xml=""
   local -a peers=()
   local -a interfaces=()
+
+  export ROS_DOMAIN_ID="${domain_id}"
+  if [[ "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}" != "rmw_cyclonedds_cpp" ]]; then
+    # Static Cyclone peers are irrelevant to Fast DDS.  Discovery falls back
+    # to its standard ROS 2 multicast discovery on the selected LAN.
+    unset CYCLONEDDS_URI G1_CYCLONEDDS_CONFIG
+    return 0
+  fi
 
   if [[ ! "${role}" =~ ^[a-z0-9_-]+$ ]]; then
     echo "Invalid ROS role: ${role}" >&2
@@ -107,7 +118,6 @@ g1_configure_cyclonedds() {
     '  </Domain>' \
     '</CycloneDDS>' > "${config_file}"
 
-  export ROS_DOMAIN_ID="${domain_id}"
   export CYCLONEDDS_URI="${config_file}"
   export G1_CYCLONEDDS_CONFIG="${config_file}"
 }

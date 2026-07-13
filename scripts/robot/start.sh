@@ -22,6 +22,8 @@ DEPTH_HEIGHT="${DEPTH_HEIGHT:-480}"
 DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS:-30}"
 DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS:-15}"
 DEPTH_SERIAL="${DEPTH_SERIAL:-}"
+# Keep rclpy separate from the native SDK2 CycloneDDS domain in this process.
+export RMW_IMPLEMENTATION="${RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 
 if [[ -z "${CLIENT_IP}" ]]; then
   echo "CLIENT_IP (the GB10 address) is required." >&2
