@@ -53,8 +53,41 @@ g1_configure_cyclonedds() {
 
   export ROS_DOMAIN_ID="${domain_id}"
   if [[ "${RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}" != "rmw_cyclonedds_cpp" ]]; then
-    # Static Cyclone peers are irrelevant to Fast DDS.  Discovery falls back
-    # to its standard ROS 2 multicast discovery on the selected LAN.
+    # Native Unitree SDK2 owns CycloneDDS on the robot.  Pin Fast DDS project
+    # traffic to the first requested project NIC (normally wlan0), otherwise
+    # it advertises the private eth0 control-network address and GB10 cannot
+    # discover the bridge.
+    local fastdds_interface="${interface_name%%,*}"
+    fastdds_interface="${fastdds_interface//[[:space:]]/}"
+    local fastdds_ip
+    fastdds_ip="$(ip -4 -o addr show dev "${fastdds_interface}" 2>/dev/null | awk 'NR==1 {split($4, a, "/"); print a[1]}')"
+    if [[ -z "${fastdds_ip}" ]]; then
+      echo "Could not determine an IPv4 address for Fast DDS interface ${fastdds_interface}." >&2
+      return 1
+    fi
+    local fastdds_config="${runtime_root}/fastdds-${role}.xml"
+    mkdir -p "${runtime_root}"
+    umask 077
+    cat > "${fastdds_config}" <<EOF
+<?xml version="1.0" encoding="UTF-8" ?>
+<profiles xmlns="http://www.eprosima.com/XMLSchemas/fastRTPS_Profiles">
+  <transport_descriptors>
+    <transport_descriptor>
+      <transport_id>g1_project_udp</transport_id>
+      <type>UDPv4</type>
+      <interfaceWhiteList><address>${fastdds_ip}</address></interfaceWhiteList>
+    </transport_descriptor>
+  </transport_descriptors>
+  <participant profile_name="g1_project" is_default_profile="true">
+    <rtps>
+      <userTransports><transport_id>g1_project_udp</transport_id></userTransports>
+      <useBuiltinTransports>false</useBuiltinTransports>
+    </rtps>
+  </participant>
+</profiles>
+EOF
+    export FASTRTPS_DEFAULT_PROFILES_FILE="${fastdds_config}"
+    export FASTDDS_DEFAULT_PROFILES_FILE="${fastdds_config}"
     unset CYCLONEDDS_URI G1_CYCLONEDDS_CONFIG
     return 0
   fi
