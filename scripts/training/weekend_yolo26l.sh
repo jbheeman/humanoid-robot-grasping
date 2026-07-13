@@ -71,7 +71,10 @@ monitor_resources() {
 run_train() {
   local name="$1" model="$2" budget_hours="$3" phase="$4"
   shift 4
-  local batch_fraction="${WEEKEND_BATCH_FRACTION:-0.70}"
+  # Do not use Ultralytics fractional AutoBatch here: its probing phase tried a
+  # 16-image 1280 batch and OOMed before it could select a result on GB10.
+  # Batch 10 retains substantial unified-memory headroom at this resolution.
+  local batch_size="${WEEKEND_BATCH_SIZE:-10}"
   echo "[$(date --iso-8601=seconds)] ${phase}: ${budget_hours} hours remaining=$(hours_left)" \
     | tee -a "${LOG_DIR}/weekend_supervisor.log"
   # A dedicated session lets the monitor terminate the whole training tree if
@@ -80,7 +83,7 @@ run_train() {
   setsid taskset -c "${CPUSET}" nice -n 5 ionice -c 2 -n 4 \
     uv run --no-sync yolo detect train \
       model="${model}" data="${DATA_YAML}" epochs=999 time="${budget_hours}" \
-      batch="${batch_fraction}" imgsz=1280 cache=disk device=0 workers=14 \
+      batch="${batch_size}" imgsz=1280 cache=disk device=0 workers=14 \
       save=True save_period=1 project="${RUN_ROOT}" name="${name}" exist_ok=True \
       "$@" > "${LOG_DIR}/${name}.log" 2>&1 &
   local pid=$!
@@ -95,7 +98,7 @@ run_train() {
 
 require_time $((3 * 3600))
 PRIMARY_HOURS="$(awk -v left="$(hours_left)" 'BEGIN { printf "%.2f", (left < 36 ? left : 36) }')"
-PRIMARY_NAME="yolo26l_weekend_primary_1280"
+PRIMARY_NAME="yolo26l_guarded_primary_1280"
 if ! run_train "${PRIMARY_NAME}" "${ROOT_DIR}/models/pretrained/yolo26l.pt" "${PRIMARY_HOURS}" primary \
   patience=50 optimizer=MuSGD lr0=0.00038 lrf=0.882 momentum=0.948 weight_decay=0.00027 \
   warmup_epochs=1.0 box=9.83 cls=0.65 dfl=0.96 close_mosaic=10 \
@@ -103,9 +106,9 @@ if ! run_train "${PRIMARY_NAME}" "${ROOT_DIR}/models/pretrained/yolo26l.pt" "${P
   degrees=0.0 shear=0.0 hsv_h=0.013 hsv_s=0.353 hsv_v=0.194 amp=True plots=True; then
   echo "[$(date --iso-8601=seconds)] primary exited early; retrying safely at 55% memory target" \
     | tee -a "${LOG_DIR}/weekend_supervisor.log"
-  PRIMARY_NAME="yolo26l_weekend_recovery_1280"
+  PRIMARY_NAME="yolo26l_guarded_recovery_1280"
   RECOVERY_HOURS="$(awk -v left="$(hours_left)" 'BEGIN { printf "%.2f", (left < 36 ? left : 36) }')"
-  WEEKEND_BATCH_FRACTION=0.55 run_train "${PRIMARY_NAME}" "${ROOT_DIR}/models/pretrained/yolo26l.pt" "${RECOVERY_HOURS}" recovery \
+  WEEKEND_BATCH_SIZE=6 run_train "${PRIMARY_NAME}" "${ROOT_DIR}/models/pretrained/yolo26l.pt" "${RECOVERY_HOURS}" recovery \
     patience=50 optimizer=MuSGD lr0=0.00038 lrf=0.882 momentum=0.948 weight_decay=0.00027 \
     warmup_epochs=1.0 box=9.83 cls=0.65 dfl=0.96 close_mosaic=10 \
     mosaic=0.992 mixup=0.427 copy_paste=0.404 scale=0.95 translate=0.275 fliplr=0.304 \
