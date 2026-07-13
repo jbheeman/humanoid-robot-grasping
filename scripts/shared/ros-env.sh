@@ -91,7 +91,7 @@ g1_configure_cyclonedds() {
     '    <Discovery>' \
     '      <ParticipantIndex>auto</ParticipantIndex>' \
     '      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>' \
-    "      <Peers AddLocalhost=\"true\">${peers_xml}</Peers>" \
+    "      <Peers>${peers_xml}</Peers>" \
     '    </Discovery>' \
     '  </Domain>' \
     '</CycloneDDS>' > "${config_file}"
