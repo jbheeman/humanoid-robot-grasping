@@ -1,518 +1,3040 @@
 {
   "candidate": {
-    "amax": 1.2990844384877223,
-    "kd": 2.8138426186188723,
-    "kp": 66.99229410953234,
-    "vmax": 0.24124602768704573
+    "amax": 3.7843289140703043,
+    "kd": 3.6377291340251916,
+    "kp": 110.0,
+    "vmax": 0.24703682257061252
   },
-  "failure_rate": 0.023809523809523836,
-  "p95_error": 0.05159717706677933,
-  "score": 0.053262243928909166,
+  "failure_rate": 0.0,
+  "method": "exploit",
+  "p95_error": 0.05221572313581046,
+  "randomized_replays": 4,
+  "score": 0.05246627965825845,
+  "shoulder_elbow_p95_error": 0.04365383755806439,
   "trials": [
     {
       "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0008969012536529235,
+        "torque_scale": 0.9313988384372518,
+        "velocity_noise_rad_s": 0.003718448199133353
+      },
       "joint": "right_shoulder_pitch_joint",
-      "nonselected_drift": 0.05142330828925846,
+      "nonselected_drift": 0.03778560264613939,
       "ok": true,
-      "overshoot": 0.043057904961556065,
-      "p95_error": 0.0569896254253619,
-      "peak_torque": 4.491971125570441,
-      "peak_velocity": 0.7798049926077745,
-      "rmse": 0.022024228901523175,
-      "settle_s": 2.7
-    },
-    {
-      "amplitude": -0.03,
-      "joint": "right_shoulder_pitch_joint",
-      "nonselected_drift": 0.05133645059222956,
-      "ok": true,
-      "overshoot": 0.0314493608316096,
-      "p95_error": 0.03702387879370085,
-      "peak_torque": 4.412416799991787,
-      "peak_velocity": 0.8715216300194439,
-      "rmse": 0.016155020444777728,
+      "overshoot": 0.022649313693728162,
+      "p95_error": 0.04638661534503282,
+      "peak_torque": 5.298865468651203,
+      "peak_velocity": 1.0840482323817495,
+      "rmse": 0.01481083859512038,
       "settle_s": 0.33
     },
     {
-      "amplitude": -0.01,
-      "joint": "right_shoulder_pitch_joint",
-      "nonselected_drift": 0.0507831044035447,
-      "ok": true,
-      "overshoot": 0.037723754129818016,
-      "p95_error": 0.028545182035429648,
-      "peak_torque": 4.222565109613037,
-      "peak_velocity": 1.0724936009177717,
-      "rmse": 0.011153620233876104,
-      "settle_s": 0.536
-    },
-    {
-      "amplitude": 0.01,
-      "joint": "right_shoulder_pitch_joint",
-      "nonselected_drift": 0.05103984588113888,
-      "ok": true,
-      "overshoot": 0.03931677497572887,
-      "p95_error": 0.022549622892161697,
-      "peak_torque": 4.6380603926048956,
-      "peak_velocity": 0.837909043999713,
-      "rmse": 0.011312759188351534,
-      "settle_s": 0.77
-    },
-    {
-      "amplitude": 0.03,
-      "joint": "right_shoulder_pitch_joint",
-      "nonselected_drift": 0.050200786819507986,
-      "ok": true,
-      "overshoot": 0.0541090204315383,
-      "p95_error": 0.03765554356676538,
-      "peak_torque": 4.405305750885865,
-      "peak_velocity": 1.142271185621034,
-      "rmse": 0.01742775021818441,
-      "settle_s": 1.784
-    },
-    {
-      "amplitude": 0.05,
-      "joint": "right_shoulder_pitch_joint",
-      "nonselected_drift": 0.04949681645648875,
-      "ok": true,
-      "overshoot": 0.04402668495056439,
-      "p95_error": 0.031572095690672854,
-      "peak_torque": 4.7322855209205645,
-      "peak_velocity": 1.1808518642517574,
-      "rmse": 0.01759598481037166,
-      "settle_s": 0.332
-    },
-    {
-      "amplitude": -0.05,
-      "failure": "settle_or_drift",
-      "joint": "right_shoulder_roll_joint",
-      "nonselected_drift": 0.05075821388194688,
-      "ok": false,
-      "overshoot": 0.052663188311991224,
-      "p95_error": 0.050006338540111085,
-      "peak_torque": 3.0411761729335303,
-      "peak_velocity": 1.0174856553078837,
-      "rmse": 0.029503074868203152,
-      "settle_s": null
-    },
-    {
       "amplitude": -0.03,
-      "joint": "right_shoulder_roll_joint",
-      "nonselected_drift": 0.05104678118839684,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0008773695769301558,
+        "torque_scale": 0.9621013732855342,
+        "velocity_noise_rad_s": 0.00993164929402331
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03829005546430674,
       "ok": true,
-      "overshoot": 0.04416242309698956,
-      "p95_error": 0.04125668921851538,
-      "peak_torque": 3.1439346131709627,
-      "peak_velocity": 1.0557107471441582,
-      "rmse": 0.028546159806332974,
-      "settle_s": 0.66
+      "overshoot": 0.025104711047065888,
+      "p95_error": 0.03134342766241929,
+      "peak_torque": 5.9411190695846425,
+      "peak_velocity": 1.1058633606243207,
+      "rmse": 0.010517760486408853,
+      "settle_s": 0.27
     },
     {
       "amplitude": -0.01,
-      "joint": "right_shoulder_roll_joint",
-      "nonselected_drift": 0.051651955388785656,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.000996818161024357,
+        "torque_scale": 0.9668742934136633,
+        "velocity_noise_rad_s": 0.006867300967427321
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03615632588330253,
       "ok": true,
-      "overshoot": 0.04384304861310441,
-      "p95_error": 0.031675810183480826,
-      "peak_torque": 3.1559479390705008,
-      "peak_velocity": 0.6767602320251745,
-      "rmse": 0.02714704556259703,
-      "settle_s": 0.422
-    },
-    {
-      "amplitude": 0.01,
-      "joint": "right_shoulder_roll_joint",
-      "nonselected_drift": 0.05105102070485379,
-      "ok": true,
-      "overshoot": 0.007632689648859823,
-      "p95_error": 0.03724342102172328,
-      "peak_torque": 3.0458986560458756,
-      "peak_velocity": 0.8667559025514924,
-      "rmse": 0.02765814677150194,
+      "overshoot": 0.02613521003218988,
+      "p95_error": 0.018015241207395005,
+      "peak_torque": 5.0899602731290265,
+      "peak_velocity": 0.8658409984210929,
+      "rmse": 0.0071915528784645575,
       "settle_s": 0.252
     },
     {
-      "amplitude": 0.03,
-      "joint": "right_shoulder_roll_joint",
-      "nonselected_drift": 0.050244570838759786,
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0008607360126421218,
+        "torque_scale": 0.9147455277301898,
+        "velocity_noise_rad_s": 0.008912072431469395
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03918482227539841,
       "ok": true,
-      "overshoot": 0.014034195151158814,
-      "p95_error": 0.046024140150647395,
-      "peak_torque": 3.0310519199868553,
-      "peak_velocity": 0.5130838113804566,
-      "rmse": 0.03034648953207373,
-      "settle_s": 0.29
+      "overshoot": 0.034409492511597216,
+      "p95_error": 0.01989893885429534,
+      "peak_torque": 5.261374554140272,
+      "peak_velocity": 1.0267730621844067,
+      "rmse": 0.008227162576440145,
+      "settle_s": 0.28
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0004424799858607929,
+        "torque_scale": 0.9930401176920495,
+        "velocity_noise_rad_s": 0.00973602073694953
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03590493326380024,
+      "ok": true,
+      "overshoot": 0.02481339003105859,
+      "p95_error": 0.019718155972752803,
+      "peak_torque": 5.190954256830981,
+      "peak_velocity": 0.8357938876987846,
+      "rmse": 0.007933472764840995,
+      "settle_s": 0.502
     },
     {
       "amplitude": 0.05,
-      "joint": "right_shoulder_roll_joint",
-      "nonselected_drift": 0.0508875442556082,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0007794770066911648,
+        "torque_scale": 0.9992398708617567,
+        "velocity_noise_rad_s": 0.0046225335979527046
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03662292033566687,
       "ok": true,
-      "overshoot": 0.007693451376287165,
-      "p95_error": 0.0516809054102882,
-      "peak_torque": 3.1401947915558113,
-      "peak_velocity": 0.5928128734267563,
-      "rmse": 0.03315718149110481,
-      "settle_s": 0.442
+      "overshoot": 0.03165890873300169,
+      "p95_error": 0.0282682658726913,
+      "peak_torque": 5.604999262054383,
+      "peak_velocity": 0.9431289969717828,
+      "rmse": 0.011259512631640788,
+      "settle_s": 0.308
     },
     {
       "amplitude": -0.05,
-      "joint": "right_shoulder_yaw_joint",
-      "nonselected_drift": 0.050689799616088105,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0005685955269435002,
+        "torque_scale": 0.9805170861841076,
+        "velocity_noise_rad_s": 0.004700072039534984
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03686442076838084,
       "ok": true,
-      "overshoot": 0.039618080001341774,
-      "p95_error": 0.04448495418730631,
-      "peak_torque": 1.8208801445243492,
-      "peak_velocity": 0.9522927954224124,
-      "rmse": 0.02114584552814593,
-      "settle_s": 0.664
+      "overshoot": 0.026253960848317062,
+      "p95_error": 0.03242131973014091,
+      "peak_torque": 3.4602822536681352,
+      "peak_velocity": 0.9099026503038906,
+      "rmse": 0.019567291155464,
+      "settle_s": 0.324
     },
     {
       "amplitude": -0.03,
-      "joint": "right_shoulder_yaw_joint",
-      "nonselected_drift": 0.050199356938279385,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.00031824544152924485,
+        "torque_scale": 0.9768472943431055,
+        "velocity_noise_rad_s": 0.009146112586515157
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03693493686508701,
       "ok": true,
-      "overshoot": 0.029991377003297584,
-      "p95_error": 0.029837897141268718,
-      "peak_torque": 1.8950601956330526,
-      "peak_velocity": 0.9920100290112251,
-      "rmse": 0.01858097497786396,
-      "settle_s": 0.782
-    },
-    {
-      "amplitude": -0.01,
-      "joint": "right_shoulder_yaw_joint",
-      "nonselected_drift": 0.050786592459688515,
-      "ok": true,
-      "overshoot": 0.020117888293935834,
-      "p95_error": 0.01624141305065737,
-      "peak_torque": 1.656662564440712,
-      "peak_velocity": 0.6996942759453466,
-      "rmse": 0.01410907533359228,
-      "settle_s": 0.432
-    },
-    {
-      "amplitude": 0.01,
-      "joint": "right_shoulder_yaw_joint",
-      "nonselected_drift": 0.05103693913135255,
-      "ok": true,
-      "overshoot": 0.007431338428288211,
-      "p95_error": 0.018626796198703232,
-      "peak_torque": 1.748122876071913,
-      "peak_velocity": 0.8695918435127646,
-      "rmse": 0.014535035040249417,
+      "overshoot": 0.026309668916960863,
+      "p95_error": 0.02553742453931075,
+      "peak_torque": 3.34446763522998,
+      "peak_velocity": 0.777475946221169,
+      "rmse": 0.017637676787946435,
       "settle_s": 0.252
     },
     {
-      "amplitude": 0.03,
-      "joint": "right_shoulder_yaw_joint",
-      "nonselected_drift": 0.0506553285720147,
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0009369900498786753,
+        "torque_scale": 0.9404064304266924,
+        "velocity_noise_rad_s": 0.0070949239594363936
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.038837130184469396,
       "ok": true,
-      "overshoot": 0.013202347288825383,
-      "p95_error": 0.030145897022421885,
-      "peak_torque": 1.675938627672277,
-      "peak_velocity": 0.5610587706491019,
-      "rmse": 0.01858612752901503,
-      "settle_s": 0.28800000000000003
+      "overshoot": 0.027880621248647604,
+      "p95_error": 0.023002237092623744,
+      "peak_torque": 3.38202761235415,
+      "peak_velocity": 0.7758733398722902,
+      "rmse": 0.018030019613086205,
+      "settle_s": 0.268
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0005607997960040715,
+        "torque_scale": 0.9068820521797999,
+        "velocity_noise_rad_s": 0.008993046207668918
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03936856436739982,
+      "ok": true,
+      "overshoot": 0.0066654268927332245,
+      "p95_error": 0.02351968417662487,
+      "peak_torque": 3.364229445992143,
+      "peak_velocity": 0.7415820412709234,
+      "rmse": 0.018998176166476654,
+      "settle_s": 0.31
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0008682074176346876,
+        "torque_scale": 0.9960490637471466,
+        "velocity_noise_rad_s": 0.003018431187885106
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03607556726689904,
+      "ok": true,
+      "overshoot": 0.006588352156649865,
+      "p95_error": 0.024999485331705137,
+      "peak_torque": 3.3644893228614294,
+      "peak_velocity": 0.6768163924233044,
+      "rmse": 0.018420599169815578,
+      "settle_s": 0.252
     },
     {
       "amplitude": 0.05,
-      "joint": "right_shoulder_yaw_joint",
-      "nonselected_drift": 0.05170137775036251,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0009768524716829876,
+        "torque_scale": 0.9817334920647984,
+        "velocity_noise_rad_s": 0.009548862689724099
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03682835293574759,
       "ok": true,
-      "overshoot": 0.010065981916002803,
-      "p95_error": 0.043554278392070114,
-      "peak_torque": 1.689760978657743,
-      "peak_velocity": 0.6105898721746961,
-      "rmse": 0.02191925787669068,
-      "settle_s": 0.442
+      "overshoot": 0.0008493988991771992,
+      "p95_error": 0.028369145987603175,
+      "peak_torque": 3.406263493149503,
+      "peak_velocity": 0.5999034229816597,
+      "rmse": 0.021230336879433414,
+      "settle_s": 0.28
     },
     {
       "amplitude": -0.05,
-      "joint": "right_elbow_joint",
-      "nonselected_drift": 0.03825119472145649,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0005390996299336815,
+        "torque_scale": 0.9539400990933521,
+        "velocity_noise_rad_s": 0.0039814143989212155
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03719194770563905,
       "ok": true,
-      "overshoot": 0.006134506410866519,
-      "p95_error": 0.05904476584690456,
-      "peak_torque": 5.900565552884309,
-      "peak_velocity": 1.6169728236799958,
-      "rmse": 0.028425692276080907,
-      "settle_s": 0.54
+      "overshoot": 0.017146723054851,
+      "p95_error": 0.030055547848148265,
+      "peak_torque": 2.2386700851381254,
+      "peak_velocity": 0.818357782819259,
+      "rmse": 0.014022728993699232,
+      "settle_s": 0.322
     },
     {
       "amplitude": -0.03,
-      "joint": "right_elbow_joint",
-      "nonselected_drift": 0.03946975695343698,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0007308236082946551,
+        "torque_scale": 0.9933561863097184,
+        "velocity_noise_rad_s": 0.0029078350010622697
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.0355295187543739,
       "ok": true,
-      "overshoot": 0.00037033294986208234,
-      "p95_error": 0.04239467077517195,
-      "peak_torque": 5.888937624353018,
-      "peak_velocity": 1.7279529837373018,
-      "rmse": 0.02497725140626527,
-      "settle_s": 0.514
+      "overshoot": 0.012864836929017888,
+      "p95_error": 0.012788484008394847,
+      "peak_torque": 2.246323768392644,
+      "peak_velocity": 0.7398653411081838,
+      "rmse": 0.010375183014428005,
+      "settle_s": 0.252
     },
     {
       "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0006622137701076793,
+        "torque_scale": 0.9289166959240662,
+        "velocity_noise_rad_s": 0.006263039988070636
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03804858475672682,
+      "ok": true,
+      "overshoot": 0.014552556440585845,
+      "p95_error": 0.011941613311835016,
+      "peak_torque": 1.9473591162741586,
+      "peak_velocity": 0.7270040071891544,
+      "rmse": 0.009729825190265565,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0005805566872831054,
+        "torque_scale": 0.8813320703958198,
+        "velocity_noise_rad_s": 0.005380449107446614
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.04015401478633446,
+      "ok": true,
+      "overshoot": 0.005465921456296733,
+      "p95_error": 0.012741085838706177,
+      "peak_torque": 1.8767438106521908,
+      "peak_velocity": 0.7261236190198523,
+      "rmse": 0.010326556387624704,
+      "settle_s": 0.306
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0006434665252061272,
+        "torque_scale": 0.9839192334476426,
+        "velocity_noise_rad_s": 0.0033378327735046095
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03703292947340052,
+      "ok": true,
+      "overshoot": 0.005140771952579726,
+      "p95_error": 0.014043831049124508,
+      "peak_torque": 2.0967525283055277,
+      "peak_velocity": 0.6923092468823471,
+      "rmse": 0.011058526481925634,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0009899988182626713,
+        "torque_scale": 0.9868701851670295,
+        "velocity_noise_rad_s": 0.006602419808200429
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03626771399757466,
+      "ok": true,
+      "overshoot": 0.0037459241532234386,
+      "p95_error": 0.029246331712887413,
+      "peak_torque": 1.893734881068029,
+      "peak_velocity": 0.6407605024802524,
+      "rmse": 0.013933329010081711,
+      "settle_s": 0.28200000000000003
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0007203940773649132,
+        "torque_scale": 0.8988647336163886,
+        "velocity_noise_rad_s": 0.0027075631355124373
+      },
       "joint": "right_elbow_joint",
-      "nonselected_drift": 0.03961626240381111,
+      "nonselected_drift": 0.031197258256489387,
       "ok": true,
       "overshoot": 0.0,
-      "p95_error": 0.032041903324028,
-      "peak_torque": 5.853704907042172,
-      "peak_velocity": 1.3424413853566186,
-      "rmse": 0.022028447770400434,
-      "settle_s": 0.304
-    },
-    {
-      "amplitude": 0.01,
-      "joint": "right_elbow_joint",
-      "nonselected_drift": 0.039570912954180935,
-      "ok": true,
-      "overshoot": 0.05270362293762724,
-      "p95_error": 0.03243233893234573,
-      "peak_torque": 5.689521173653764,
-      "peak_velocity": 1.5414293663758512,
-      "rmse": 0.021708579220613592,
-      "settle_s": 0.536
-    },
-    {
-      "amplitude": 0.03,
-      "joint": "right_elbow_joint",
-      "nonselected_drift": 0.039375664337821026,
-      "ok": true,
-      "overshoot": 0.06739385190572789,
-      "p95_error": 0.037119545040791256,
-      "peak_torque": 5.616217700790822,
-      "peak_velocity": 1.3631904424354417,
-      "rmse": 0.024250371712632703,
-      "settle_s": 0.76
-    },
-    {
-      "amplitude": 0.05,
-      "joint": "right_elbow_joint",
-      "nonselected_drift": 0.03999081072326707,
-      "ok": true,
-      "overshoot": 0.05808728835874298,
-      "p95_error": 0.04505492314300778,
-      "peak_torque": 5.7251347496115095,
-      "peak_velocity": 1.461554819886901,
-      "rmse": 0.024340839728914054,
-      "settle_s": 0.87
-    },
-    {
-      "amplitude": -0.05,
-      "joint": "right_wrist_roll_joint",
-      "nonselected_drift": 0.052037969594165435,
-      "ok": true,
-      "overshoot": 0.01796434086084353,
-      "p95_error": 0.04321568178042068,
-      "peak_torque": 0.25644468080334204,
-      "peak_velocity": 0.24071036329051163,
-      "rmse": 0.015795597462246815,
-      "settle_s": 2.138
+      "p95_error": 0.04569784170483005,
+      "peak_torque": 6.648229579921603,
+      "peak_velocity": 1.4310301696252399,
+      "rmse": 0.019940987434702843,
+      "settle_s": 0.322
     },
     {
       "amplitude": -0.03,
-      "joint": "right_wrist_roll_joint",
-      "nonselected_drift": 0.05044847490542088,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.00033506795235901086,
+        "torque_scale": 0.9731272681108782,
+        "velocity_noise_rad_s": 0.004858656506912239
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03145679550810484,
       "ok": true,
-      "overshoot": 0.01773176560397454,
-      "p95_error": 0.023224934552146453,
-      "peak_torque": 0.25944053473456224,
-      "peak_velocity": 0.22028970938877168,
-      "rmse": 0.011825191639738938,
-      "settle_s": 2.08
+      "overshoot": 0.0,
+      "p95_error": 0.03251652782491264,
+      "peak_torque": 6.660950634680248,
+      "peak_velocity": 1.3464349729874048,
+      "rmse": 0.015735695940994866,
+      "settle_s": 0.254
     },
     {
       "amplitude": -0.01,
-      "joint": "right_wrist_roll_joint",
-      "nonselected_drift": 0.05063893350788827,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.00033494523026482464,
+        "torque_scale": 0.9572751178788661,
+        "velocity_noise_rad_s": 0.004244246264577195
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03168958767435388,
       "ok": true,
-      "overshoot": 0.005335615959539556,
-      "p95_error": 0.005322693885230338,
-      "peak_torque": 0.2554553531233302,
-      "peak_velocity": 0.11487204677830506,
-      "rmse": 0.0025483792457374065,
-      "settle_s": 0.268
+      "overshoot": 0.0,
+      "p95_error": 0.019364469938699783,
+      "peak_torque": 6.4845782968581664,
+      "peak_velocity": 1.2992143812286543,
+      "rmse": 0.014182238947241363,
+      "settle_s": 0.502
     },
     {
       "amplitude": 0.01,
-      "joint": "right_wrist_roll_joint",
-      "nonselected_drift": 0.0504666127043055,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0008269553121086503,
+        "torque_scale": 0.9190901064431277,
+        "velocity_noise_rad_s": 0.007317347243279144
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03188601751264841,
       "ok": true,
-      "overshoot": 0.005238327218563443,
-      "p95_error": 0.005228519174487602,
-      "peak_torque": 0.24853367682907684,
-      "peak_velocity": 0.1148146641610464,
-      "rmse": 0.0025610836379895614,
-      "settle_s": 0.268
+      "overshoot": 0.039034374616262406,
+      "p95_error": 0.019392484041979605,
+      "peak_torque": 6.206596947171038,
+      "peak_velocity": 1.2675695790475145,
+      "rmse": 0.014223464989042025,
+      "settle_s": 0.298
     },
     {
       "amplitude": 0.03,
-      "joint": "right_wrist_roll_joint",
-      "nonselected_drift": 0.05168192239072638,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.00043098520973626915,
+        "torque_scale": 0.9044742568937263,
+        "velocity_noise_rad_s": 0.0036561462427836247
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03188263035697653,
       "ok": true,
-      "overshoot": 0.017530977934724704,
-      "p95_error": 0.023326079512025595,
-      "peak_torque": 0.2507731672673613,
-      "peak_velocity": 0.22070274569489398,
-      "rmse": 0.011816523523746432,
-      "settle_s": 2.362
+      "overshoot": 0.034185675930199805,
+      "p95_error": 0.023671257586124084,
+      "peak_torque": 6.18345469068176,
+      "peak_velocity": 1.286655017000647,
+      "rmse": 0.014359043516775204,
+      "settle_s": 0.532
     },
     {
       "amplitude": 0.05,
-      "joint": "right_wrist_roll_joint",
-      "nonselected_drift": 0.050909591743245004,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0008806104017667825,
+        "torque_scale": 0.9681840310063853,
+        "velocity_noise_rad_s": 0.0032965673747435654
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.032097645917973185,
       "ok": true,
-      "overshoot": 0.01783981178749912,
-      "p95_error": 0.043319933711863955,
-      "peak_torque": 0.2622726787265578,
-      "peak_velocity": 0.23920740321811618,
-      "rmse": 0.015811103429225516,
-      "settle_s": 2.138
+      "overshoot": 0.03794079233003249,
+      "p95_error": 0.02802403730261029,
+      "peak_torque": 6.112113308394478,
+      "peak_velocity": 1.2019239589317188,
+      "rmse": 0.014859109030955138,
+      "settle_s": 0.48
     },
     {
       "amplitude": -0.05,
-      "joint": "right_wrist_pitch_joint",
-      "nonselected_drift": 0.05161714198250485,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0007692540123346871,
+        "torque_scale": 0.9385481632688181,
+        "velocity_noise_rad_s": 0.003206088150417701
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03748505717550412,
       "ok": true,
-      "overshoot": 0.016453108693449223,
-      "p95_error": 0.046660254763582903,
-      "peak_torque": 1.4131950752984168,
-      "peak_velocity": 0.4716216570298903,
-      "rmse": 0.017129462674736858,
-      "settle_s": 0.334
+      "overshoot": 0.004056355033659198,
+      "p95_error": 0.029321045638090286,
+      "peak_torque": 0.3948603520099373,
+      "peak_velocity": 0.26518218441522157,
+      "rmse": 0.010452226000355795,
+      "settle_s": 0.326
     },
     {
       "amplitude": -0.03,
-      "joint": "right_wrist_pitch_joint",
-      "nonselected_drift": 0.051134938475556196,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0009259379579998211,
+        "torque_scale": 0.9770751556816123,
+        "velocity_noise_rad_s": 0.0034965718290754406
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03660157374788415,
       "ok": true,
-      "overshoot": 0.013335108040750152,
-      "p95_error": 0.026655793255511165,
-      "peak_torque": 1.3707681199672788,
-      "peak_velocity": 0.5468894562030138,
-      "rmse": 0.013061562611068276,
-      "settle_s": 0.332
-    },
-    {
-      "amplitude": -0.01,
-      "joint": "right_wrist_pitch_joint",
-      "nonselected_drift": 0.04992168883758363,
-      "ok": true,
-      "overshoot": 0.003513983563529206,
-      "p95_error": 0.011075015529530784,
-      "peak_torque": 1.3326919804374517,
-      "peak_velocity": 0.4053829625777696,
-      "rmse": 0.005592214139854762,
-      "settle_s": 0.29
-    },
-    {
-      "amplitude": 0.01,
-      "joint": "right_wrist_pitch_joint",
-      "nonselected_drift": 0.050635056073500585,
-      "ok": true,
-      "overshoot": 0.013835967215827734,
-      "p95_error": 0.010512794376203533,
-      "peak_torque": 1.395045038677845,
-      "peak_velocity": 0.4049018288580823,
-      "rmse": 0.0055615362005647425,
+      "overshoot": 0.004557289919936057,
+      "p95_error": 0.009267204049824876,
+      "peak_torque": 0.415092812586904,
+      "peak_velocity": 0.25205326746879037,
+      "rmse": 0.005537176658421464,
       "settle_s": 0.252
     },
     {
-      "amplitude": 0.03,
-      "joint": "right_wrist_pitch_joint",
-      "nonselected_drift": 0.050610314035682065,
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.00047379338010231315,
+        "torque_scale": 0.9725464738135743,
+        "velocity_noise_rad_s": 0.009280041122537332
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.037000790739340886,
       "ok": true,
-      "overshoot": 0.030668894097625382,
-      "p95_error": 0.027068977280748138,
-      "peak_torque": 1.3751695000940465,
-      "peak_velocity": 0.4556787652753246,
-      "rmse": 0.013322234027389928,
-      "settle_s": 0.644
+      "overshoot": 0.003765723865368489,
+      "p95_error": 0.0028347065781889045,
+      "peak_torque": 0.3546304474881321,
+      "peak_velocity": 0.17765360650450784,
+      "rmse": 0.001604970710626243,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.00048024018330649146,
+        "torque_scale": 0.9880231569564444,
+        "velocity_noise_rad_s": 0.008370768561917477
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03620093751816762,
+      "ok": true,
+      "overshoot": 0.003689532245530711,
+      "p95_error": 0.0027872275231436735,
+      "peak_torque": 0.3534977560609147,
+      "peak_velocity": 0.1791850534317979,
+      "rmse": 0.0016102907097318407,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0008141947226079667,
+        "torque_scale": 0.913139179986193,
+        "velocity_noise_rad_s": 0.0063940725696082345
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03890639485127921,
+      "ok": true,
+      "overshoot": 0.004159986994154687,
+      "p95_error": 0.009500434834683776,
+      "peak_torque": 0.3808791465521694,
+      "peak_velocity": 0.2608743727944605,
+      "rmse": 0.005558334389983086,
+      "settle_s": 0.252
     },
     {
       "amplitude": 0.05,
-      "joint": "right_wrist_pitch_joint",
-      "nonselected_drift": 0.05119429193201478,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0008160713170554168,
+        "torque_scale": 0.9937305566150648,
+        "velocity_noise_rad_s": 0.0046265793525669605
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.035645304069979594,
       "ok": true,
-      "overshoot": 0.02329514048240873,
-      "p95_error": 0.03715913875716443,
-      "peak_torque": 1.4005789427950235,
-      "peak_velocity": 0.5601661438068443,
-      "rmse": 0.016278673283983223,
-      "settle_s": 1.522
+      "overshoot": 0.004129709615515349,
+      "p95_error": 0.029036204797316074,
+      "peak_torque": 0.40833447896282205,
+      "peak_velocity": 0.26721433386618915,
+      "rmse": 0.01042366074404509,
+      "settle_s": 0.328
     },
     {
       "amplitude": -0.05,
-      "joint": "right_wrist_yaw_joint",
-      "nonselected_drift": 0.050712923487793785,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0008652288228811997,
+        "torque_scale": 0.9849992322010496,
+        "velocity_noise_rad_s": 0.007432568825057904
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03662025637629008,
       "ok": true,
-      "overshoot": 0.020816231417352712,
-      "p95_error": 0.04206034335440431,
-      "peak_torque": 0.2889398394523839,
-      "peak_velocity": 0.2734276514279026,
-      "rmse": 0.016083809230281645,
-      "settle_s": 2.69
+      "overshoot": 0.003488076296583237,
+      "p95_error": 0.03126353841324513,
+      "peak_torque": 1.5808101007567676,
+      "peak_velocity": 0.3421258081305273,
+      "rmse": 0.011267361617053938,
+      "settle_s": 0.324
     },
     {
       "amplitude": -0.03,
-      "joint": "right_wrist_yaw_joint",
-      "nonselected_drift": 0.050916354436474916,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0002596747663124224,
+        "torque_scale": 0.9844363469371633,
+        "velocity_noise_rad_s": 0.004792823787260186
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03705052305235808,
       "ok": true,
-      "overshoot": 0.019532630548694634,
-      "p95_error": 0.02205855271848688,
-      "peak_torque": 0.3361563560716239,
-      "peak_velocity": 0.3119210057487367,
-      "rmse": 0.01245161381390398,
-      "settle_s": 2.624
+      "overshoot": 0.002915180890229921,
+      "p95_error": 0.012944052728770082,
+      "peak_torque": 1.6464486435785688,
+      "peak_velocity": 0.37206946823823916,
+      "rmse": 0.0066631324756132575,
+      "settle_s": 0.252
     },
     {
       "amplitude": -0.01,
-      "joint": "right_wrist_yaw_joint",
-      "nonselected_drift": 0.05146319274072396,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.000558428234736632,
+        "torque_scale": 0.9731494848174113,
+        "velocity_noise_rad_s": 0.009017108173179973
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03648899405412748,
       "ok": true,
-      "overshoot": 0.006831410590583118,
-      "p95_error": 0.0066663289026798285,
-      "peak_torque": 0.28615008816027343,
-      "peak_velocity": 0.11838469746784448,
-      "rmse": 0.0029334195782361257,
+      "overshoot": 0.0017150936486024226,
+      "p95_error": 0.006715596633610201,
+      "peak_torque": 1.5724620859012588,
+      "peak_velocity": 0.2791564558430928,
+      "rmse": 0.0034422443701081244,
+      "settle_s": 0.26
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.00046846982831313374,
+        "torque_scale": 0.9750517064872197,
+        "velocity_noise_rad_s": 0.009542859331665475
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.036881886704842125,
+      "ok": true,
+      "overshoot": 0.01050022549784674,
+      "p95_error": 0.006832064573121248,
+      "peak_torque": 1.61835642410909,
+      "peak_velocity": 0.334190440411714,
+      "rmse": 0.0034527688951773625,
+      "settle_s": 0.266
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0004721231481147974,
+        "torque_scale": 0.9640310397414342,
+        "velocity_noise_rad_s": 0.009523073102458885
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.037235286239511375,
+      "ok": true,
+      "overshoot": 0.007524507294035837,
+      "p95_error": 0.007508474642414698,
+      "peak_torque": 1.5155419552250518,
+      "peak_velocity": 0.24859312633460778,
+      "rmse": 0.0058601437263927575,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0006138800855539016,
+        "torque_scale": 0.9506620058272705,
+        "velocity_noise_rad_s": 0.008785756401056877
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.037544625520305505,
+      "ok": true,
+      "overshoot": 0.011526260437889749,
+      "p95_error": 0.02536051540039884,
+      "peak_torque": 1.5973047675145273,
+      "peak_velocity": 0.25410498484641,
+      "rmse": 0.010189801001775637,
+      "settle_s": 0.322
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0009426465414065987,
+        "torque_scale": 0.8932443685390072,
+        "velocity_noise_rad_s": 0.005757313737782214
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.04027572163402662,
+      "ok": true,
+      "overshoot": 0.005518111850020352,
+      "p95_error": 0.0285927102780797,
+      "peak_torque": 0.3967897897508305,
+      "peak_velocity": 0.26555781732189004,
+      "rmse": 0.010387895181443684,
+      "settle_s": 0.322
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0003121325601647548,
+        "torque_scale": 0.920233708062853,
+        "velocity_noise_rad_s": 0.004989661338227755
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.03860168490551325,
+      "ok": true,
+      "overshoot": 0.004997294576450435,
+      "p95_error": 0.008458480803442798,
+      "peak_torque": 0.33517400939281444,
+      "peak_velocity": 0.24206249248801573,
+      "rmse": 0.00552302464023518,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0008040145842304996,
+        "torque_scale": 0.8908051470239408,
+        "velocity_noise_rad_s": 0.007665670504464827
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.03945474824116771,
+      "ok": true,
+      "overshoot": 0.004390293687893966,
+      "p95_error": 0.003092051606246333,
+      "peak_torque": 0.3248154204972438,
+      "peak_velocity": 0.18888774096566824,
+      "rmse": 0.0018264315407602583,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.000994338488302009,
+        "torque_scale": 0.9172731637096778,
+        "velocity_noise_rad_s": 0.003622480229719031
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.038719984094119794,
+      "ok": true,
+      "overshoot": 0.004717098704264863,
+      "p95_error": 0.0031226802817031843,
+      "peak_torque": 0.3258537719923958,
+      "peak_velocity": 0.18481754362136577,
+      "rmse": 0.0018286211497486563,
+      "settle_s": 0.262
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0005151067691722663,
+        "torque_scale": 0.9576531162911237,
+        "velocity_noise_rad_s": 0.004283368203772297
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.03750660413212175,
+      "ok": true,
+      "overshoot": 0.00513901667768437,
+      "p95_error": 0.008237868326714939,
+      "peak_torque": 0.3447828555287415,
+      "peak_velocity": 0.24937581451379118,
+      "rmse": 0.005503721094282578,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0008169922631815719,
+        "torque_scale": 0.8971034668192231,
+        "velocity_noise_rad_s": 0.003526363737261562
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.03994354219664748,
+      "ok": true,
+      "overshoot": 0.0040675038890045714,
+      "p95_error": 0.028428121857632712,
+      "peak_torque": 0.3605457359689728,
+      "peak_velocity": 0.26233710155282175,
+      "rmse": 0.010332237197124434,
+      "settle_s": 0.326
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.000544238429420243,
+        "torque_scale": 0.9785183475855218,
+        "velocity_noise_rad_s": 0.004352668145327041
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03640354965596181,
+      "ok": true,
+      "overshoot": 0.02247220087607313,
+      "p95_error": 0.045388692483375966,
+      "peak_torque": 5.328355606666446,
+      "peak_velocity": 1.0383757339484774,
+      "rmse": 0.014556464707030852,
+      "settle_s": 0.326
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.00031857719146063864,
+        "torque_scale": 0.9880655346436239,
+        "velocity_noise_rad_s": 0.003383763549851197
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.037728937570332494,
+      "ok": true,
+      "overshoot": 0.024510421195902674,
+      "p95_error": 0.031252747022115585,
+      "peak_torque": 5.946042553618331,
+      "peak_velocity": 1.1063077908620549,
+      "rmse": 0.010401331093283256,
+      "settle_s": 0.27
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0002843976301644471,
+        "torque_scale": 0.9502211724231824,
+        "velocity_noise_rad_s": 0.006674823025555509
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.037734671460100094,
+      "ok": true,
+      "overshoot": 0.026862385459714977,
+      "p95_error": 0.01860286851459656,
+      "peak_torque": 5.143263114474642,
+      "peak_velocity": 0.8724926136209972,
+      "rmse": 0.0074025279191491,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0007907019463625765,
+        "torque_scale": 0.9502941822991855,
+        "velocity_noise_rad_s": 0.002154345638620229
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.0377892848636249,
+      "ok": true,
+      "overshoot": 0.03340824551108553,
+      "p95_error": 0.01897239211959369,
+      "peak_torque": 5.431259791340965,
+      "peak_velocity": 1.0194023877524543,
+      "rmse": 0.007841594617473144,
+      "settle_s": 0.28200000000000003
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0003133102404146997,
+        "torque_scale": 0.9277131234368766,
+        "velocity_noise_rad_s": 0.0066504358728026285
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03722249290084686,
+      "ok": true,
+      "overshoot": 0.025609810073090843,
+      "p95_error": 0.020416594917784203,
+      "peak_torque": 5.036679156819357,
+      "peak_velocity": 0.8506834038715605,
+      "rmse": 0.008307102828029747,
+      "settle_s": 0.764
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0007526471609819206,
+        "torque_scale": 0.9296081274107498,
+        "velocity_noise_rad_s": 0.005672910687641934
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.0387895538316399,
+      "ok": true,
+      "overshoot": 0.03211248889356051,
+      "p95_error": 0.029046436710156786,
+      "peak_torque": 5.3315892271245655,
+      "peak_velocity": 0.9396972168601734,
+      "rmse": 0.01142050168169064,
+      "settle_s": 0.31
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0006169448685453089,
+        "torque_scale": 0.9793922924505859,
+        "velocity_noise_rad_s": 0.006560117657510255
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03725700445598218,
+      "ok": true,
+      "overshoot": 0.02679634217964974,
+      "p95_error": 0.032441599682989916,
+      "peak_torque": 3.4960133225345524,
+      "peak_velocity": 0.9395037483392108,
+      "rmse": 0.01975585693790832,
+      "settle_s": 0.418
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0005003553343101634,
+        "torque_scale": 0.8998931838229501,
+        "velocity_noise_rad_s": 0.00696436969567815
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.039164645461027166,
+      "ok": true,
+      "overshoot": 0.027845037428010574,
+      "p95_error": 0.026840523482262475,
+      "peak_torque": 3.2554304543929318,
+      "peak_velocity": 0.807994364552719,
+      "rmse": 0.018602487185949163,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.00038453428619520373,
+        "torque_scale": 0.9913799890607069,
+        "velocity_noise_rad_s": 0.0051259378321196055
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.035763133308075616,
+      "ok": true,
+      "overshoot": 0.02572450488546328,
+      "p95_error": 0.021393678790125634,
+      "peak_torque": 3.310638945639529,
+      "peak_velocity": 0.7509529211918134,
+      "rmse": 0.016698092593214833,
+      "settle_s": 0.268
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0002947251082841846,
+        "torque_scale": 0.9180845256105172,
+        "velocity_noise_rad_s": 0.008059077628281723
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03901005017763753,
+      "ok": true,
+      "overshoot": 0.006755332726316109,
+      "p95_error": 0.023097980039082956,
+      "peak_torque": 3.2952651887580817,
+      "peak_velocity": 0.728235918725337,
+      "rmse": 0.018653990648913005,
+      "settle_s": 0.31
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0009387395890041042,
+        "torque_scale": 0.9320096044841261,
+        "velocity_noise_rad_s": 0.0071359083140711665
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.037819812320369704,
+      "ok": true,
+      "overshoot": 0.006505224194343705,
+      "p95_error": 0.026233017656084268,
+      "peak_torque": 3.3358069832364183,
+      "peak_velocity": 0.6701501338529362,
+      "rmse": 0.019548581594649523,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0006574768009040726,
+        "torque_scale": 0.8828765049341544,
+        "velocity_noise_rad_s": 0.0023791514184210074
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03940990406697095,
+      "ok": true,
+      "overshoot": 0.0004778736846066875,
+      "p95_error": 0.029959710342983406,
+      "peak_torque": 3.380812699891354,
+      "peak_velocity": 0.662964021380748,
+      "rmse": 0.022576200614298582,
+      "settle_s": 0.28200000000000003
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0003671741355317013,
+        "torque_scale": 0.9796261822751363,
+        "velocity_noise_rad_s": 0.002188597644895863
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03719848676657902,
+      "ok": true,
+      "overshoot": 0.017243656381652595,
+      "p95_error": 0.029930320245079026,
+      "peak_torque": 2.2466777975628656,
+      "peak_velocity": 0.8188385765743746,
+      "rmse": 0.013979862667308529,
+      "settle_s": 0.322
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0003904025674466495,
+        "torque_scale": 0.8855796178034653,
+        "velocity_noise_rad_s": 0.0067608589465489215
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03929720952637911,
+      "ok": true,
+      "overshoot": 0.014657163692871532,
+      "p95_error": 0.014360743622143953,
+      "peak_torque": 2.0007345308785345,
+      "peak_velocity": 0.7808272567363125,
+      "rmse": 0.011222235028419231,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0003930010087572862,
+        "torque_scale": 0.9114819741269737,
+        "velocity_noise_rad_s": 0.008346896435132173
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03933545466889551,
+      "ok": true,
+      "overshoot": 0.014578672415256051,
+      "p95_error": 0.0124627429413999,
+      "peak_torque": 2.04641354367161,
+      "peak_velocity": 0.7490757844740786,
+      "rmse": 0.010030633111625385,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0006539518358673231,
+        "torque_scale": 0.9684781694490778,
+        "velocity_noise_rad_s": 0.008862687709010612
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.036571385936272995,
+      "ok": true,
+      "overshoot": 0.005716365116423665,
+      "p95_error": 0.011693308940921718,
+      "peak_torque": 2.0398004436992943,
+      "peak_velocity": 0.7136517101210844,
+      "rmse": 0.009383251126682509,
+      "settle_s": 0.27
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0006038053913656131,
+        "torque_scale": 0.9663345292163308,
+        "velocity_noise_rad_s": 0.0055168359790771625
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03693503879838615,
+      "ok": true,
+      "overshoot": 0.005494432761985378,
+      "p95_error": 0.012947311342216319,
+      "peak_torque": 1.9985804285059423,
+      "peak_velocity": 0.6766444272017228,
+      "rmse": 0.010979979567170454,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0005536989487805355,
+        "torque_scale": 0.9619587089775252,
+        "velocity_noise_rad_s": 0.007216532215703729
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03756415565635925,
+      "ok": true,
+      "overshoot": 0.0036226781925325913,
+      "p95_error": 0.029359285397260407,
+      "peak_torque": 1.791276262084297,
+      "peak_velocity": 0.650889568996142,
+      "rmse": 0.014157659090278267,
+      "settle_s": 0.28
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0004945327718064659,
+        "torque_scale": 0.9718263186775823,
+        "velocity_noise_rad_s": 0.005790346472404991
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03027003121736167,
+      "ok": true,
+      "overshoot": 0.0,
+      "p95_error": 0.0442362308360294,
+      "peak_torque": 6.673540107928891,
+      "peak_velocity": 1.3628382123309153,
+      "rmse": 0.019041452998582713,
+      "settle_s": 0.32
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.00029744989048605434,
+        "torque_scale": 0.9525605274608501,
+        "velocity_noise_rad_s": 0.0023796996525070765
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03204782496106143,
+      "ok": true,
+      "overshoot": 0.0,
+      "p95_error": 0.032987146668943895,
+      "peak_torque": 6.384079508168622,
+      "peak_velocity": 1.3077458468096803,
+      "rmse": 0.016015955803538116,
+      "settle_s": 0.254
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.00042775055873596365,
+        "torque_scale": 0.886521314866341,
+        "velocity_noise_rad_s": 0.0031479561633392683
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03301610171816002,
+      "ok": true,
+      "overshoot": 0.0,
+      "p95_error": 0.021303677082672598,
+      "peak_torque": 6.307503819728238,
+      "peak_velocity": 1.3431848690805825,
+      "rmse": 0.015266936043408856,
+      "settle_s": 0.506
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0004445852259197928,
+        "torque_scale": 0.8849021353490145,
+        "velocity_noise_rad_s": 0.004173659691620752
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.033971290915344746,
+      "ok": true,
+      "overshoot": 0.04171415558314222,
+      "p95_error": 0.020383090318581484,
+      "peak_torque": 6.158628796338474,
+      "peak_velocity": 1.3130014163819699,
+      "rmse": 0.015165720978757768,
+      "settle_s": 0.294
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0004843930148287492,
+        "torque_scale": 0.885547655567049,
+        "velocity_noise_rad_s": 0.008817262872073788
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03261521249610947,
+      "ok": true,
+      "overshoot": 0.03539609680388521,
+      "p95_error": 0.024166470309405934,
+      "peak_torque": 6.187301745202602,
+      "peak_velocity": 1.3076513718385854,
+      "rmse": 0.01469745303240906,
+      "settle_s": 0.53
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0006214754475762922,
+        "torque_scale": 0.983995114132191,
+        "velocity_noise_rad_s": 0.008075907094936741
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03192098290092356,
+      "ok": true,
+      "overshoot": 0.037406195758604516,
+      "p95_error": 0.02789825863315801,
+      "peak_torque": 6.404538068208827,
+      "peak_velocity": 1.2390303051982203,
+      "rmse": 0.014764195557134166,
+      "settle_s": 0.48
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.00026064425626392326,
+        "torque_scale": 0.9027013520326225,
+        "velocity_noise_rad_s": 0.005898880874105559
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03904650998053194,
+      "ok": true,
+      "overshoot": 0.003979559007353854,
+      "p95_error": 0.029371456339359833,
+      "peak_torque": 0.3177144604826376,
+      "peak_velocity": 0.2567757670681397,
+      "rmse": 0.010464044178651809,
+      "settle_s": 0.328
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0007486479918681657,
+        "torque_scale": 0.9599057017192169,
+        "velocity_noise_rad_s": 0.009533088658252952
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03721174264851042,
+      "ok": true,
+      "overshoot": 0.00443849998340614,
+      "p95_error": 0.009291639318398165,
+      "peak_torque": 0.3935944941261753,
+      "peak_velocity": 0.2600794511966948,
+      "rmse": 0.005562063649127096,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0008129642551050705,
+        "torque_scale": 0.9591605270103675,
+        "velocity_noise_rad_s": 0.004423909471613417
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.0372305707474585,
+      "ok": true,
+      "overshoot": 0.0039553036607968585,
+      "p95_error": 0.002955239499827993,
+      "peak_torque": 0.3669730992549944,
+      "peak_velocity": 0.1831820466115096,
+      "rmse": 0.0016107227446201403,
+      "settle_s": 0.266
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0009429469745917833,
+        "torque_scale": 0.9542080708631722,
+        "velocity_noise_rad_s": 0.00631529080077196
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.037427222500164614,
+      "ok": true,
+      "overshoot": 0.0036561646129861756,
+      "p95_error": 0.002856363797620861,
+      "peak_torque": 0.3691841893781676,
+      "peak_velocity": 0.17824355176206855,
+      "rmse": 0.0016150415097153233,
+      "settle_s": 0.266
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0008179665893837745,
+        "torque_scale": 0.9215925310604882,
+        "velocity_noise_rad_s": 0.009799574540440836
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.038627383431444055,
+      "ok": true,
+      "overshoot": 0.004330709206650005,
+      "p95_error": 0.009502398228332773,
+      "peak_torque": 0.36436113245283963,
+      "peak_velocity": 0.2604797237660528,
+      "rmse": 0.005562921834434763,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0008925326836545063,
+        "torque_scale": 0.9264244439513575,
+        "velocity_noise_rad_s": 0.006022001552638803
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03817918397965289,
+      "ok": true,
+      "overshoot": 0.004073394520974709,
+      "p95_error": 0.029367320601912144,
+      "peak_torque": 0.4219188526573962,
+      "peak_velocity": 0.2670057329552062,
+      "rmse": 0.010465627537650558,
+      "settle_s": 0.328
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.00033775385360605985,
+        "torque_scale": 0.8965801123925202,
+        "velocity_noise_rad_s": 0.0033368164558962576
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03948680308013649,
+      "ok": true,
+      "overshoot": 0.003218591930382854,
+      "p95_error": 0.031671452972017025,
+      "peak_torque": 1.5910325834793109,
+      "peak_velocity": 0.3655482325933958,
+      "rmse": 0.011409878404016121,
+      "settle_s": 0.322
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0007613336084150364,
+        "torque_scale": 0.9082896703512193,
+        "velocity_noise_rad_s": 0.0021145930837349553
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.039551606611475,
+      "ok": true,
+      "overshoot": 0.0027177004323692203,
+      "p95_error": 0.013270041166879392,
+      "peak_torque": 1.6031756364308238,
+      "peak_velocity": 0.36128935936795714,
+      "rmse": 0.006769876184303748,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.00029010490107437745,
+        "torque_scale": 0.9907786151555087,
+        "velocity_noise_rad_s": 0.002805454397855848
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03650599789723785,
+      "ok": true,
+      "overshoot": 0.0017714126461151457,
+      "p95_error": 0.006744520950800855,
+      "peak_torque": 1.580950486080069,
+      "peak_velocity": 0.28372470196414445,
+      "rmse": 0.00344013850827621,
+      "settle_s": 0.26
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.000276846091535738,
+        "torque_scale": 0.9908179070185601,
+        "velocity_noise_rad_s": 0.0027400804106797096
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03669732168219784,
+      "ok": true,
+      "overshoot": 0.010698014687675372,
+      "p95_error": 0.00691921590597809,
+      "peak_torque": 1.633920338411688,
+      "peak_velocity": 0.3437281888282446,
+      "rmse": 0.003474305735279887,
+      "settle_s": 0.266
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0006967338934784701,
+        "torque_scale": 0.9371029832783677,
+        "velocity_noise_rad_s": 0.0022006661136404855
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03830338588015254,
+      "ok": true,
+      "overshoot": 0.007549594135538608,
+      "p95_error": 0.00751028412387514,
+      "peak_torque": 1.5282019277545607,
+      "peak_velocity": 0.2474942828197479,
+      "rmse": 0.005902592801757726,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0008012913019097176,
+        "torque_scale": 0.9515462121912269,
+        "velocity_noise_rad_s": 0.003994286708658079
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03731986013667656,
+      "ok": true,
+      "overshoot": 0.011300116044036343,
+      "p95_error": 0.025389421271794256,
+      "peak_torque": 1.7054587592072639,
+      "peak_velocity": 0.25381024086258674,
+      "rmse": 0.010179559421704194,
+      "settle_s": 0.322
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0003843387288399497,
+        "torque_scale": 0.8984554377886491,
+        "velocity_noise_rad_s": 0.004404173121049468
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.040184903879931656,
+      "ok": true,
+      "overshoot": 0.0053782706178657075,
+      "p95_error": 0.028467809736366843,
+      "peak_torque": 0.34952521984679946,
+      "peak_velocity": 0.255504325476413,
+      "rmse": 0.010365443663645179,
+      "settle_s": 0.32
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.000919355316354157,
+        "torque_scale": 0.9595101144097438,
+        "velocity_noise_rad_s": 0.005500747029760621
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.037647213064231994,
+      "ok": true,
+      "overshoot": 0.005247253471106432,
+      "p95_error": 0.008474478870753574,
+      "peak_torque": 0.44487935356826075,
+      "peak_velocity": 0.2616090715654963,
+      "rmse": 0.005531515687216654,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0005382028647913843,
+        "torque_scale": 0.9109269325910444,
+        "velocity_noise_rad_s": 0.004591912485894651
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.03899013191164331,
+      "ok": true,
+      "overshoot": 0.004402207642342507,
+      "p95_error": 0.0031108489894609613,
+      "peak_torque": 0.28935207195646734,
+      "peak_velocity": 0.18488311782608977,
+      "rmse": 0.0018020669801507713,
       "settle_s": 0.262
     },
     {
       "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.000977653018637544,
+        "torque_scale": 0.9188767135890986,
+        "velocity_noise_rad_s": 0.008951126095617185
+      },
       "joint": "right_wrist_yaw_joint",
-      "nonselected_drift": 0.051737404851057656,
+      "nonselected_drift": 0.03839964435848911,
       "ok": true,
-      "overshoot": 0.006323087915331526,
-      "p95_error": 0.006853583503766575,
-      "peak_torque": 0.34170151211673805,
-      "peak_velocity": 0.20647362590930696,
-      "rmse": 0.0031974580527461853,
-      "settle_s": 0.258
+      "overshoot": 0.004702165249125331,
+      "p95_error": 0.0031809474830471777,
+      "peak_torque": 0.36867573272783,
+      "peak_velocity": 0.1866015238250726,
+      "rmse": 0.001801034349152996,
+      "settle_s": 0.26
     },
     {
       "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.000289566090197958,
+        "torque_scale": 0.9937807714423229,
+        "velocity_noise_rad_s": 0.002943702683751868
+      },
       "joint": "right_wrist_yaw_joint",
-      "nonselected_drift": 0.0505104672609361,
+      "nonselected_drift": 0.0369154537400756,
       "ok": true,
-      "overshoot": 0.018101898238068792,
-      "p95_error": 0.02191118641131673,
-      "peak_torque": 0.4155934800554097,
-      "peak_velocity": 0.21972122022268525,
-      "rmse": 0.012215740477736497,
-      "settle_s": 2.354
+      "overshoot": 0.00511663393760859,
+      "p95_error": 0.008237764210366743,
+      "peak_torque": 0.3357736178894126,
+      "peak_velocity": 0.2477596235793219,
+      "rmse": 0.005504087356730361,
+      "settle_s": 0.252
     },
     {
       "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0006127671473400277,
+        "torque_scale": 0.9813296763111343,
+        "velocity_noise_rad_s": 0.0021756903595053414
+      },
       "joint": "right_wrist_yaw_joint",
-      "nonselected_drift": 0.051120427345165566,
+      "nonselected_drift": 0.03672510800322381,
       "ok": true,
-      "overshoot": 0.017462998330147222,
-      "p95_error": 0.041906178058634856,
-      "peak_torque": 0.42082925723581227,
-      "peak_velocity": 0.23449906097451434,
-      "rmse": 0.016012853916135213,
-      "settle_s": 2.416
+      "overshoot": 0.004397782050024883,
+      "p95_error": 0.028260662050341574,
+      "peak_torque": 0.37766533077162795,
+      "peak_velocity": 0.2619366032943524,
+      "rmse": 0.010302976664068432,
+      "settle_s": 0.324
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0009182443474806572,
+        "torque_scale": 0.942651953214843,
+        "velocity_noise_rad_s": 0.007459337650722664
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03702723821027842,
+      "ok": true,
+      "overshoot": 0.021947661210555344,
+      "p95_error": 0.04619515468924097,
+      "peak_torque": 5.158219323367388,
+      "peak_velocity": 1.0278046009219588,
+      "rmse": 0.014682024231962595,
+      "settle_s": 0.328
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0002701877584986974,
+        "torque_scale": 0.9228411542473247,
+        "velocity_noise_rad_s": 0.003896186483062512
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03895621856250625,
+      "ok": true,
+      "overshoot": 0.02585700114219657,
+      "p95_error": 0.031840428009196946,
+      "peak_torque": 5.589377065093287,
+      "peak_velocity": 1.0747372361480396,
+      "rmse": 0.010710045929917178,
+      "settle_s": 0.274
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0004543917603992675,
+        "torque_scale": 0.9132359560010314,
+        "velocity_noise_rad_s": 0.002114450660790027
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.039133133848142036,
+      "ok": true,
+      "overshoot": 0.02736541593368875,
+      "p95_error": 0.018912841524909543,
+      "peak_torque": 5.0607126115755126,
+      "peak_velocity": 0.9211909975113552,
+      "rmse": 0.007663257153664712,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.00026411131997307183,
+        "torque_scale": 0.9476818299588693,
+        "velocity_noise_rad_s": 0.008185142408504351
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.037512581236418874,
+      "ok": true,
+      "overshoot": 0.03290192715831345,
+      "p95_error": 0.0190497414613233,
+      "peak_torque": 5.396973269757608,
+      "peak_velocity": 1.0032563468747138,
+      "rmse": 0.007796324891110718,
+      "settle_s": 0.28200000000000003
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.00027317256858396894,
+        "torque_scale": 0.9448224540489438,
+        "velocity_noise_rad_s": 0.00768168121448024
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.0367084952542664,
+      "ok": true,
+      "overshoot": 0.025698573861454126,
+      "p95_error": 0.020317870203091344,
+      "peak_torque": 5.125770811247733,
+      "peak_velocity": 0.8558979699002401,
+      "rmse": 0.00821077343069289,
+      "settle_s": 0.762
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0009849005402973318,
+        "torque_scale": 0.9414052931080392,
+        "velocity_noise_rad_s": 0.004604974003202863
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.039083089783737424,
+      "ok": true,
+      "overshoot": 0.03299344108825174,
+      "p95_error": 0.029041478748182973,
+      "peak_torque": 5.4499339955212,
+      "peak_velocity": 0.9647726047377955,
+      "rmse": 0.011493206269833148,
+      "settle_s": 0.308
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0009199024179305206,
+        "torque_scale": 0.9981646165610101,
+        "velocity_noise_rad_s": 0.003242036677657962
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.035397809110831534,
+      "ok": true,
+      "overshoot": 0.025616704732495874,
+      "p95_error": 0.03241216036805688,
+      "peak_torque": 3.4555665014541272,
+      "peak_velocity": 0.922290960721571,
+      "rmse": 0.019221519516780566,
+      "settle_s": 0.324
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0006431127319788104,
+        "torque_scale": 0.9311157463636437,
+        "velocity_noise_rad_s": 0.006186606865829748
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03840247951018902,
+      "ok": true,
+      "overshoot": 0.02711655241623178,
+      "p95_error": 0.026329310576206036,
+      "peak_torque": 3.2881592343770913,
+      "peak_velocity": 0.7883757760700608,
+      "rmse": 0.018458046391723153,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0004001684528594902,
+        "torque_scale": 0.9477326388779163,
+        "velocity_noise_rad_s": 0.004302924562438056
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03808379702368642,
+      "ok": true,
+      "overshoot": 0.027398437671014263,
+      "p95_error": 0.022951032767746737,
+      "peak_torque": 3.360136958014335,
+      "peak_velocity": 0.7623677125684596,
+      "rmse": 0.01763292229150623,
+      "settle_s": 0.268
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0007378347396531499,
+        "torque_scale": 0.9614514288226776,
+        "velocity_noise_rad_s": 0.009870896571104995
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03757692577468907,
+      "ok": true,
+      "overshoot": 0.006721617010363232,
+      "p95_error": 0.02253252254202456,
+      "peak_torque": 3.4041696239317143,
+      "peak_velocity": 0.7163691644453862,
+      "rmse": 0.017910973955775532,
+      "settle_s": 0.308
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0007319677564689485,
+        "torque_scale": 0.9063433731375216,
+        "velocity_noise_rad_s": 0.006660826784648471
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03882734585589305,
+      "ok": true,
+      "overshoot": 0.00670098934449756,
+      "p95_error": 0.02669462695962048,
+      "peak_torque": 3.308448394047772,
+      "peak_velocity": 0.691947945423359,
+      "rmse": 0.01986106439190167,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0009269663395115621,
+        "torque_scale": 0.9815380192312351,
+        "velocity_noise_rad_s": 0.006583921471143243
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03778979990542672,
+      "ok": true,
+      "overshoot": 0.0007165012183298347,
+      "p95_error": 0.028439726083801742,
+      "peak_torque": 3.4147890621748895,
+      "peak_velocity": 0.5835454920283901,
+      "rmse": 0.02142074630996188,
+      "settle_s": 0.28
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0007937784864062201,
+        "torque_scale": 0.9645532309536515,
+        "velocity_noise_rad_s": 0.006595768305075038
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.037556363047059005,
+      "ok": true,
+      "overshoot": 0.017296995674212418,
+      "p95_error": 0.030083641445300922,
+      "peak_torque": 2.1732405714299885,
+      "peak_velocity": 0.8128210872848547,
+      "rmse": 0.014008496574986427,
+      "settle_s": 0.32
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0005466318409271844,
+        "torque_scale": 0.8908960392221907,
+        "velocity_noise_rad_s": 0.00935272739552066
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03886341585209161,
+      "ok": true,
+      "overshoot": 0.014418718073224472,
+      "p95_error": 0.014185817895386801,
+      "peak_torque": 2.0242067443265666,
+      "peak_velocity": 0.7700038023320503,
+      "rmse": 0.011138274315933908,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0005024538462156284,
+        "torque_scale": 0.8911984642293637,
+        "velocity_noise_rad_s": 0.007568067521101395
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.039973929076328484,
+      "ok": true,
+      "overshoot": 0.014849444674242736,
+      "p95_error": 0.012453950087923686,
+      "peak_torque": 1.9346892591009237,
+      "peak_velocity": 0.7358512925734337,
+      "rmse": 0.010045166246118243,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0004794854772385544,
+        "torque_scale": 0.9724038745135628,
+        "velocity_noise_rad_s": 0.0025059040529644746
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03733099085712511,
+      "ok": true,
+      "overshoot": 0.0054332666664924645,
+      "p95_error": 0.011524353278805365,
+      "peak_torque": 2.0578197645715335,
+      "peak_velocity": 0.6987605511093756,
+      "rmse": 0.009394632713022943,
+      "settle_s": 0.27
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0008469578669802144,
+        "torque_scale": 0.8957590899293071,
+        "velocity_noise_rad_s": 0.00629370160276211
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03941675175568306,
+      "ok": true,
+      "overshoot": 0.005284050968254357,
+      "p95_error": 0.014221455636357348,
+      "peak_torque": 1.864694676296515,
+      "peak_velocity": 0.6983243920103316,
+      "rmse": 0.011556708961804284,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0009228602719622028,
+        "torque_scale": 0.9597291335922943,
+        "velocity_noise_rad_s": 0.004004430479153309
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03698957234611184,
+      "ok": true,
+      "overshoot": 0.004192920213271521,
+      "p95_error": 0.029147364191364968,
+      "peak_torque": 1.835891330152237,
+      "peak_velocity": 0.6732508155143874,
+      "rmse": 0.014130194293937769,
+      "settle_s": 0.28600000000000003
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0007628651318797682,
+        "torque_scale": 0.9930361547259822,
+        "velocity_noise_rad_s": 0.00882696734371147
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.029696077273104006,
+      "ok": true,
+      "overshoot": 0.0,
+      "p95_error": 0.04402735609231161,
+      "peak_torque": 6.788607567601182,
+      "peak_velocity": 1.4229349415271,
+      "rmse": 0.018966124816055082,
+      "settle_s": 0.59
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0002564706591464424,
+        "torque_scale": 0.9934703342966659,
+        "velocity_noise_rad_s": 0.006844240184846756
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.031080116579192532,
+      "ok": true,
+      "overshoot": 0.0,
+      "p95_error": 0.03255944150846159,
+      "peak_torque": 6.740116719945515,
+      "peak_velocity": 1.3420642221665526,
+      "rmse": 0.01567689127671443,
+      "settle_s": 0.254
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0006001126321577811,
+        "torque_scale": 0.9047563643428614,
+        "velocity_noise_rad_s": 0.007088307736569015
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03292056024806991,
+      "ok": true,
+      "overshoot": 0.0,
+      "p95_error": 0.020815318432484083,
+      "peak_torque": 6.2534004560998335,
+      "peak_velocity": 1.3181904281500263,
+      "rmse": 0.014984881833882606,
+      "settle_s": 0.504
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.000399468689331281,
+        "torque_scale": 0.9461226529216074,
+        "velocity_noise_rad_s": 0.008739326663770714
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03181601397641189,
+      "ok": true,
+      "overshoot": 0.03888333113344119,
+      "p95_error": 0.019071569583999137,
+      "peak_torque": 6.412057130073503,
+      "peak_velocity": 1.3160059297956492,
+      "rmse": 0.014007760545275657,
+      "settle_s": 0.296
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.00035733600990064094,
+        "torque_scale": 0.9423553753506974,
+        "velocity_noise_rad_s": 0.005073156060360701
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03194728121433523,
+      "ok": true,
+      "overshoot": 0.03385733100737244,
+      "p95_error": 0.02285716037999724,
+      "peak_torque": 6.464929284631676,
+      "peak_velocity": 1.3094704107941102,
+      "rmse": 0.013959462222457695,
+      "settle_s": 0.536
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.00040297565379431076,
+        "torque_scale": 0.9385985613130966,
+        "velocity_noise_rad_s": 0.009961718836821417
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03365952982649975,
+      "ok": true,
+      "overshoot": 0.0404209797534288,
+      "p95_error": 0.028344293348145238,
+      "peak_torque": 6.449648907339988,
+      "peak_velocity": 1.279427841877955,
+      "rmse": 0.015482429790159917,
+      "settle_s": 0.48
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0005240931732549308,
+        "torque_scale": 0.9085870937729738,
+        "velocity_noise_rad_s": 0.003222098669835712
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.0391935910924965,
+      "ok": true,
+      "overshoot": 0.004056944869522884,
+      "p95_error": 0.02934917310135497,
+      "peak_torque": 0.3562349422828858,
+      "peak_velocity": 0.2559195006039619,
+      "rmse": 0.01046049124936338,
+      "settle_s": 0.326
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0008500531168026662,
+        "torque_scale": 0.9047654311937098,
+        "velocity_noise_rad_s": 0.0037293929200832112
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.039265273273819686,
+      "ok": true,
+      "overshoot": 0.00435734078728222,
+      "p95_error": 0.009382775276389761,
+      "peak_torque": 0.37266285726000276,
+      "peak_velocity": 0.25275571143475795,
+      "rmse": 0.005564600846907896,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.00045795313754643375,
+        "torque_scale": 0.9046260177688721,
+        "velocity_noise_rad_s": 0.009390121890436521
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.039703382075101275,
+      "ok": true,
+      "overshoot": 0.003686288319649497,
+      "p95_error": 0.002839577414906276,
+      "peak_torque": 0.36767362057165065,
+      "peak_velocity": 0.17973761518566259,
+      "rmse": 0.0016071701609552671,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.000770384084354115,
+        "torque_scale": 0.9257966230810604,
+        "velocity_noise_rad_s": 0.009842412939216528
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03824130136982501,
+      "ok": true,
+      "overshoot": 0.003622969545109867,
+      "p95_error": 0.0028103592482074473,
+      "peak_torque": 0.3946487055486536,
+      "peak_velocity": 0.18547546828125017,
+      "rmse": 0.0016098045888950075,
+      "settle_s": 0.266
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.000677636861539015,
+        "torque_scale": 0.9274013514511251,
+        "velocity_noise_rad_s": 0.0028900130031677546
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03810600234648563,
+      "ok": true,
+      "overshoot": 0.004213713724655135,
+      "p95_error": 0.00935461083382051,
+      "peak_torque": 0.3833868586816685,
+      "peak_velocity": 0.25584592580908755,
+      "rmse": 0.0055561512945663145,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0006566032952840032,
+        "torque_scale": 0.9301711912183285,
+        "velocity_noise_rad_s": 0.00754131890648113
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03823208572297778,
+      "ok": true,
+      "overshoot": 0.003950437510118622,
+      "p95_error": 0.02938828868615861,
+      "peak_torque": 0.38326755289532005,
+      "peak_velocity": 0.2662526361227972,
+      "rmse": 0.010468657022636595,
+      "settle_s": 0.326
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0007614605640843631,
+        "torque_scale": 0.9918170978598649,
+        "velocity_noise_rad_s": 0.002088008331333539
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03568956878004617,
+      "ok": true,
+      "overshoot": 0.0035278541157607035,
+      "p95_error": 0.03125592932873411,
+      "peak_torque": 1.5552866715221783,
+      "peak_velocity": 0.3424340999610958,
+      "rmse": 0.011228842049177434,
+      "settle_s": 0.322
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.000430109097636671,
+        "torque_scale": 0.9605494668153268,
+        "velocity_noise_rad_s": 0.007789327553805186
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03693270615425051,
+      "ok": true,
+      "overshoot": 0.002854822165272934,
+      "p95_error": 0.012634328613515787,
+      "peak_torque": 1.6128480294923584,
+      "peak_velocity": 0.3592519338799653,
+      "rmse": 0.0066393041263561655,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0007780053593597996,
+        "torque_scale": 0.930826697381004,
+        "velocity_noise_rad_s": 0.0020035766081773526
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.038484217551064744,
+      "ok": true,
+      "overshoot": 0.0014729486845805693,
+      "p95_error": 0.00713584344679759,
+      "peak_torque": 1.5471546692538474,
+      "peak_velocity": 0.2899891792586725,
+      "rmse": 0.003607598420060586,
+      "settle_s": 0.262
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0006723725024244643,
+        "torque_scale": 0.8809157248578866,
+        "velocity_noise_rad_s": 0.00879183969021697
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.039406201180148794,
+      "ok": true,
+      "overshoot": 0.011220008705995264,
+      "p95_error": 0.007326545454095933,
+      "peak_torque": 1.5425500575088544,
+      "peak_velocity": 0.3507032149412461,
+      "rmse": 0.0037460505432961077,
+      "settle_s": 0.268
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0007395281916712538,
+        "torque_scale": 0.9987563077160966,
+        "velocity_noise_rad_s": 0.009024210296380893
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03563590275869059,
+      "ok": true,
+      "overshoot": 0.007473022578250409,
+      "p95_error": 0.007448500396810871,
+      "peak_torque": 1.5574541523094148,
+      "peak_velocity": 0.24708980563915645,
+      "rmse": 0.005799580719306,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.00037829443559292137,
+        "torque_scale": 0.9816770738161392,
+        "velocity_noise_rad_s": 0.0059549551195240595
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03676183506731612,
+      "ok": true,
+      "overshoot": 0.011702484842595152,
+      "p95_error": 0.025436704141252015,
+      "peak_torque": 1.6217953517221355,
+      "peak_velocity": 0.24928424606455582,
+      "rmse": 0.010172938557971991,
+      "settle_s": 0.32
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.00036146465231799815,
+        "torque_scale": 0.9550520446089612,
+        "velocity_noise_rad_s": 0.009767857110090287
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.0371203894451478,
+      "ok": true,
+      "overshoot": 0.005348372473474285,
+      "p95_error": 0.028359005310843618,
+      "peak_torque": 0.3856277658759827,
+      "peak_velocity": 0.2611257226301385,
+      "rmse": 0.0103452246840842,
+      "settle_s": 0.32
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.000449066107531106,
+        "torque_scale": 0.9706227922706673,
+        "velocity_noise_rad_s": 0.008679076109115693
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.03722730808347254,
+      "ok": true,
+      "overshoot": 0.005136145381530018,
+      "p95_error": 0.00845454457876673,
+      "peak_torque": 0.3496002803342407,
+      "peak_velocity": 0.24295875049146698,
+      "rmse": 0.005517496319211774,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0008678248414042697,
+        "torque_scale": 0.9476556625993533,
+        "velocity_noise_rad_s": 0.0035744904425320874
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.03792284858677601,
+      "ok": true,
+      "overshoot": 0.00460984350731483,
+      "p95_error": 0.00309263459131366,
+      "peak_torque": 0.3633679241167547,
+      "peak_velocity": 0.19682622172905107,
+      "rmse": 0.0018061267020896478,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0004064786209027634,
+        "torque_scale": 0.9660702060933469,
+        "velocity_noise_rad_s": 0.003279919761280282
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.037638926610328124,
+      "ok": true,
+      "overshoot": 0.004609696742378362,
+      "p95_error": 0.0031659116299947486,
+      "peak_torque": 0.29110698364994464,
+      "peak_velocity": 0.18535783270626827,
+      "rmse": 0.0017974521921590015,
+      "settle_s": 0.262
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0003444052579701927,
+        "torque_scale": 0.932303497368647,
+        "velocity_noise_rad_s": 0.009646259023318133
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.03827707525825345,
+      "ok": true,
+      "overshoot": 0.005175408870391432,
+      "p95_error": 0.008344280373418009,
+      "peak_torque": 0.3362186983566352,
+      "peak_velocity": 0.24613659654916126,
+      "rmse": 0.005520363909452678,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0005110225406664761,
+        "torque_scale": 0.950418005538487,
+        "velocity_noise_rad_s": 0.0035056080520474587
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.037578366862659175,
+      "ok": true,
+      "overshoot": 0.00423929217615248,
+      "p95_error": 0.02831405578830071,
+      "peak_torque": 0.34995699080374404,
+      "peak_velocity": 0.25652340898420095,
+      "rmse": 0.010314736743943391,
+      "settle_s": 0.324
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0006628082309203683,
+        "torque_scale": 0.9638750034467254,
+        "velocity_noise_rad_s": 0.0032968730235840866
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03741059475359912,
+      "ok": true,
+      "overshoot": 0.02297046555571458,
+      "p95_error": 0.04587041106579428,
+      "peak_torque": 5.3941842116315835,
+      "peak_velocity": 1.049737220736286,
+      "rmse": 0.01465596058316495,
+      "settle_s": 0.324
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0007175902870120699,
+        "torque_scale": 0.9225647065297741,
+        "velocity_noise_rad_s": 0.005495948264750627
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.039031741079030846,
+      "ok": true,
+      "overshoot": 0.025918545976432165,
+      "p95_error": 0.03186811817700687,
+      "peak_torque": 5.6149271561628025,
+      "peak_velocity": 1.081363740253355,
+      "rmse": 0.010710836772770082,
+      "settle_s": 0.274
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0006889489139964675,
+        "torque_scale": 0.9210213681613105,
+        "velocity_noise_rad_s": 0.008461770947945872
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03962582676234082,
+      "ok": true,
+      "overshoot": 0.027877035349082535,
+      "p95_error": 0.019123216035379025,
+      "peak_torque": 5.1214487445093,
+      "peak_velocity": 0.9199704591749268,
+      "rmse": 0.0077419715070977686,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0008366001132005808,
+        "torque_scale": 0.9930862858638235,
+        "velocity_noise_rad_s": 0.005258640601481242
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.035908287598982604,
+      "ok": true,
+      "overshoot": 0.03204932590005801,
+      "p95_error": 0.01835352636620735,
+      "peak_torque": 5.535630590881775,
+      "peak_velocity": 0.9914653451716521,
+      "rmse": 0.007535818646370716,
+      "settle_s": 0.278
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0008133649041136475,
+        "torque_scale": 0.9986336462449996,
+        "velocity_noise_rad_s": 0.003933628033257798
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.034693513404536996,
+      "ok": true,
+      "overshoot": 0.0236291379365449,
+      "p95_error": 0.019192722781348107,
+      "peak_torque": 5.202013251252439,
+      "peak_velocity": 0.8150420224802879,
+      "rmse": 0.007803384244438268,
+      "settle_s": 0.51
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0003233914603884049,
+        "torque_scale": 0.9862014075543322,
+        "velocity_noise_rad_s": 0.002480225740398473
+      },
+      "joint": "right_shoulder_pitch_joint",
+      "nonselected_drift": 0.03697208027548071,
+      "ok": true,
+      "overshoot": 0.03154882393476796,
+      "p95_error": 0.028502469136146194,
+      "peak_torque": 5.469020808079001,
+      "peak_velocity": 0.9514488942494667,
+      "rmse": 0.01124943121497525,
+      "settle_s": 0.308
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0007925213392018357,
+        "torque_scale": 0.8947491261796097,
+        "velocity_noise_rad_s": 0.007221026097780966
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.04028227191450663,
+      "ok": true,
+      "overshoot": 0.028874449791581505,
+      "p95_error": 0.032988973814648055,
+      "peak_torque": 3.4366324862379902,
+      "peak_velocity": 0.9451819718853973,
+      "rmse": 0.021017071544038167,
+      "settle_s": 0.418
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.00048701120520539324,
+        "torque_scale": 0.9805979478984801,
+        "velocity_noise_rad_s": 0.009922271324923244
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.036298533193463746,
+      "ok": true,
+      "overshoot": 0.02591407022064058,
+      "p95_error": 0.025214730781847154,
+      "peak_torque": 3.3332680998251183,
+      "peak_velocity": 0.7986487612110857,
+      "rmse": 0.01750099942979358,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0007059999226672021,
+        "torque_scale": 0.9074242696369251,
+        "velocity_noise_rad_s": 0.004480653848918912
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.038411024257737944,
+      "ok": true,
+      "overshoot": 0.027882722415092938,
+      "p95_error": 0.023455063422095027,
+      "peak_torque": 3.257292185568713,
+      "peak_velocity": 0.7532353876562494,
+      "rmse": 0.018029969702645567,
+      "settle_s": 0.27
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0007335427781927936,
+        "torque_scale": 0.9762893705582704,
+        "velocity_noise_rad_s": 0.00637950619505118
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.036567898207790224,
+      "ok": true,
+      "overshoot": 0.006586147873544166,
+      "p95_error": 0.02165029153009204,
+      "peak_torque": 3.351027803699636,
+      "peak_velocity": 0.7136557390596857,
+      "rmse": 0.017557635748851032,
+      "settle_s": 0.31
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0005137456431376223,
+        "torque_scale": 0.9473961232205937,
+        "velocity_noise_rad_s": 0.002359228225762255
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03766597216170285,
+      "ok": true,
+      "overshoot": 0.006650898195423638,
+      "p95_error": 0.026261673771041782,
+      "peak_torque": 3.365099793604381,
+      "peak_velocity": 0.6785033706723381,
+      "rmse": 0.01934606824564445,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.000811061097086563,
+        "torque_scale": 0.9560091425301964,
+        "velocity_noise_rad_s": 0.0076882323698060605
+      },
+      "joint": "right_shoulder_roll_joint",
+      "nonselected_drift": 0.03809451432124553,
+      "ok": true,
+      "overshoot": 0.0007904697762882232,
+      "p95_error": 0.028444729927502018,
+      "peak_torque": 3.4109602683241365,
+      "peak_velocity": 0.6431905002404016,
+      "rmse": 0.021625859155448582,
+      "settle_s": 0.28200000000000003
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0006568458359824001,
+        "torque_scale": 0.9679326643919728,
+        "velocity_noise_rad_s": 0.008853686385611948
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.036902135569756155,
+      "ok": true,
+      "overshoot": 0.017119071142494002,
+      "p95_error": 0.029924725449943363,
+      "peak_torque": 2.3380602165454665,
+      "peak_velocity": 0.8256496091772272,
+      "rmse": 0.014019529429885868,
+      "settle_s": 0.322
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0006401528847915054,
+        "torque_scale": 0.9914911576310014,
+        "velocity_noise_rad_s": 0.00456039054700785
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.036192307765953245,
+      "ok": true,
+      "overshoot": 0.012972744566558732,
+      "p95_error": 0.012881967218695466,
+      "peak_torque": 2.1438374673801968,
+      "peak_velocity": 0.7341444621505554,
+      "rmse": 0.010557916218491828,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0006583481205572101,
+        "torque_scale": 0.9708792034759411,
+        "velocity_noise_rad_s": 0.004662581206260436
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03747182678393675,
+      "ok": true,
+      "overshoot": 0.013721152394153663,
+      "p95_error": 0.011614729625261649,
+      "peak_torque": 2.1420442414954195,
+      "peak_velocity": 0.7153223178563463,
+      "rmse": 0.009360766045535898,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.00047095550521288,
+        "torque_scale": 0.9792991815138555,
+        "velocity_noise_rad_s": 0.0026299388931892206
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03671676914398323,
+      "ok": true,
+      "overshoot": 0.005740757687131908,
+      "p95_error": 0.011451631411997367,
+      "peak_torque": 2.134349472939048,
+      "peak_velocity": 0.707919045772314,
+      "rmse": 0.00929913462758229,
+      "settle_s": 0.27
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0006699378989905717,
+        "torque_scale": 0.9703989647618189,
+        "velocity_noise_rad_s": 0.0029218664894575994
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03762197295527076,
+      "ok": true,
+      "overshoot": 0.005166941858164832,
+      "p95_error": 0.013993149034874534,
+      "peak_torque": 2.0597558943192356,
+      "peak_velocity": 0.6800105263770085,
+      "rmse": 0.011124877041380151,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.000710322036959746,
+        "torque_scale": 0.8892606943815896,
+        "velocity_noise_rad_s": 0.007329604881480444
+      },
+      "joint": "right_shoulder_yaw_joint",
+      "nonselected_drift": 0.03995683557437115,
+      "ok": true,
+      "overshoot": 0.0033509759943293332,
+      "p95_error": 0.02933628456464212,
+      "peak_torque": 1.7061484417284374,
+      "peak_velocity": 0.6682790937969011,
+      "rmse": 0.014770583003820496,
+      "settle_s": 0.28200000000000003
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0003022260500689532,
+        "torque_scale": 0.9141228977540096,
+        "velocity_noise_rad_s": 0.0027423054736937756
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03151491354793596,
+      "ok": true,
+      "overshoot": 0.0,
+      "p95_error": 0.045352480393786435,
+      "peak_torque": 6.639906695934935,
+      "peak_velocity": 1.4321278590789055,
+      "rmse": 0.019836701769257076,
+      "settle_s": 0.324
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0002785788339354907,
+        "torque_scale": 0.9979305155441548,
+        "velocity_noise_rad_s": 0.007848569779983291
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03050040677385059,
+      "ok": true,
+      "overshoot": 0.0,
+      "p95_error": 0.031970023289959924,
+      "peak_torque": 6.6361972304436,
+      "peak_velocity": 1.3154227645425902,
+      "rmse": 0.015223348811035238,
+      "settle_s": 0.256
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0003726586861990389,
+        "torque_scale": 0.9191493623048258,
+        "velocity_noise_rad_s": 0.008652892064543125
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03227502510752841,
+      "ok": true,
+      "overshoot": 0.0,
+      "p95_error": 0.019976429019720646,
+      "peak_torque": 6.529619226719185,
+      "peak_velocity": 1.3481996921484354,
+      "rmse": 0.014517050734999723,
+      "settle_s": 0.506
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.000365610904332349,
+        "torque_scale": 0.9424810083177925,
+        "velocity_noise_rad_s": 0.00494262073271521
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03205976076843281,
+      "ok": true,
+      "overshoot": 0.03890340912666902,
+      "p95_error": 0.019015935324812452,
+      "peak_torque": 6.475473931386947,
+      "peak_velocity": 1.3154151378063876,
+      "rmse": 0.01395868316757361,
+      "settle_s": 0.298
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0009098469141912961,
+        "torque_scale": 0.8824251552527694,
+        "velocity_noise_rad_s": 0.007397768362749337
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.03299316695304195,
+      "ok": true,
+      "overshoot": 0.0359836624329964,
+      "p95_error": 0.024030873964516187,
+      "peak_torque": 6.340731527975963,
+      "peak_velocity": 1.3462282088860853,
+      "rmse": 0.014980759162455656,
+      "settle_s": 0.53
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.000673591038355946,
+        "torque_scale": 0.8925764547789491,
+        "velocity_noise_rad_s": 0.005220526270198942
+      },
+      "joint": "right_elbow_joint",
+      "nonselected_drift": 0.0337000336056347,
+      "ok": true,
+      "overshoot": 0.040802302928870535,
+      "p95_error": 0.029256704763121026,
+      "peak_torque": 6.14887994108329,
+      "peak_velocity": 1.304508186470871,
+      "rmse": 0.015841667370180338,
+      "settle_s": 0.484
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.00041871049435004124,
+        "torque_scale": 0.9482178261564086,
+        "velocity_noise_rad_s": 0.009925700885527813
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03832718418504119,
+      "ok": true,
+      "overshoot": 0.004070448579525175,
+      "p95_error": 0.02924685620332075,
+      "peak_torque": 0.3591269518626884,
+      "peak_velocity": 0.2600918126231845,
+      "rmse": 0.010444087825541527,
+      "settle_s": 0.326
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0004924187038490797,
+        "torque_scale": 0.8963175780831033,
+        "velocity_noise_rad_s": 0.0024010044669380485
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03966647005376621,
+      "ok": true,
+      "overshoot": 0.004228664380298203,
+      "p95_error": 0.009372954724031051,
+      "peak_torque": 0.33543784810910326,
+      "peak_velocity": 0.24250509337339357,
+      "rmse": 0.005561797216887294,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0008503349377636933,
+        "torque_scale": 0.9114374287084164,
+        "velocity_noise_rad_s": 0.005240805811018424
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03922490377944645,
+      "ok": true,
+      "overshoot": 0.0036247311683968893,
+      "p95_error": 0.0028904429404671447,
+      "peak_torque": 0.3435137247376632,
+      "peak_velocity": 0.17636650792205352,
+      "rmse": 0.0016121711042526275,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0008326778444072155,
+        "torque_scale": 0.9784812290157467,
+        "velocity_noise_rad_s": 0.0074022273956201095
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03700842125265241,
+      "ok": true,
+      "overshoot": 0.0036791950202441533,
+      "p95_error": 0.002809478216746649,
+      "peak_torque": 0.4070658585898608,
+      "peak_velocity": 0.18024451595724175,
+      "rmse": 0.0015980751632231468,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.00039778717774773106,
+        "torque_scale": 0.9426528102439065,
+        "velocity_noise_rad_s": 0.006625565643786615
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03757449911896556,
+      "ok": true,
+      "overshoot": 0.0042405153588271766,
+      "p95_error": 0.009359953104970254,
+      "peak_torque": 0.3301755915045411,
+      "peak_velocity": 0.24859576157365662,
+      "rmse": 0.005560090395334926,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0007442303417682784,
+        "torque_scale": 0.9356066120584589,
+        "velocity_noise_rad_s": 0.0053928196292322836
+      },
+      "joint": "right_wrist_roll_joint",
+      "nonselected_drift": 0.03732665052210174,
+      "ok": true,
+      "overshoot": 0.004177544779467635,
+      "p95_error": 0.029273062387370603,
+      "peak_torque": 0.38118334360845857,
+      "peak_velocity": 0.260736777489931,
+      "rmse": 0.010446473842062504,
+      "settle_s": 0.326
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.000801542467564309,
+        "torque_scale": 0.9186354918954713,
+        "velocity_noise_rad_s": 0.004913060426697483
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03778166893529629,
+      "ok": true,
+      "overshoot": 0.0033284453946823903,
+      "p95_error": 0.031630897131258044,
+      "peak_torque": 1.4849892040072208,
+      "peak_velocity": 0.36482925045939785,
+      "rmse": 0.011372068572166194,
+      "settle_s": 0.322
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0003027084569073657,
+        "torque_scale": 0.9080208552122128,
+        "velocity_noise_rad_s": 0.006866123923980752
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03886406369770114,
+      "ok": true,
+      "overshoot": 0.002692267047330152,
+      "p95_error": 0.013243024132013729,
+      "peak_torque": 1.577451190701974,
+      "peak_velocity": 0.36766229786259774,
+      "rmse": 0.006767618825342075,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0004469701510642516,
+        "torque_scale": 0.9941634652860982,
+        "velocity_noise_rad_s": 0.009384535729080186
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03629275677947749,
+      "ok": true,
+      "overshoot": 0.0015920743782519998,
+      "p95_error": 0.006673896412023213,
+      "peak_torque": 1.5847356889993724,
+      "peak_velocity": 0.2896233696122946,
+      "rmse": 0.0034496748460915373,
+      "settle_s": 0.258
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0005607606738015514,
+        "torque_scale": 0.8915436703711672,
+        "velocity_noise_rad_s": 0.007997477544834314
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.04015533796112774,
+      "ok": true,
+      "overshoot": 0.011432578368103833,
+      "p95_error": 0.007446497350331568,
+      "peak_torque": 1.597651623337335,
+      "peak_velocity": 0.371465094966968,
+      "rmse": 0.0038037451132408883,
+      "settle_s": 0.266
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0008401150560082085,
+        "torque_scale": 0.9662439098139131,
+        "velocity_noise_rad_s": 0.0052091221432161855
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.0373082852671986,
+      "ok": true,
+      "overshoot": 0.007592272295412816,
+      "p95_error": 0.007560956841212911,
+      "peak_torque": 1.5316195841135998,
+      "peak_velocity": 0.2632807261971485,
+      "rmse": 0.005860639919341468,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0008855095024606,
+        "torque_scale": 0.9069335771170286,
+        "velocity_noise_rad_s": 0.006342469250040004
+      },
+      "joint": "right_wrist_pitch_joint",
+      "nonselected_drift": 0.03888926564941095,
+      "ok": true,
+      "overshoot": 0.011218556775616714,
+      "p95_error": 0.025430702798178183,
+      "peak_torque": 1.6068909490830903,
+      "peak_velocity": 0.2595853579378969,
+      "rmse": 0.010215799488084201,
+      "settle_s": 0.326
+    },
+    {
+      "amplitude": -0.05,
+      "domain_randomization": {
+        "delay_steps": 3,
+        "position_noise_rad": 0.0007327411721658233,
+        "torque_scale": 0.9155083990601955,
+        "velocity_noise_rad_s": 0.0028030851407975393
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.038852216073615,
+      "ok": true,
+      "overshoot": 0.005546096759630109,
+      "p95_error": 0.02854825495252438,
+      "peak_torque": 0.38184558765389903,
+      "peak_velocity": 0.26226537718128384,
+      "rmse": 0.010384672829257549,
+      "settle_s": 0.32
+    },
+    {
+      "amplitude": -0.03,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0006818469036741312,
+        "torque_scale": 0.9591603478290456,
+        "velocity_noise_rad_s": 0.008595775767040278
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.037262570454032966,
+      "ok": true,
+      "overshoot": 0.005045849146920897,
+      "p95_error": 0.0085710660545048,
+      "peak_torque": 0.37083397462044937,
+      "peak_velocity": 0.25018889916620907,
+      "rmse": 0.00552438046561853,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": -0.01,
+      "domain_randomization": {
+        "delay_steps": 2,
+        "position_noise_rad": 0.0009063256153242688,
+        "torque_scale": 0.893911211244528,
+        "velocity_noise_rad_s": 0.00903335396313588
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.03940447606229802,
+      "ok": true,
+      "overshoot": 0.004515305805785751,
+      "p95_error": 0.003094807106779394,
+      "peak_torque": 0.3379371536091744,
+      "peak_velocity": 0.18164630771852322,
+      "rmse": 0.0018063496968848437,
+      "settle_s": 0.264
+    },
+    {
+      "amplitude": 0.01,
+      "domain_randomization": {
+        "delay_steps": 1,
+        "position_noise_rad": 0.0003962554954847738,
+        "torque_scale": 0.9809765809497684,
+        "velocity_noise_rad_s": 0.007562927987532729
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.036511795634383726,
+      "ok": true,
+      "overshoot": 0.0045398847163168245,
+      "p95_error": 0.003147464448992629,
+      "peak_torque": 0.3381495425959106,
+      "peak_velocity": 0.18162701312931973,
+      "rmse": 0.0017835343249170638,
+      "settle_s": 0.266
+    },
+    {
+      "amplitude": 0.03,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0003327563486735739,
+        "torque_scale": 0.9271224881259439,
+        "velocity_noise_rad_s": 0.007116485135980376
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.03926879064395705,
+      "ok": true,
+      "overshoot": 0.005108499771550243,
+      "p95_error": 0.008360404329599608,
+      "peak_torque": 0.3485274177832062,
+      "peak_velocity": 0.2504641570707617,
+      "rmse": 0.005529316561494577,
+      "settle_s": 0.252
+    },
+    {
+      "amplitude": 0.05,
+      "domain_randomization": {
+        "delay_steps": 0,
+        "position_noise_rad": 0.0005069265578323784,
+        "torque_scale": 0.9370266522529126,
+        "velocity_noise_rad_s": 0.008706250454564126
+      },
+      "joint": "right_wrist_yaw_joint",
+      "nonselected_drift": 0.038162876025550185,
+      "ok": true,
+      "overshoot": 0.00424935480044409,
+      "p95_error": 0.02827278531433642,
+      "peak_torque": 0.3152393500677743,
+      "peak_velocity": 0.2574600287823757,
+      "rmse": 0.01030601572357991,
+      "settle_s": 0.324
     }
   ]
 }

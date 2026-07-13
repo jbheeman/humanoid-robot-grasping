@@ -1,0 +1,19 @@
+{
+  "candidate": {
+    "amax": 3.7843289140703043,
+    "kd": 3.6377291340251916,
+    "kp": 110.0,
+    "vmax": 0.24703682257061252
+  },
+  "failure_rate_mean": 0.0,
+  "failure_rate_worst": 0.0,
+  "p95_error_median": 0.052472531664100236,
+  "p95_error_p95": 0.05387017948863001,
+  "promotion": "blocked_pending_guarded_encoder_telemetry",
+  "randomized_replays": 64,
+  "real_robot_validated": false,
+  "schema_version": 1,
+  "score_median": 0.05272301793134797,
+  "score_p95": 0.05411994263666433,
+  "source_run": "runs/simulation/20260712T220614Z"
+}
