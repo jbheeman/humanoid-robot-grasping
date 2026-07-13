@@ -7,7 +7,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODE="${1:-read-only}"
 
 export CLIENT_IP="${CLIENT_IP:-192.168.0.66}"
-export ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0}"
+export ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0,eth0}"
 export UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
 export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export G1_ROBOT_ID="${G1_ROBOT_ID:-g1-lab-01}"

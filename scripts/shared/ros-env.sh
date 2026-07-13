@@ -41,10 +41,12 @@ g1_configure_cyclonedds() {
   local domain_id="${4:-0}"
   local runtime_root="${XDG_RUNTIME_DIR:-/tmp}/g1-ros-${UID}"
   local config_file="${runtime_root}/cyclonedds-${role}.xml"
-  local interface_xml
+  local interface_xml=""
+  local interface
   local peer
   local peers_xml=""
   local -a peers=()
+  local -a interfaces=()
 
   if [[ ! "${role}" =~ ^[a-z0-9_-]+$ ]]; then
     echo "Invalid ROS role: ${role}" >&2
@@ -56,11 +58,20 @@ g1_configure_cyclonedds() {
   fi
   if [[ "${interface_name}" == "auto" ]]; then
     interface_xml='<NetworkInterface autodetermine="true" priority="default" />'
-  elif [[ "${interface_name}" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
-    interface_xml="<NetworkInterface name=\"${interface_name}\" priority=\"default\" />"
   else
-    echo "Invalid ROS interface name: ${interface_name}" >&2
-    return 2
+    IFS=',' read -r -a interfaces <<< "${interface_name}"
+    for interface in "${interfaces[@]}"; do
+      interface="${interface//[[:space:]]/}"
+      if [[ ! "${interface}" =~ ^[A-Za-z0-9_.:-]+$ ]]; then
+        echo "Invalid ROS interface name: ${interface}" >&2
+        return 2
+      fi
+      interface_xml+="<NetworkInterface name=\"${interface}\" priority=\"default\" />"
+    done
+    if [[ -z "${interface_xml}" ]]; then
+      echo "At least one ROS interface is required." >&2
+      return 2
+    fi
   fi
 
   IFS=',' read -r -a peers <<< "${peers_csv}"

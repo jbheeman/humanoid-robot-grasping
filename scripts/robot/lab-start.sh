@@ -6,7 +6,7 @@ set -euo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 export CLIENT_IP="${CLIENT_IP:-192.168.0.66}"
-export ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0}"
+export ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0,eth0}"
 export RGB_MODE="${RGB_MODE:-30fps}"
 export RGB_WIDTH="${RGB_WIDTH:-960}"
 export RGB_HEIGHT="${RGB_HEIGHT:-540}"
