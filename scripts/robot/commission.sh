@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ROBOT_PYTHON="${ROBOT_PYTHON:-${ROOT_DIR}/robot/.venv/bin/python}"
 CLIENT_IP="${CLIENT_IP:-${GB10_HOST:-}}"
 ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0}"
+HARDWARE_INTERFACE="${HARDWARE_INTERFACE:-wlan0}"
 UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 ALLOW_MOVEMENT="${ALLOW_MOVEMENT:-0}"
@@ -14,6 +15,7 @@ CALIBRATION="${CALIBRATION:-}"
 COMMISSIONING_ROOT="${COMMISSIONING_ROOT:-${ROOT_DIR}/runs/research/arm_commissioning}"
 COMMISSIONING_PROFILE="${COMMISSIONING_PROFILE:-${HOME}/.config/g1-grasping/right-arm-home.json}"
 DEPTH_SOURCE="${DEPTH_SOURCE:-auto}"
+RGB_MODE="${RGB_MODE:-unitree}"
 
 if [[ ! -x "${ROBOT_PYTHON}" ]]; then
   echo "Missing robot environment: ${ROBOT_PYTHON}" >&2
@@ -39,6 +41,15 @@ g1_configure_cyclonedds \
   robot-commissioning "${ROBOT_INTERFACE}" \
   "${CLIENT_IP},${UNITREE_CONTROL_PEER}" "${ROS_DOMAIN_ID}"
 export PYTHONPATH="${ROOT_DIR}:${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+# The stock robot image keeps SDK2 as a source checkout.  This is deliberately
+# separate from ROS: only the local hardware adapter imports it.
+UNITREE_SDK_PYTHONPATH="${UNITREE_SDK_PYTHONPATH:-${HOME}/unitree_sdk2_python}"
+if [[ ! -f "${UNITREE_SDK_PYTHONPATH}/unitree_sdk2py/__init__.py" ]]; then
+  echo "Native Unitree SDK2 was not found at ${UNITREE_SDK_PYTHONPATH}." >&2
+  echo "Set UNITREE_SDK_PYTHONPATH to the unitree_sdk2_python checkout." >&2
+  exit 1
+fi
+export PYTHONPATH="${UNITREE_SDK_PYTHONPATH}:${PYTHONPATH}"
 
 args=(
   --control-mode commissioning
@@ -47,6 +58,8 @@ args=(
   --commissioning-profile "${COMMISSIONING_PROFILE}"
   --depth-source "${DEPTH_SOURCE}"
   --disable-depth
+  --hardware-interface "${HARDWARE_INTERFACE}"
+  --hardware-domain-id "${ROS_DOMAIN_ID}"
 )
 if [[ -n "${CALIBRATION}" ]]; then
   args+=(--calibration "${CALIBRATION}")
@@ -63,6 +76,7 @@ echo "Movement permitted: ${ALLOW_MOVEMENT}"
 echo "Robot ID:           ${G1_ROBOT_ID}"
 echo "Expected mode:       ${EXPECTED_MOTION_MODE:-unconfigured}"
 echo "ROS interface:       ${ROBOT_INTERFACE}"
+echo "Motor DDS interface: ${HARDWARE_INTERFACE}"
 echo "ROS domain:          ${ROS_DOMAIN_ID}"
 echo "Research data:       ${COMMISSIONING_ROOT}"
 echo "Promoted home:       ${COMMISSIONING_PROFILE}"
@@ -75,4 +89,43 @@ echo "The webpage Stop button is not a physical e-stop."
 echo "============================================================"
 echo
 
-exec "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${args[@]}"
+pids=()
+cleanup() {
+  local pid
+  for pid in "${pids[@]:-}"; do
+    kill "${pid}" 2>/dev/null || true
+  done
+  wait "${pids[@]:-}" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# The same GB10 process serves vision at / and commissioning at
+# /commissioning/.  Start the RGB relay here so commissioning never silently
+# leaves the vision page without camera packets.
+case "${RGB_MODE}" in
+  unitree)
+    ROBOT_INTERFACE="${HARDWARE_INTERFACE}" CLIENT_IP="${CLIENT_IP}" \
+      "${ROOT_DIR}/scripts/robot/rgb-relay.sh" &
+    pids+=("$!")
+    ;;
+  30fps)
+    ROBOT_INTERFACE="${HARDWARE_INTERFACE}" "${ROOT_DIR}/scripts/robot/rgb-30fps.sh" &
+    pids+=("$!")
+    ROBOT_INTERFACE="${HARDWARE_INTERFACE}" CLIENT_IP="${CLIENT_IP}" \
+      "${ROOT_DIR}/scripts/robot/rgb-relay.sh" &
+    pids+=("$!")
+    ;;
+  off)
+    echo "RGB relay disabled (RGB_MODE=off)."
+    ;;
+  *)
+    echo "RGB_MODE must be unitree, 30fps, or off; got: ${RGB_MODE}" >&2
+    exit 2
+    ;;
+esac
+
+"${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${args[@]}" &
+pids+=("$!")
+wait -n "${pids[@]}"
+echo "A robot process exited; stopping the process group." >&2
+exit 1

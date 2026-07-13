@@ -1,40 +1,36 @@
-"""Lazy ROS 2 adapter for the persistent G1 29-DOF arm bridge."""
+"""Robot-local Unitree SDK adapter for the persistent G1 29-DOF arm bridge.
+
+The G1 firmware publishes ``rt/lowstate`` and consumes ``rt/arm_sdk`` using
+Unitree's native DDS IDL.  It is *not* a ROS 2 ``unitree_hg`` endpoint: trying
+to subscribe with generated ROS messages discovers the topic but cannot decode
+samples on the stock robot image.  Project traffic stays on ROS 2; only this
+robot-local hardware edge uses SDK2.
+"""
 
 from __future__ import annotations
 
 from collections import deque
 from dataclasses import replace
-import json
 import math
 import threading
 import time
 from typing import Callable, Optional
 
-from object_tracking.ros2_transport import (
-    Ros2Bindings,
-    Ros2NodeRunner,
-    Ros2RequestResponseClient,
-)
-
 from .arm_bridge import ArmCommand, RobotState
 from .joints import ARM_INDICES, ARM_WEIGHT_INDEX, BODY_JOINT_INDICES
 
 
-LOW_STATE_TOPIC = "/lowstate"
-ARM_COMMAND_TOPIC = "/arm_sdk"
+LOW_STATE_TOPIC = "rt/lowstate"
+ARM_COMMAND_TOPIC = "rt/arm_sdk"
+# Kept as deprecated import aliases for callers that previously imported the
+# ROS motion-switcher topics from this module.  Native SDK2 owns motion-mode
+# checks now, so these are no longer used by the hardware implementation.
 MOTION_REQUEST_TOPIC = "/api/motion_switcher/request"
 MOTION_RESPONSE_TOPIC = "/api/motion_switcher/response"
-MOTION_SWITCHER_API_ID_CHECK_MODE = 1001
 
 
 class UnitreeArmHardware:
-    """ROS-backed implementation of the bridge's small ``ArmHardware`` API.
-
-    ROS imports and node initialization happen only in :meth:`start`, so tests
-    and GB10-only commands do not require ``rclpy``.  ``interface`` and
-    ``domain_id`` remain accepted temporarily for caller compatibility; ROS
-    networking is configured centrally through the sourced environment.
-    """
+    """Native-SDK implementation of the bridge's small ``ArmHardware`` API."""
 
     def __init__(
         self,
@@ -47,16 +43,12 @@ class UnitreeArmHardware:
         max_angular_rate_rad_s: float = 0.5,
         expected_motion_mode: Optional[str] = None,
         ownership_quiet_s: float = 1.0,
-        motion_poll_s: float = 1.0,
-        rpc_timeout_s: float = 1.0,
-        ros_runner: Optional[Ros2NodeRunner] = None,
-        bindings: Optional[Ros2Bindings] = None,
-        node_name: str = "g1_arm_hardware",
+        motion_poll_s: float = 0.25,
     ) -> None:
         if ownership_quiet_s < 0.0:
             raise ValueError("ownership_quiet_s must be non-negative")
-        if motion_poll_s <= 0.0 or rpc_timeout_s <= 0.0:
-            raise ValueError("motion_poll_s and rpc_timeout_s must be positive")
+        if motion_poll_s <= 0.0:
+            raise ValueError("motion_poll_s must be positive")
         self.interface = interface
         self.domain_id = domain_id
         self._monotonic = monotonic
@@ -66,20 +58,15 @@ class UnitreeArmHardware:
         self.expected_motion_mode = expected_motion_mode
         self.ownership_quiet_s = ownership_quiet_s
         self.motion_poll_s = motion_poll_s
-        self.rpc_timeout_s = rpc_timeout_s
         self._lock = threading.Lock()
         self._state: Optional[RobotState] = None
         self._standing_since: Optional[float] = None
-        self._bindings = bindings
-        self._runner = ros_runner
-        self._owns_runner = ros_runner is None
-        self._node_name = node_name
-        self._node: Optional[object] = None
         self._publisher: Optional[object] = None
         self._subscriber: Optional[object] = None
         self._arm_subscriber: Optional[object] = None
         self._low_cmd: Optional[object] = None
-        self._motion_client: Optional[Ros2RequestResponseClient] = None
+        self._motion_client: Optional[object] = None
+        self._crc: Optional[object] = None
         self._started = False
         self._started_at: Optional[float] = None
         self._published_fingerprints: deque[tuple[float, ...]] = deque(maxlen=32)
@@ -92,54 +79,45 @@ class UnitreeArmHardware:
     def start(self) -> None:
         if self._started:
             return
-        runner = self._runner or Ros2NodeRunner(self._node_name, bindings=self._bindings)
-        node = runner.start()
-        bindings = runner.bindings
-        publisher = None
-        subscriber = None
-        arm_subscriber = None
-        motion_client = None
         try:
-            publisher = node.create_publisher(bindings.low_cmd_type, ARM_COMMAND_TOPIC, 10)
-            subscriber = node.create_subscription(
-                bindings.low_state_type,
-                LOW_STATE_TOPIC,
-                self._low_state_callback,
-                10,
+            from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import (
+                MotionSwitcherClient,
             )
-            arm_subscriber = node.create_subscription(
-                bindings.low_cmd_type,
-                ARM_COMMAND_TOPIC,
-                self._arm_command_callback,
-                10,
+            from unitree_sdk2py.core.channel import (
+                ChannelFactoryInitialize,
+                ChannelPublisher,
+                ChannelSubscriber,
             )
-            motion_client = Ros2RequestResponseClient(
-                node,
-                request_type=bindings.request_type,
-                response_type=bindings.response_type,
-                request_topic=MOTION_REQUEST_TOPIC,
-                response_topic=MOTION_RESPONSE_TOPIC,
-                qos_depth=1,
-            )
-            low_cmd = bindings.low_cmd_type()
-        except Exception:
-            if motion_client is not None:
-                motion_client.close()
-            self._destroy(node, "destroy_subscription", arm_subscriber)
-            self._destroy(node, "destroy_subscription", subscriber)
-            self._destroy(node, "destroy_publisher", publisher)
-            if self._owns_runner:
-                runner.close()
-            raise
+            from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
+            from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
+            from unitree_sdk2py.utils.crc import CRC
+        except Exception as exc:  # pragma: no cover - requires robot image
+            raise RuntimeError(
+                "Native Unitree SDK2 is unavailable. Set UNITREE_SDK_PYTHONPATH "
+                "to the robot's unitree_sdk2_python checkout."
+            ) from exc
 
-        self._runner = runner
-        self._bindings = bindings
-        self._node = node
+        # SDK2 accepts one NIC.  ROS may use multiple NICs for GB10 transport;
+        # native Unitree motor DDS is intentionally kept on the robot NIC.
+        interface = self.interface.split(",", 1)[0].strip()
+        if not interface:
+            raise ValueError("native Unitree interface must not be empty")
+        ChannelFactoryInitialize(self.domain_id, interface)
+        publisher = ChannelPublisher(ARM_COMMAND_TOPIC, LowCmd_)
+        publisher.Init()
+        subscriber = ChannelSubscriber(LOW_STATE_TOPIC, LowState_)
+        subscriber.Init(self._low_state_callback, 10)
+        arm_subscriber = ChannelSubscriber(ARM_COMMAND_TOPIC, LowCmd_)
+        arm_subscriber.Init(self._arm_command_callback, 10)
+        motion_client = MotionSwitcherClient()
+        motion_client.SetTimeout(1.0)
+        motion_client.Init()
         self._publisher = publisher
         self._subscriber = subscriber
         self._arm_subscriber = arm_subscriber
         self._motion_client = motion_client
-        self._low_cmd = low_cmd
+        self._low_cmd = unitree_hg_msg_dds__LowCmd_()
+        self._crc = CRC()
         self._started_at = self._monotonic()
         self._ownership_conflict = False
         self._published_fingerprints.clear()
@@ -148,7 +126,7 @@ class UnitreeArmHardware:
         self._motion_thread = threading.Thread(
             target=self._poll_motion_mode,
             daemon=True,
-            name="unitree-ros-motion-mode-monitor",
+            name="unitree-native-motion-mode-monitor",
         )
         self._motion_thread.start()
 
@@ -158,11 +136,9 @@ class UnitreeArmHardware:
             if state is None:
                 return None
             now = self._monotonic()
-            publisher_count = self._publisher_count()
             ownership_verified = bool(
                 self._started_at is not None
                 and now - self._started_at >= self.ownership_quiet_s
-                and publisher_count == 1
                 and not self._ownership_conflict
             )
             mode_verified = bool(
@@ -180,8 +156,13 @@ class UnitreeArmHardware:
             )
 
     def publish(self, command: ArmCommand) -> None:
-        if not self._started or self._publisher is None or self._low_cmd is None:
-            raise RuntimeError("Unitree ROS arm hardware has not been started")
+        if (
+            not self._started
+            or self._publisher is None
+            or self._low_cmd is None
+            or self._crc is None
+        ):
+            raise RuntimeError("Native Unitree arm hardware has not been started")
         low_cmd = self._low_cmd
         low_cmd.mode_pr = 0
         low_cmd.mode_machine = command.mode_machine
@@ -193,39 +174,36 @@ class UnitreeArmHardware:
             motor.kp = command.kp[offset]
             motor.kd = command.kd[offset]
             motor.tau = 0.0
-        # Unitree's /arm_sdk convention uses the otherwise-unused motor slot
-        # as an arm arbitration weight.  ROS serialization supplies the CRC;
-        # Unitree's ROS arm example deliberately leaves LowCmd.crc at zero.
+        # Unitree's arm_sdk convention uses the otherwise-unused motor slot
+        # as an arm arbitration weight.  Waist and legs remain untouched.
         low_cmd.motor_cmd[ARM_WEIGHT_INDEX].q = command.weight
+        low_cmd.crc = self._crc.Crc(low_cmd)
         fingerprint = tuple(command.q) + (float(command.weight), float(command.mode_machine))
         with self._lock:
             self._published_fingerprints.append(fingerprint)
-        self._publisher.publish(low_cmd)
+        write = getattr(self._publisher, "Write", None)
+        if callable(write):
+            write(low_cmd)
+        else:  # pragma: no cover - compatibility with minimal test doubles
+            publish = getattr(self._publisher, "publish", None)
+            if not callable(publish):
+                raise RuntimeError("native Unitree publisher has no Write method")
+            publish(low_cmd)
 
     def close(self) -> None:
         # The safety controller publishes its bounded zero-weight ramp before
         # closing this transport.
-        if not self._started and self._node is None:
+        if not self._started:
             return
         self._started = False
         self._motion_stop.set()
-        motion_client = self._motion_client
-        if motion_client is not None:
-            motion_client.close()
         if self._motion_thread is not None:
-            self._motion_thread.join(timeout=self.rpc_timeout_s + 0.5)
-        node = self._node
-        self._destroy(node, "destroy_subscription", self._arm_subscriber)
-        self._destroy(node, "destroy_subscription", self._subscriber)
-        self._destroy(node, "destroy_publisher", self._publisher)
-        runner = self._runner
-        if self._owns_runner and runner is not None:
-            runner.close()
-        self._node = None
+            self._motion_thread.join(timeout=1.5)
         self._publisher = None
         self._subscriber = None
         self._arm_subscriber = None
         self._low_cmd = None
+        self._crc = None
         self._motion_client = None
         self._motion_thread = None
         self._started_at = None
@@ -234,37 +212,18 @@ class UnitreeArmHardware:
         while not self._motion_stop.is_set():
             client = self._motion_client
             try:
-                if client is None:
-                    raise RuntimeError("motion-switch client is unavailable")
-                result = client.call(
-                    api_id=MOTION_SWITCHER_API_ID_CHECK_MODE,
-                    timeout_s=self.rpc_timeout_s,
-                )
-                if result.status_code != 0:
-                    raise RuntimeError(f"motion-switch status {result.status_code}")
-                value = json.loads(result.data)
-                if not isinstance(value, dict) or not isinstance(value.get("name"), str):
-                    raise ValueError("motion-switch response has no mode name")
-                name = value["name"].strip()
-                if not name:
-                    raise ValueError("motion-switch response has an empty mode name")
+                result = client.CheckMode() if client is not None else None
+                name = None
+                if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[1], dict):
+                    candidate = result[1].get("name")
+                    name = str(candidate).strip() if candidate is not None else None
                 with self._lock:
                     self._motion_mode_name = name
-                    self._motion_mode_checked = True
+                    self._motion_mode_checked = bool(name)
             except Exception:
                 with self._lock:
                     self._motion_mode_checked = False
             self._motion_stop.wait(self.motion_poll_s)
-
-    def _publisher_count(self) -> Optional[int]:
-        node = self._node
-        count_publishers = getattr(node, "count_publishers", None)
-        if not callable(count_publishers):
-            return None
-        try:
-            return int(count_publishers(ARM_COMMAND_TOPIC))
-        except (TypeError, ValueError, RuntimeError):
-            return None
 
     def _arm_command_callback(self, message: object) -> None:
         try:
@@ -401,11 +360,3 @@ class UnitreeArmHardware:
             return tuple(float(item) for item in value)  # type: ignore[union-attr]
         except (TypeError, ValueError):
             return ()
-
-    @staticmethod
-    def _destroy(node: Optional[object], method_name: str, entity: Optional[object]) -> None:
-        if node is None or entity is None:
-            return
-        destroy = getattr(node, method_name, None)
-        if callable(destroy):
-            destroy(entity)

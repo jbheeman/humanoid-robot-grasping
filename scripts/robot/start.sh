@@ -5,6 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ROBOT_PYTHON="${ROBOT_PYTHON:-${ROOT_DIR}/robot/.venv/bin/python}"
 CLIENT_IP="${CLIENT_IP:-${GB10_HOST:-}}"
 ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0}"
+HARDWARE_INTERFACE="${HARDWARE_INTERFACE:-wlan0}"
 UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 CALIBRATION="${CALIBRATION:-}"
@@ -41,6 +42,12 @@ g1_configure_cyclonedds \
   robot "${ROBOT_INTERFACE}" "${CLIENT_IP},${UNITREE_CONTROL_PEER}" "${ROS_DOMAIN_ID}"
 
 export PYTHONPATH="${ROOT_DIR}:${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+UNITREE_SDK_PYTHONPATH="${UNITREE_SDK_PYTHONPATH:-${HOME}/unitree_sdk2_python}"
+if [[ ! -f "${UNITREE_SDK_PYTHONPATH}/unitree_sdk2py/__init__.py" ]]; then
+  echo "Native Unitree SDK2 was not found at ${UNITREE_SDK_PYTHONPATH}." >&2
+  exit 1
+fi
+export PYTHONPATH="${UNITREE_SDK_PYTHONPATH}:${PYTHONPATH}"
 
 node_args=(
   --control-mode tracking
@@ -52,6 +59,8 @@ node_args=(
   --depth-height "${DEPTH_HEIGHT}"
   --depth-capture-fps "${DEPTH_CAPTURE_FPS}"
   --depth-publish-fps "${DEPTH_PUBLISH_FPS}"
+  --hardware-interface "${HARDWARE_INTERFACE}"
+  --hardware-domain-id "${ROS_DOMAIN_ID}"
 )
 if [[ -n "${CALIBRATION}" ]]; then
   node_args+=(--calibration "${CALIBRATION}")
@@ -78,13 +87,13 @@ trap cleanup EXIT INT TERM
 
 case "${RGB_MODE}" in
   unitree)
-    CLIENT_IP="${CLIENT_IP}" "${ROOT_DIR}/scripts/robot/rgb-relay.sh" &
+    ROBOT_INTERFACE="${HARDWARE_INTERFACE}" CLIENT_IP="${CLIENT_IP}" "${ROOT_DIR}/scripts/robot/rgb-relay.sh" &
     pids+=("$!")
     ;;
   30fps)
-    "${ROOT_DIR}/scripts/robot/rgb-30fps.sh" &
+    ROBOT_INTERFACE="${HARDWARE_INTERFACE}" "${ROOT_DIR}/scripts/robot/rgb-30fps.sh" &
     pids+=("$!")
-    ALLOW_EXTERNAL_RGB_SOURCE=1 CLIENT_IP="${CLIENT_IP}" \
+    ALLOW_EXTERNAL_RGB_SOURCE=1 ROBOT_INTERFACE="${HARDWARE_INTERFACE}" CLIENT_IP="${CLIENT_IP}" \
       "${ROOT_DIR}/scripts/robot/rgb-relay.sh" &
     pids+=("$!")
     ;;

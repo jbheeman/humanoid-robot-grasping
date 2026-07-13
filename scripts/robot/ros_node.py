@@ -57,6 +57,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--allow-movement", action="store_true")
     parser.add_argument("--expected-motion-mode")
+    parser.add_argument(
+        "--hardware-interface",
+        default="wlan0",
+        help="Robot NIC used only for native Unitree motor DDS (default: wlan0).",
+    )
+    parser.add_argument("--hardware-domain-id", type=int, default=0)
     parser.add_argument("--robot-id", default="g1")
     parser.add_argument(
         "--commissioning-root",
@@ -193,7 +199,11 @@ class RobotRosNode:
                 0.05 if control_mode is ArmControlMode.COMMISSIONING else 0.35
             ),
         )
-        self.hardware = UnitreeArmHardware(expected_motion_mode=args.expected_motion_mode)
+        self.hardware = UnitreeArmHardware(
+            interface=args.hardware_interface,
+            domain_id=args.hardware_domain_id,
+            expected_motion_mode=args.expected_motion_mode,
+        )
         self.controller = ArmBridgeController(self.hardware, config)
         self.controller.start()
         self.commissioning = (
