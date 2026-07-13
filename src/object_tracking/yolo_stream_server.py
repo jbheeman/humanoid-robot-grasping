@@ -876,6 +876,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--robot-id", help="Robot identity bound to the commissioned arm home")
     parser.add_argument("--target-hz", type=float, default=15.0)
     parser.add_argument(
+        "--trajectory-model",
+        help="Optional trained 3D trajectory checkpoint; invalid/insufficient history falls back to alpha-beta",
+    )
+    parser.add_argument(
         "--execute",
         action="store_true",
         help="Publish arm targets only after every calibration and health gate passes",
@@ -894,8 +898,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--research-hz",
         type=float,
-        default=5.0,
-        help="Structured telemetry sampling rate (default: 5 Hz)",
+        default=15.0,
+        help="Structured telemetry sampling rate (default: 15 Hz, suitable for trajectory training)",
     )
     parser.add_argument("--research-label", default="", help="Human-readable experiment label")
     parser.add_argument("--research-notes", default="", help="Short experimental condition notes")
@@ -1046,6 +1050,9 @@ def main() -> None:
                     robot_id=args.robot_id,
                     execute=args.execute,
                     target_hz=args.target_hz,
+                    trajectory_model_path=(
+                        None if args.trajectory_model is None else Path(args.trajectory_model)
+                    ),
                 ),
                 arm_tracking_snapshot,
                 update_arm_tracking,

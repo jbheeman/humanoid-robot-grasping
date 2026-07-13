@@ -44,6 +44,7 @@ class RuntimeConfig:
     target_hz: float = 15.0
     max_pair_skew_s: float = 0.100
     prediction_horizon_s: float = 0.150
+    trajectory_model_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not 10.0 <= self.target_hz <= 15.0:
@@ -136,6 +137,17 @@ class ArmTrackingRuntime:
                 calibration_id=self.calibration.calibration_id,
             )
         self.filter = PositionVelocityFilter()
+        self.learned_forecaster = None
+        self.trajectory_model_error: str | None = None
+        if config.trajectory_model_path is not None:
+            try:
+                from object_tracking.trajectory_forecaster import LearnedTrajectoryForecaster
+
+                self.learned_forecaster = LearnedTrajectoryForecaster(config.trajectory_model_path)
+            except Exception as exc:
+                # A learned forecast is an optimization, never a reason to disable the
+                # validated depth/filter safety path.
+                self.trajectory_model_error = f"{type(exc).__name__}: {exc}"
         self.stop_event = threading.Event()
         self.thread: threading.Thread | None = None
         self.last_depth: DepthFrame | None = None
@@ -323,7 +335,13 @@ class ArmTrackingRuntime:
             self._reject(base_status, "waiting_for_new_rgb_frame", colormap)
             return
         tracked = self.filter.update(torso, rgb_time)
-        predicted = tracked.predict(self.config.prediction_horizon_s)
+        learned_prediction = None
+        if self.learned_forecaster is not None:
+            self.learned_forecaster.update(torso, rgb_time)
+            learned_prediction = self.learned_forecaster.predict(self.config.prediction_horizon_s)
+        predicted = learned_prediction if learned_prediction is not None else tracked.predict(
+            self.config.prediction_horizon_s
+        )
         target = generate_pregrasp_target(predicted, shoulder_position=(0.0, -0.18, 0.35))
         base_status.update(
             {
@@ -332,6 +350,15 @@ class ArmTrackingRuntime:
                 "depth_valid_fraction": round(estimate.valid_fraction, 4),
                 "object_xyz_m": torso.round(5).tolist(),
                 "predicted_xyz_m": predicted.round(5).tolist(),
+                "prediction_source": (
+                    "learned_trajectory" if learned_prediction is not None else "alpha_beta_fallback"
+                ),
+                "trajectory_model": (
+                    None
+                    if self.config.trajectory_model_path is None
+                    else str(self.config.trajectory_model_path)
+                ),
+                "trajectory_model_error": self.trajectory_model_error,
                 "target_xyz_m": target.position.round(5).tolist(),
             }
         )
