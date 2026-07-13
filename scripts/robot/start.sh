@@ -51,6 +51,12 @@ if [[ ! -f "${UNITREE_SDK_PYTHONPATH}/unitree_sdk2py/__init__.py" ]]; then
   exit 1
 fi
 export PYTHONPATH="${UNITREE_SDK_PYTHONPATH}:${PYTHONPATH}"
+UNITREE_SDK_DDS_LIBRARY_DIR="${UNITREE_SDK_DDS_LIBRARY_DIR:-/usr/local/lib}"
+if [[ ! -f "${UNITREE_SDK_DDS_LIBRARY_DIR}/libddsc.so.0" ]]; then
+  echo "Native Unitree CycloneDDS library not found: ${UNITREE_SDK_DDS_LIBRARY_DIR}/libddsc.so.0" >&2
+  exit 1
+fi
+export LD_LIBRARY_PATH="${UNITREE_SDK_DDS_LIBRARY_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 node_args=(
   --control-mode tracking

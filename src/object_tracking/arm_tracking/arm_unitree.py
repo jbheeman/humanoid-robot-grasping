@@ -93,8 +93,9 @@ class UnitreeArmHardware:
             from unitree_sdk2py.utils.crc import CRC
         except Exception as exc:  # pragma: no cover - requires robot image
             raise RuntimeError(
-                "Native Unitree SDK2 is unavailable. Set UNITREE_SDK_PYTHONPATH "
-                "to the robot's unitree_sdk2_python checkout."
+                "Native Unitree SDK2 import failed: "
+                f"{exc}. Check UNITREE_SDK_PYTHONPATH and "
+                "UNITREE_SDK_DDS_LIBRARY_DIR."
             ) from exc
 
         # SDK2 accepts one NIC.  ROS may use multiple NICs for GB10 transport;
