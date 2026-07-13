@@ -9,7 +9,10 @@ MODE="${1:-read-only}"
 export CLIENT_IP="${CLIENT_IP:-192.168.0.66}"
 export ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0,eth0}"
 export UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
-export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}"
+# Project ROS must stay separate from the G1's native Unitree DDS (domain 0).
+# Deliberately override stale shell exports from prior manual experiments.
+export ROS_DOMAIN_ID=1
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export G1_ROBOT_ID="${G1_ROBOT_ID:-g1-lab-01}"
 
 case "${MODE}" in

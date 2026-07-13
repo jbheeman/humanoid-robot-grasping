@@ -12,6 +12,8 @@ export RGB_WIDTH="${RGB_WIDTH:-960}"
 export RGB_HEIGHT="${RGB_HEIGHT:-540}"
 export RGB_FPS="${RGB_FPS:-60}"
 export UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
-export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}"
+# Project ROS must stay separate from the G1's native Unitree DDS (domain 0).
+export ROS_DOMAIN_ID=1
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 exec "${ROOT_DIR}/scripts/robot/start.sh"
