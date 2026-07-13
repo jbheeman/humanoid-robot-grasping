@@ -14,6 +14,7 @@ export UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
 export ROS_DOMAIN_ID=1
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 export G1_ROBOT_ID="${G1_ROBOT_ID:-g1-lab-01}"
+export RGB_MODE="${RGB_MODE:-highfps-service}"
 
 case "${MODE}" in
   read-only)

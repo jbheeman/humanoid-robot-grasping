@@ -5,21 +5,27 @@ store tokens and never authorize movement by default.
 
 ## Robot
 
-If the stock camera service owns the RGB source, stop it as required by the
-lab image, then start the custom RGB relay and disarmed ROS node:
+Install the persistent high-FPS camera publisher once. It uses Unitree's
+official `mscli` to stop `video_hub_pc4`, takes `/dev/video4`, and starts
+automatically after every boot at 960x540/60 FPS:
 
 ```bash
-sudo /unitree/sbin/mscli stopservice video_hub_pc4
-bash scripts/robot/lab-start.sh
+bash scripts/robot/install-highfps-camera-service.sh
+```
+
+Restore the vendor 15-FPS camera later with:
+
+```bash
+bash scripts/robot/uninstall-highfps-camera-service.sh
 ```
 
 Defaults:
 
 - GB10 peer `192.168.0.66`
-- ROS and RGB interface `wlan0`
+- Project ROS domain `1`; native Unitree motor DDS domain `0`
+- High-FPS RGB producer and relay interface `eth0`
 - Unitree control peer `192.168.123.1`
-- ROS domain `0`
-- RGB `960x540` at `60 FPS`
+- RGB `960x540` at `60 FPS` after the boot service is installed
 
 Override a changed peer without editing the script:
 
@@ -55,6 +61,9 @@ Start read-only commissioning:
 ```bash
 bash scripts/robot/lab-commission.sh
 ```
+
+The commissioning launcher automatically relays the boot-service camera to
+the GB10 vision page. It does not open `/dev/video4` itself.
 
 With the GB10 running, open
 `http://192.168.0.66:8000/commissioning/`. Only after the full read-only

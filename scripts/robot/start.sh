@@ -100,8 +100,13 @@ case "${RGB_MODE}" in
       "${ROOT_DIR}/scripts/robot/rgb-relay.sh" &
     pids+=("$!")
     ;;
+  highfps-service)
+    ROBOT_INTERFACE="${HARDWARE_INTERFACE}" CLIENT_IP="${CLIENT_IP}" \
+      "${ROOT_DIR}/scripts/robot/rgb-relay.sh" &
+    pids+=("$!")
+    ;;
   *)
-    echo "RGB_MODE must be unitree or 30fps, got: ${RGB_MODE}" >&2
+    echo "RGB_MODE must be unitree, 30fps, or highfps-service, got: ${RGB_MODE}" >&2
     exit 2
     ;;
 esac

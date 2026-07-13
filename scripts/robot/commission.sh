@@ -119,11 +119,18 @@ case "${RGB_MODE}" in
       "${ROOT_DIR}/scripts/robot/rgb-relay.sh" &
     pids+=("$!")
     ;;
+  highfps-service)
+    # The root-owned boot service owns /dev/video4 and emits the same RTP
+    # multicast.  Commissioning only needs the relay to GB10.
+    ROBOT_INTERFACE="${HARDWARE_INTERFACE}" CLIENT_IP="${CLIENT_IP}" \
+      "${ROOT_DIR}/scripts/robot/rgb-relay.sh" &
+    pids+=("$!")
+    ;;
   off)
     echo "RGB relay disabled (RGB_MODE=off)."
     ;;
   *)
-    echo "RGB_MODE must be unitree, 30fps, or off; got: ${RGB_MODE}" >&2
+    echo "RGB_MODE must be unitree, 30fps, highfps-service, or off; got: ${RGB_MODE}" >&2
     exit 2
     ;;
 esac
