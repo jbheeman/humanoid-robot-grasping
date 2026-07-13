@@ -165,21 +165,6 @@ class RobotRosNode:
 
         self.args = args
         self.types = _imports()
-        self.runner = Ros2NodeRunner("g1_robot_bridge")
-        self.node = self.runner.start()
-        qos = self.types["QoSProfile"](
-            history=self.types["HistoryPolicy"].KEEP_LAST,
-            depth=5,
-            reliability=self.types["ReliabilityPolicy"].RELIABLE,
-            durability=self.types["DurabilityPolicy"].VOLATILE,
-        )
-        depth_qos = self.types["QoSProfile"](
-            history=self.types["HistoryPolicy"].KEEP_LAST,
-            depth=1,
-            reliability=self.types["ReliabilityPolicy"].BEST_EFFORT,
-            durability=self.types["DurabilityPolicy"].VOLATILE,
-        )
-
         calibration = None if args.calibration is None else load_calibration(args.calibration)
         calibration_id = None if calibration is None else calibration.calibration_id
         control_mode = ArmControlMode(args.control_mode)
@@ -205,7 +190,28 @@ class RobotRosNode:
             expected_motion_mode=args.expected_motion_mode,
         )
         self.controller = ArmBridgeController(self.hardware, config)
+        # SDK2 must create the native Unitree DDS domain before rclpy creates
+        # the project ROS domain.  Reversing this order fails on the stock G1
+        # image with "ChannelFactory create domain error".
         self.controller.start()
+        try:
+            self.runner = Ros2NodeRunner("g1_robot_bridge")
+            self.node = self.runner.start()
+        except Exception:
+            self.controller.close()
+            raise
+        qos = self.types["QoSProfile"](
+            history=self.types["HistoryPolicy"].KEEP_LAST,
+            depth=5,
+            reliability=self.types["ReliabilityPolicy"].RELIABLE,
+            durability=self.types["DurabilityPolicy"].VOLATILE,
+        )
+        depth_qos = self.types["QoSProfile"](
+            history=self.types["HistoryPolicy"].KEEP_LAST,
+            depth=1,
+            reliability=self.types["ReliabilityPolicy"].BEST_EFFORT,
+            durability=self.types["DurabilityPolicy"].VOLATILE,
+        )
         self.commissioning = (
             CommissioningController(
                 self.controller,
