@@ -18,6 +18,7 @@ import json
 import os
 import time
 import sys
+import threading
 import urllib.error
 import urllib.request
 from dataclasses import dataclass
@@ -62,6 +63,7 @@ class TrackerConfig:
     frame_width: float
     frame_height: float
     refresh_hz: float = 20.0
+    control_hz: float = 50.0
     min_confidence: float = 0.55
     gain_x: float = 0.10
     gain_y: float = 0.10
@@ -91,6 +93,8 @@ class TrackerConfig:
     def __post_init__(self) -> None:
         if self.refresh_hz <= 0:
             raise ValueError("refresh_hz must be > 0")
+        if self.control_hz <= 0:
+            raise ValueError("control_hz must be > 0")
         if not (0 < self.min_confidence <= 1):
             raise ValueError("min_confidence must be in (0, 1]")
         if self.frame_width <= 0 or self.frame_height <= 0:
@@ -123,6 +127,49 @@ def _select_track(
         return None
     candidates.sort(key=lambda item: item[0], reverse=True)
     return candidates[0][1]
+
+
+@dataclass(frozen=True)
+class TrackSnapshot:
+    sequence: int
+    received_at: float
+    tracks: list[dict[str, Any]]
+
+
+class TrackPoller:
+    """Keep HTTP latency out of the 50 Hz native arm-SDK command loop."""
+
+    def __init__(self, url: str, rate_hz: float) -> None:
+        self._url = url
+        self._period = 1.0 / rate_hz
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._snapshot: TrackSnapshot | None = None
+        self._thread = threading.Thread(target=self._run, daemon=True, name="plushie-track-poller")
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def stop(self) -> None:
+        self._stop.set()
+        self._thread.join(timeout=1.0)
+
+    def snapshot(self) -> TrackSnapshot | None:
+        with self._lock:
+            return self._snapshot
+
+    def _run(self) -> None:
+        sequence = 0
+        while not self._stop.is_set():
+            started = _now()
+            try:
+                tracks = _fetch_tracks(self._url, timeout_s=min(0.5, self._period * 2.0))
+            except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError):
+                tracks = []
+            sequence += 1
+            with self._lock:
+                self._snapshot = TrackSnapshot(sequence, _now(), tracks)
+            self._stop.wait(max(0.0, self._period - (_now() - started)))
 
 
 def _extract_center(track: dict[str, Any]) -> tuple[float, float]:
@@ -183,6 +230,12 @@ def _main() -> int:
     parser.add_argument("--width", type=float, default=960)
     parser.add_argument("--height", type=float, default=540)
     parser.add_argument("--rate", type=float, default=20.0)
+    parser.add_argument(
+        "--control-rate",
+        type=float,
+        default=float(os.environ.get("TRACK_CONTROL_RATE", "50")),
+        help="native arm-SDK publish rate; Unitree's reference example uses 50 Hz",
+    )
     parser.add_argument(
         "--min-confidence",
         type=float,
@@ -255,6 +308,7 @@ def _main() -> int:
         frame_width=args.width,
         frame_height=args.height,
         refresh_hz=args.rate,
+        control_hz=args.control_rate,
         min_confidence=args.min_confidence,
         gain_x=args.gain_x,
         gain_y=args.gain_y,
@@ -334,16 +388,21 @@ def _main() -> int:
             time.sleep(cfg.startup_raise_seconds / steps)
         target_q[0] = end_pitch
 
-    period = 1.0 / cfg.refresh_hz
+    period = 1.0 / cfg.control_hz
     last_seen = _now()
     smoothed_center: tuple[float, float] | None = None
     visual_lock_q = list(target_q)
+    desired_q = list(target_q)
     locked_track_id: object | None = None
     stable_frames = 0
     released = False
+    last_snapshot_sequence = -1
+    tracking_active = False
+    poller = TrackPoller(cfg.tracks_url, cfg.refresh_hz)
+    poller.start()
 
     print("Direct plushie tracker running (ETH0). Press Ctrl-C to stop.")
-    print(f"Tracks source: {cfg.tracks_url}")
+    print(f"Tracks source: {cfg.tracks_url}; poll={cfg.refresh_hz:.0f} Hz, arm SDK={cfg.control_hz:.0f} Hz")
 
     try:
         while True:
@@ -353,122 +412,113 @@ def _main() -> int:
                 time.sleep(0.05)
                 continue
 
-            tracks = []
-            try:
-                tracks = _fetch_tracks(cfg.tracks_url)
-            except urllib.error.URLError:
-                tracks = []
-
-            track = _select_track(tracks, cfg.min_confidence, cfg.wanted_classes)
-
             now = _now()
-            if track is None:
+            snapshot = poller.snapshot()
+            if snapshot is not None and snapshot.sequence != last_snapshot_sequence:
+                last_snapshot_sequence = snapshot.sequence
+                track = _select_track(snapshot.tracks, cfg.min_confidence, cfg.wanted_classes)
+                if track is None:
+                    stable_frames = 0
+                    smoothed_center = None
+                    locked_track_id = None
+                    tracking_active = False
+                else:
+                    last_seen = snapshot.received_at
+                    released = False
+                    center_x, center_y = _extract_center(track)
+                    if smoothed_center is None:
+                        smoothed_center = (center_x, center_y)
+                    else:
+                        a = min(cfg.filter_alpha, 0.25)
+                        smoothed_center = (
+                            smoothed_center[0] * (1.0 - a) + center_x * a,
+                            smoothed_center[1] * (1.0 - a) + center_y * a,
+                        )
+
+                    track_id = track.get("track_id")
+                    if track_id != locked_track_id:
+                        locked_track_id = track_id
+                        stable_frames = 0
+                        visual_lock_q = list(state.arm_q[7:])
+                    stable_frames += 1
+                    if stable_frames < cfg.lock_frames:
+                        print(f"locking target {track_id!r}: {stable_frames}/{cfg.lock_frames}", flush=True)
+                    else:
+                        cx, cy = smoothed_center
+                        err_x_px = cx - cfg.aim_x_px
+                        err_y_px = cy - cfg.aim_y_px
+
+                        def deadband(error_px: float) -> float:
+                            if abs(error_px) <= cfg.deadband_px:
+                                return 0.0
+                            return error_px - (cfg.deadband_px if error_px > 0 else -cfg.deadband_px)
+
+                        err_x = deadband(err_x_px) / (cfg.frame_width * 0.5)
+                        err_y = deadband(err_y_px) / (cfg.frame_height * 0.5)
+                        yaw_delta = -err_x * cfg.gain_x
+                        pitch_delta = err_y * cfg.gain_y
+                        if cfg.reverse_x:
+                            yaw_delta = -yaw_delta
+                        if cfg.reverse_y:
+                            pitch_delta = -pitch_delta
+
+                        desired_q[0] = _clamp(
+                            visual_lock_q[0] + _clamp(pitch_delta, -cfg.pitch_envelope_rad, cfg.pitch_envelope_rad),
+                            visual_lock_q[0] - cfg.pitch_envelope_rad,
+                            visual_lock_q[0] + cfg.pitch_envelope_rad,
+                        )
+                        desired_q[1] = visual_lock_q[1]
+                        desired_q[2] = _clamp(
+                            visual_lock_q[2] + _clamp(yaw_delta, -cfg.yaw_envelope_rad, cfg.yaw_envelope_rad),
+                            visual_lock_q[2] - cfg.yaw_envelope_rad,
+                            visual_lock_q[2] + cfg.yaw_envelope_rad,
+                        )
+                        tracking_active = True
+                        conf = float(track.get("confidence", 0.0) or 0.0)
+                        print(
+                            f"track={track_id} cls={track.get('class_name')} conf={conf:.2f} "
+                            f"cx={cx:.1f} cy={cy:.1f} aim=({cfg.aim_x_px:.0f},{cfg.aim_y_px:.0f}) "
+                            f"target_pitch={desired_q[0]:.3f} target_yaw={desired_q[2]:.3f}",
+                            flush=True,
+                        )
+
+            if now - last_seen >= cfg.hold_seconds:
+                tracking_active = False
                 stable_frames = 0
-                smoothed_center = None
-                # A reacquired track (even with the same tracker ID) starts a
-                # new bounded visual lock from the then-measured arm pose.
                 locked_track_id = None
-                if now - last_seen >= cfg.hold_seconds and not released:
-                    # Release only once. Repeated zero-weight writes cause
-                    # avoidable actuator discontinuities and log spam.
+                if not released:
                     print("no target -> releasing", flush=True)
-                    state_all = state
-                    release = ArmCommand(
-                        q=state_all.arm_q,
-                        dq=tuple(0.0 for _ in state_all.arm_q),
-                        kp=tuple(cfg.kp for _ in state_all.arm_q),
-                        kd=tuple(cfg.kd for _ in state_all.arm_q),
-                        weight=0.0,
-                        mode_machine=int(state_all.mode_machine),
-                        published_at=_now(),
+                    hardware.publish(
+                        ArmCommand(
+                            q=state.arm_q,
+                            dq=tuple(0.0 for _ in state.arm_q),
+                            kp=tuple(cfg.kp for _ in state.arm_q),
+                            kd=tuple(cfg.kd for _ in state.arm_q),
+                            weight=0.0,
+                            mode_machine=int(state.mode_machine),
+                            published_at=_now(),
+                        )
                     )
-                    hardware.publish(release)
                     released = True
-                time.sleep(max(0.0, period - (_now() - loop_start)))
-                continue
 
-            last_seen = now
-            released = False
-            center_x, center_y = _extract_center(track)
-            if smoothed_center is None:
-                smoothed_center = (center_x, center_y)
-            else:
-                a = min(cfg.filter_alpha, 0.25)
-                smoothed_center = (
-                    smoothed_center[0] * (1.0 - a) + center_x * a,
-                    smoothed_center[1] * (1.0 - a) + center_y * a,
+            if tracking_active:
+                # Publish continuously at the SDK's reference 50 Hz cadence;
+                # only the desired pose is updated by fresh GB10 detections.
+                target_q[0] += _clamp(desired_q[0] - target_q[0], -cfg.slew_step_rad, cfg.slew_step_rad)
+                target_q[1] += _clamp(desired_q[1] - target_q[1], -cfg.slew_step_rad, cfg.slew_step_rad)
+                target_q[2] += _clamp(desired_q[2] - target_q[2], -cfg.slew_step_rad, cfg.slew_step_rad)
+                full_q = list(state.arm_q)
+                full_q[7:14] = target_q
+                hardware.publish(
+                    _make_command(
+                        state,
+                        full_q[7],
+                        full_q[8],
+                        full_q[9],
+                        kp_value=cfg.kp,
+                        kd_value=cfg.kd,
+                    )
                 )
-
-            track_id = track.get("track_id")
-            if track_id != locked_track_id:
-                locked_track_id = track_id
-                stable_frames = 0
-                visual_lock_q = list(state.arm_q[7:])
-            stable_frames += 1
-            if stable_frames < cfg.lock_frames:
-                print(f"locking target {track_id!r}: {stable_frames}/{cfg.lock_frames}", flush=True)
-                time.sleep(max(0.0, period - (_now() - loop_start)))
-                continue
-
-            cx, cy = smoothed_center
-            err_x_px = cx - cfg.aim_x_px
-            err_y_px = cy - cfg.aim_y_px
-
-            def deadband(error_px: float) -> float:
-                if abs(error_px) <= cfg.deadband_px:
-                    return 0.0
-                return (error_px - (cfg.deadband_px if error_px > 0 else -cfg.deadband_px))
-
-            err_x = deadband(err_x_px) / (cfg.frame_width * 0.5)
-            err_y = deadband(err_y_px) / (cfg.frame_height * 0.5)
-
-            # Positive X means target is to the right: yaw right.
-            yaw_delta = -err_x * cfg.gain_x
-            # Positive Y means target is lower: raise/lower with pitch.
-            pitch_delta = err_y * cfg.gain_y
-            if cfg.reverse_x:
-                yaw_delta = -yaw_delta
-            if cfg.reverse_y:
-                pitch_delta = -pitch_delta
-
-            # Fixed-camera visual lock: use pixel error to choose one bounded
-            # pose around the initial measured pose. Do not integrate image
-            # error, because arm motion does not change a head-camera pixel.
-            desired_pitch = _clamp(
-                visual_lock_q[0] + _clamp(pitch_delta, -cfg.pitch_envelope_rad, cfg.pitch_envelope_rad),
-                visual_lock_q[0] - cfg.pitch_envelope_rad,
-                visual_lock_q[0] + cfg.pitch_envelope_rad,
-            )
-            desired_yaw = _clamp(
-                visual_lock_q[2] + _clamp(yaw_delta, -cfg.yaw_envelope_rad, cfg.yaw_envelope_rad),
-                visual_lock_q[2] - cfg.yaw_envelope_rad,
-                visual_lock_q[2] + cfg.yaw_envelope_rad,
-            )
-            target_q[0] += _clamp(desired_pitch - target_q[0], -cfg.slew_step_rad, cfg.slew_step_rad)
-            target_q[2] += _clamp(desired_yaw - target_q[2], -cfg.slew_step_rad, cfg.slew_step_rad)
-            # Keep shoulder roll at the lock pose; it is not inferred from 2-D.
-            target_q[1] = visual_lock_q[1]
-
-            full_q = list(state.arm_q)
-            full_q[7:14] = target_q
-
-            command = _make_command(
-                state,
-                full_q[7],
-                full_q[8],
-                full_q[9],
-                kp_value=cfg.kp,
-                kd_value=cfg.kd,
-            )
-            hardware.publish(command)
-
-            conf = float(track.get("confidence", 0.0) or 0.0)
-            print(
-                f"track={track.get('track_id')} cls={track.get('class_name')} conf={conf:.2f} "
-                f"cx={cx:.1f} cy={cy:.1f} aim=({cfg.aim_x_px:.0f},{cfg.aim_y_px:.0f}) "
-                f"cmd_pitch={target_q[0]:.3f} cmd_roll={target_q[1]:.3f} cmd_yaw={target_q[2]:.3f}",
-                flush=True,
-            )
 
             elapsed = _now() - loop_start
             if elapsed < period:
@@ -492,6 +542,7 @@ def _main() -> int:
                 pass
         return 0
     finally:
+        poller.stop()
         hardware.close()
     return 0
 
