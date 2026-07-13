@@ -6,6 +6,8 @@ import math
 import time
 from typing import Any, Sequence
 
+from object_tracking._compat import strict_zip
+
 from .joints import ARM_INDICES, BODY_JOINT_NAMES, BODY_MODEL_ID
 
 
@@ -35,7 +37,7 @@ def compose_commanded_body_pose(
     arm = [float(value) for value in commanded_arm_q]
     if not all(math.isfinite(value) for value in arm):
         raise ValueError("commanded_arm_q must contain finite values")
-    for index, value in zip(ARM_INDICES, arm, strict=True):
+    for index, value in strict_zip(ARM_INDICES, arm):
         result[index] = value
     return result
 

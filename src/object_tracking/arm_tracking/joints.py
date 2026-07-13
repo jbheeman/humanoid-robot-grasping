@@ -8,6 +8,8 @@ import xml.etree.ElementTree as ET
 import hashlib
 import json
 
+from object_tracking._compat import strict_zip
+
 
 LEFT_ARM_JOINT_NAMES = (
     "left_shoulder_pitch_joint",
@@ -66,7 +68,7 @@ DEFAULT_RIGHT_JOINT_LIMITS = (
 
 
 def joint_contract() -> list[dict[str, Any]]:
-    """Return the right-arm command order shared by IK, HTTP, and SDK2."""
+    """Return the right-arm command order shared by IK and the ROS 2 arm node."""
 
     return [
         {
@@ -77,11 +79,10 @@ def joint_contract() -> list[dict[str, Any]]:
             "upper_rad": limits[1],
         }
         for position, (name, sdk_index, limits) in enumerate(
-            zip(
+            strict_zip(
                 RIGHT_ARM_JOINT_NAMES,
                 RIGHT_ARM_INDICES,
                 DEFAULT_RIGHT_JOINT_LIMITS,
-                strict=True,
             )
         )
     ]
@@ -118,9 +119,7 @@ def audit_urdf(path: str | Path, *, tolerance_rad: float = 1e-3) -> dict[str, An
     movable_names = [element.attrib.get("name", "") for element in movable]
     positions: list[int] = []
     urdf_limits: dict[str, tuple[float, float]] = {}
-    for name, expected_limits in zip(
-        RIGHT_ARM_JOINT_NAMES, DEFAULT_RIGHT_JOINT_LIMITS, strict=True
-    ):
+    for name, expected_limits in strict_zip(RIGHT_ARM_JOINT_NAMES, DEFAULT_RIGHT_JOINT_LIMITS):
         matches = [element for element in movable if element.attrib.get("name") == name]
         if len(matches) != 1:
             report["errors"].append(f"expected exactly one movable joint named {name!r}")
@@ -136,7 +135,7 @@ def audit_urdf(path: str | Path, *, tolerance_rad: float = 1e-3) -> dict[str, An
             report["errors"].append(f"{name} has non-numeric position limits")
             continue
         urdf_limits[name] = actual
-        if any(abs(a - b) > tolerance_rad for a, b in zip(actual, expected_limits, strict=True)):
+        if any(abs(a - b) > tolerance_rad for a, b in strict_zip(actual, expected_limits)):
             report["warnings"].append(
                 f"{name} bridge limits {expected_limits} differ from URDF limits {actual}"
             )

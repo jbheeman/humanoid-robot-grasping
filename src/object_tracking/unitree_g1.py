@@ -1,41 +1,25 @@
+"""Unitree G1 camera helpers and ROS 2 locomotion clients.
+
+The ROS imports are deliberately deferred until a client is started.  Vision
+tools can therefore use the camera helpers on hosts without a ROS install.
+"""
+
 from __future__ import annotations
 
-import argparse
-import importlib
-import json
-import os
-from pathlib import Path
-import subprocess
-import sys
 from dataclasses import dataclass
+import json
+import math
+import os
 import time
+from typing import Any, Callable, Mapping
 
-
-try:
-    from unitree_sdk2py.core.channel import ChannelFactoryInitialize
-    from unitree_sdk2py.go2.video.video_client import VideoClient
-except Exception as exc:  # pragma: no cover - surfaced as runtime error when dependency missing
-    ChannelFactoryInitialize = None
-    VideoClient = None
-    _SDK2_IMPORT_ERROR = exc
-else:  # pragma: no cover
-    _SDK2_IMPORT_ERROR = None
-
-try:
-    from unitree_sdk2py.core.channel import ChannelPublisher, ChannelSubscriber
-    from unitree_sdk2py.idl.default import unitree_hg_msg_dds__LowCmd_
-    from unitree_sdk2py.idl.unitree_hg.msg.dds_ import LowCmd_, LowState_
-    from unitree_sdk2py.utils.crc import CRC
-except Exception as exc:  # pragma: no cover - only needed for low-level arm test
-    ChannelPublisher = None
-    ChannelSubscriber = None
-    unitree_hg_msg_dds__LowCmd_ = None
-    LowCmd_ = None
-    LowState_ = None
-    CRC = None
-    _SDK2_LOW_LEVEL_IMPORT_ERROR = exc
-else:  # pragma: no cover
-    _SDK2_LOW_LEVEL_IMPORT_ERROR = None
+from object_tracking.ros2_transport import (
+    Ros2NodeRunner,
+    Ros2RequestResponseClient,
+    Ros2RpcResult,
+    Ros2RpcTimeout,
+    Ros2Unavailable,
+)
 
 
 def default_camera_env() -> list[str]:
@@ -47,14 +31,8 @@ def default_camera_env() -> list[str]:
 
 def default_camera_ports() -> list[str]:
     value = os.environ.get("G1_CAMERA_UDP_PORTS", "1720")
-    ports = []
-    for part in value.split(","):
-        p = part.strip()
-        if p:
-            ports.append(p)
-    if not ports:
-        ports.append("1720")
-    return ports
+    ports = [part.strip() for part in value.split(",") if part.strip()]
+    return ports or ["1720"]
 
 
 def default_gstreamer_port_templates() -> list[str]:
@@ -62,41 +40,58 @@ def default_gstreamer_port_templates() -> list[str]:
     multicast_iface = os.environ.get("G1_CAMERA_MULTICAST_IFACE", "").strip()
     iface = f" multicast-iface={multicast_iface}" if multicast_iface else ""
     return [
-        f"udpsrc multicast-group={multicast_group} address=0.0.0.0 port={{port}} auto-multicast=true{iface} ! application/x-rtp,media=(string)video,encoding-name=(string)H264,clock-rate=(int)90000 ! queue ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink",
-        f"udpsrc address={multicast_group} port={{port}} auto-multicast=true ! application/x-rtp,media=(string)video,encoding-name=(string)H264,clock-rate=(int)90000 ! queue ! rtph264depay ! h264parse ! avdec_h264 ! videoconvert ! appsink",
+        f"udpsrc multicast-group={multicast_group} address=0.0.0.0 port={{port}} "
+        f"auto-multicast=true{iface} ! application/x-rtp,media=(string)video,"
+        "encoding-name=(string)H264,clock-rate=(int)90000 ! queue ! rtph264depay ! "
+        "h264parse ! avdec_h264 ! videoconvert ! appsink",
+        f"udpsrc address={multicast_group} port={{port}} auto-multicast=true ! "
+        "application/x-rtp,media=(string)video,encoding-name=(string)H264,"
+        "clock-rate=(int)90000 ! queue ! rtph264depay ! h264parse ! avdec_h264 ! "
+        "videoconvert ! appsink",
     ]
 
 
 def default_camera_sources() -> list[str]:
     transport = os.environ.get("G1_CAMERA_TRANSPORT", "gstreamer").lower()
-    ports = default_camera_ports()
     if transport == "rtsp":
-        templates = (
+        return [
             "rtsp://{ip}:8554/unicast",
             "rtsp://{ip}:8554/live",
             "rtsp://{ip}:8554/stream",
             "rtsp://{ip}:554/live",
             "rtsp://{ip}:554/stream1",
             "rtsp://{ip}:554/h264Preview_01_main",
-        )
-        return [template for template in templates]
+        ]
 
-    result: list[str] = []
-    for template in default_gstreamer_port_templates():
-        for port in ports:
-            result.append(template.format(port=port, ip="{ip}"))
-    return result
+    return [
+        template.format(port=port, ip="{ip}")
+        for template in default_gstreamer_port_templates()
+        for port in default_camera_ports()
+    ]
 
 
 def is_gstreamer_pipeline(source: str) -> bool:
-    return isinstance(source, str) and "!" in source and ("udpsrc" in source or "gst-launch" in source)
+    return isinstance(source, str) and "!" in source and (
+        "udpsrc" in source or "gst-launch" in source
+    )
 
 
 DEFAULT_G1_CAMERA_TEMPLATES = tuple(default_camera_sources())
 
 
+def g1_camera_candidates(robot_ip: str, camera_url: str | None = None) -> list[str]:
+    explicit_url = camera_url or os.environ.get("G1_CAMERA_URL")
+    if explicit_url:
+        return [explicit_url.format(ip=robot_ip)]
+
+    configured = default_camera_env()
+    if configured:
+        return [candidate.format(ip=robot_ip) for candidate in configured]
+    return [template.format(ip=robot_ip) for template in DEFAULT_G1_CAMERA_TEMPLATES]
+
+
 class UnitreeG1Error(RuntimeError):
-    pass
+    """A rejected, unavailable, or timed-out Unitree robot operation."""
 
 
 class G1JointIndex:
@@ -139,678 +134,249 @@ class UnitreeCommandResult:
     stderr: str
 
 
-def resolve_network_interface(robot_ip: str) -> str:
-    try:
-        completed = subprocess.run(
-            ["ip", "route", "get", robot_ip],
-            check=False,
-            capture_output=True,
-            text=True,
-            timeout=5.0,
-        )
-    except (OSError, subprocess.TimeoutExpired) as exc:
-        raise UnitreeG1Error(f"Could not resolve route to robot IP {robot_ip!r}") from exc
-
-    if completed.returncode != 0:
-        raise UnitreeG1Error(
-            f"No route to robot IP {robot_ip!r}. Connect to the robot network first.\n"
-            f"{completed.stderr.strip()}"
-        )
-
-    tokens = completed.stdout.split()
-    if "dev" not in tokens:
-        raise UnitreeG1Error(f"Could not find interface in route output: {completed.stdout.strip()}")
-    dev_index = tokens.index("dev") + 1
-    if dev_index >= len(tokens):
-        raise UnitreeG1Error(f"Malformed route output: {completed.stdout.strip()}")
-    return tokens[dev_index]
-
-
-def normalize_network_interface(network_interface: str | None) -> str | None:
-    if network_interface is None:
-        return None
-    value = network_interface.strip()
-    if not value or value.lower() == "auto":
-        return None
-    return value
-
-
 LOCO_SERVICE_CHOICES = ("auto", "sport", "ai_sport")
-DEFAULT_G1_LOCO_SERVICE_NAME = "ai_sport"
-DDS_CONFIG_MODE_CHOICES = ("unitree", "no_trace", "simple", "autodetermine")
-DEFAULT_DDS_CONFIG_MODE = "no_trace"
+DEFAULT_G1_LOCO_SERVICE_NAME = "sport"
 
-UNITREE_SDK_ERROR_CODES = {
+LOCO_API_GET_FSM_ID = 7001
+LOCO_API_GET_FSM_MODE = 7002
+LOCO_API_GET_BALANCE_MODE = 7003
+LOCO_API_GET_SWING_HEIGHT = 7004
+LOCO_API_GET_STAND_HEIGHT = 7005
+LOCO_API_SET_FSM_ID = 7101
+LOCO_API_SET_BALANCE_MODE = 7102
+LOCO_API_SET_VELOCITY = 7105
+
+MOTION_API_CHECK_MODE = 1001
+MOTION_API_SELECT_MODE = 1002
+MOTION_API_RELEASE_MODE = 1003
+
+MAX_FORWARD_SPEED_MPS = 0.5
+MAX_LATERAL_SPEED_MPS = 0.3
+MAX_YAW_SPEED_RAD_S = 0.5
+MAX_MOVE_DURATION_S = 10.0
+
+UNITREE_API_ERROR_CODES = {
     0: "OK",
-    3001: "Unknown error",
-    3102: "Request sending error",
+    3001: "unknown error",
+    3102: "request sending error",
     3103: "API not registered",
-    3104: "Request timeout",
+    3104: "request timeout",
 }
-
-SIMPLE_DDS_CONFIG_HAS_INTERFACE = """<?xml version="1.0" encoding="UTF-8" ?>
-<CycloneDDS>
-  <Domain Id="any">
-    <General>
-      <Interfaces>
-        <NetworkInterface name="$__IF_NAME__$"/>
-      </Interfaces>
-    </General>
-  </Domain>
-</CycloneDDS>"""
-
-NO_TRACE_DDS_CONFIG_HAS_INTERFACE = """<?xml version="1.0" encoding="UTF-8" ?>
-<CycloneDDS>
-  <Domain Id="any">
-    <General>
-      <Interfaces>
-        <NetworkInterface name="$__IF_NAME__$" priority="default" multicast="default"/>
-      </Interfaces>
-    </General>
-  </Domain>
-</CycloneDDS>"""
-
-SIMPLE_DDS_CONFIG_AUTO_DETERMINE = """<?xml version="1.0" encoding="UTF-8" ?>
-<CycloneDDS>
-  <Domain Id="any">
-    <General>
-      <Interfaces>
-        <NetworkInterface autodetermine="true"/>
-      </Interfaces>
-    </General>
-  </Domain>
-</CycloneDDS>"""
 
 
 def effective_loco_service_name(loco_service_name: str | None) -> str:
     value = (loco_service_name or "auto").strip()
     if value not in LOCO_SERVICE_CHOICES:
         choices = ", ".join(LOCO_SERVICE_CHOICES)
-        raise UnitreeG1Error(f"Unsupported loco service name {value!r}. Use one of: {choices}")
-    if value == "auto":
-        return DEFAULT_G1_LOCO_SERVICE_NAME
-    return value
+        raise UnitreeG1Error(f"Unsupported locomotion service {value!r}. Use one of: {choices}")
+    return DEFAULT_G1_LOCO_SERVICE_NAME if value == "auto" else value
 
 
 def loco_rpc_request_topic(loco_service_name: str) -> str:
-    return f"rt/api/{loco_service_name}/request"
+    service = effective_loco_service_name(loco_service_name)
+    return f"/api/{service}/request"
+
+
+def loco_rpc_response_topic(loco_service_name: str) -> str:
+    service = effective_loco_service_name(loco_service_name)
+    return f"/api/{service}/response"
 
 
 def unitree_error_name(code: int | None) -> str:
     if code is None:
         return "unknown"
-    return UNITREE_SDK_ERROR_CODES.get(int(code), "unrecognized SDK error")
+    return UNITREE_API_ERROR_CODES.get(int(code), "unrecognized robot API error")
 
 
-def unitree_rpc_result_report(result: object) -> dict[str, object]:
-    if isinstance(result, tuple) and result:
-        code = int(result[0])
-        data = result[1:] if len(result) > 1 else ()
-        return {
-            "ok": code == 0,
-            "code": code,
-            "code_name": unitree_error_name(code),
-            "data": repr(data[0]) if len(data) == 1 else repr(data),
-            "raw": repr(result),
-        }
-    if isinstance(result, int):
-        return {
-            "ok": result == 0,
-            "code": int(result),
-            "code_name": unitree_error_name(int(result)),
-            "data": None,
-            "raw": repr(result),
-        }
+def unitree_rpc_result_report(result: Ros2RpcResult) -> dict[str, object]:
     return {
-        "ok": True,
-        "code": None,
-        "code_name": "not a Unitree status tuple",
-        "data": repr(result),
-        "raw": repr(result),
+        "ok": result.status_code == 0,
+        "api_id": result.api_id,
+        "request_id": result.request_id,
+        "status_code": result.status_code,
+        "status_name": unitree_error_name(result.status_code),
+        "data": _decode_response_data(result.data),
     }
 
 
-def patch_g1_loco_service_name(loco_service_name: str) -> tuple[object, dict[str, object]]:
-    effective_name = effective_loco_service_name(loco_service_name)
-    api_module = importlib.import_module("unitree_sdk2py.g1.loco.g1_loco_api")
-    detected_api_name = getattr(api_module, "LOCO_SERVICE_NAME", None)
-    api_module.LOCO_SERVICE_NAME = effective_name
-
-    client_module = importlib.import_module("unitree_sdk2py.g1.loco.g1_loco_client")
-    detected_client_name = getattr(client_module, "LOCO_SERVICE_NAME", None)
-    client_module.LOCO_SERVICE_NAME = effective_name
-
-    return client_module.LocoClient, {
-        "requested_service_name": loco_service_name,
-        "effective_service_name": effective_name,
-        "detected_api_service_name": detected_api_name,
-        "detected_client_service_name": detected_client_name,
-        "rpc_request_topic": loco_rpc_request_topic(effective_name),
-    }
-
-
-def default_cyclonedds_log_file() -> str:
-    uid = os.getuid() if hasattr(os, "getuid") else "user"
-    return str(Path("/tmp") / f"unitree_cdds_{uid}_{os.getpid()}.log")
-
-
-def patch_unitree_cyclonedds_config(
-    log_file: str | None = None,
-    dds_config_mode: str = DEFAULT_DDS_CONFIG_MODE,
-) -> dict[str, object]:
-    if dds_config_mode not in DDS_CONFIG_MODE_CHOICES:
-        choices = ", ".join(DDS_CONFIG_MODE_CHOICES)
-        raise UnitreeG1Error(f"Unsupported DDS config mode {dds_config_mode!r}. Use one of: {choices}")
-
-    target = log_file or os.environ.get("UNITREE_CYCLONEDDS_LOG_FILE") or default_cyclonedds_log_file()
-    target_path = Path(target).expanduser()
-    if not target_path.is_absolute():
-        target_path = Path.cwd() / target_path
-    target_path.parent.mkdir(parents=True, exist_ok=True)
-
+def parse_velocity(value: str) -> tuple[float, float, float, float | None]:
+    parts = value.replace(",", " ").split()
+    if len(parts) not in (3, 4):
+        raise ValueError("Expected velocity as 'vx vy omega' or 'vx vy omega duration'.")
     try:
-        channel_module = importlib.import_module("unitree_sdk2py.core.channel")
-        config_module = importlib.import_module("unitree_sdk2py.core.channel_config")
-    except Exception as exc:
-        return {
-            "log_file": str(target_path),
-            "available": False,
-            "error": repr(exc),
-            "replacements": {},
-            "dds_config_mode": dds_config_mode,
-        }
-    replacements: dict[str, bool] = {}
-    for module in (config_module, channel_module):
-        for attr in ("ChannelConfigHasInterface", "ChannelConfigAutoDetermine"):
-            if not hasattr(module, attr):
-                continue
-            value = getattr(module, attr)
-            if not isinstance(value, str):
-                continue
-            if dds_config_mode == "simple":
-                updated = (
-                    SIMPLE_DDS_CONFIG_HAS_INTERFACE
-                    if attr == "ChannelConfigHasInterface"
-                    else SIMPLE_DDS_CONFIG_AUTO_DETERMINE
-                )
-            elif dds_config_mode == "no_trace":
-                updated = (
-                    NO_TRACE_DDS_CONFIG_HAS_INTERFACE
-                    if attr == "ChannelConfigHasInterface"
-                    else SIMPLE_DDS_CONFIG_AUTO_DETERMINE
-                )
-            elif dds_config_mode == "autodetermine":
-                updated = SIMPLE_DDS_CONFIG_AUTO_DETERMINE
-            else:
-                updated = value.replace("/tmp/cdds.LOG", str(target_path))
-            setattr(module, attr, updated)
-            replacements[f"{module.__name__}.{attr}"] = updated != value
-
-    return {
-        "log_file": str(target_path),
-        "available": True,
-        "dds_config_mode": dds_config_mode,
-        "replacements": replacements,
-    }
+        vx, vy, omega = (float(part) for part in parts[:3])
+        duration = float(parts[3]) if len(parts) == 4 else None
+    except ValueError as exc:
+        raise ValueError("Velocity values must be numeric.") from exc
+    return vx, vy, omega, duration
 
 
-def patch_unitree_cyclonedds_log_file(log_file: str | None = None) -> dict[str, object]:
-    return patch_unitree_cyclonedds_config(log_file=log_file)
+def _decode_response_data(raw: str) -> object:
+    if not raw:
+        return None
+    try:
+        return json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
 
 
-class UnitreeSdk2Context:
-    _initialized = False
-    _domain_id: int | None = None
-    _network_interface: str | None = None
-
-    @classmethod
-    def initialize(
-        cls,
-        robot_ip: str | None = None,
-        network_interface: str | None = None,
-        domain_id: int = 0,
-        cyclonedds_log_file: str | None = None,
-        dds_config_mode: str = DEFAULT_DDS_CONFIG_MODE,
-    ) -> str:
-        if ChannelFactoryInitialize is None:
-            detail = str(_SDK2_IMPORT_ERROR) if _SDK2_IMPORT_ERROR is not None else "missing imports"
-            raise UnitreeG1Error(
-                "Could not import unitree-sdk2 Python package. Install dependencies with: `uv sync`.\n"
-                f"Original error: {detail}"
-            )
-
-        resolved_interface = normalize_network_interface(network_interface)
-        if resolved_interface is None:
-            if robot_ip is None:
-                raise UnitreeG1Error("Pass robot_ip or --interface/--network-interface for G1 SDK2 commands.")
-            resolved_interface = resolve_network_interface(robot_ip)
-
-        if cls._initialized:
-            if cls._domain_id != domain_id or cls._network_interface != resolved_interface:
-                raise UnitreeG1Error(
-                    "Unitree SDK2 DDS is already initialized in this Python process with "
-                    f"domain={cls._domain_id}, interface={cls._network_interface!r}; "
-                    f"cannot reinitialize to domain={domain_id}, interface={resolved_interface!r}. "
-                    "Run a fresh process for a different DDS interface/domain."
-                )
-            return resolved_interface
-
-        log_report = patch_unitree_cyclonedds_config(cyclonedds_log_file, dds_config_mode)
-
-        try:
-            init_interface = None if dds_config_mode == "autodetermine" else resolved_interface
-            ChannelFactoryInitialize(domain_id, init_interface)
-        except Exception as exc:
-            raise UnitreeG1Error(
-                "Failed to initialize Unitree SDK2 DDS.\n"
-                f"Selected interface: {resolved_interface}\n"
-                f"Selected domain: {domain_id}\n"
-                f"DDS config mode: {dds_config_mode}\n"
-                f"CycloneDDS log file: {log_report['log_file']}\n"
-                "Unitree DDS config mode is known to SIGABRT on this machine. "
-                "Use --dds-config-mode no_trace.\n"
-                "Try:\n"
-                f"  ip route get {robot_ip or '<robot_ip>'}\n"
-                f"  uv run loco {robot_ip or '<robot_ip>'} stop_move --interface <dev> --dds-config-mode no_trace\n"
-                f"  uv run loco --diagnose {robot_ip or '<robot_ip>'}\n"
-                f"  rm -f /tmp/cdds.LOG"
-            ) from exc
-
-        cls._initialized = True
-        cls._domain_id = domain_id
-        cls._network_interface = resolved_interface
-        return resolved_interface
+def _parameter(payload: Mapping[str, object] | None = None) -> str:
+    return json.dumps(dict(payload or {}), separators=(",", ":"), allow_nan=False)
 
 
-def g1_loco_init_error(
-    exc: Exception,
-    robot_ip: str | None,
-    network_interface: str,
-    domain_id: int,
-    loco_service_name: str,
-) -> UnitreeG1Error:
-    robot = robot_ip or "<robot_ip>"
-    topic = loco_rpc_request_topic(loco_service_name)
-    suggestion = ""
-    if topic == "rt/api/sport/request" and "DDS_RETCODE_PRECONDITION_NOT_MET" in str(exc):
-        suggestion = (
-            "\nThis failed on the legacy sport service topic. For newer G1 ai_sport firmware, try:\n"
-            f"  uv run loco --smoke-loco {robot} --interface {network_interface} --loco-service-name ai_sport\n"
-        )
-    return UnitreeG1Error(
-        "Failed to initialize Unitree G1 LocoClient before sending command.\n\n"
-        "Likely causes:\n"
-        f"1. Unitree firmware/service-name mismatch for DDS topic {topic}.\n"
-        "2. CycloneDDS topic/type conflict on the Unitree RPC request topic.\n"
-        "3. unitree_sdk2py checkout/version mismatch with this repo or the robot firmware.\n\n"
-        "Unitree DDS config mode is known to SIGABRT on this machine. Use --dds-config-mode no_trace.\n\n"
-        "Try:\n"
-        f"  ip route get {robot}\n"
-        f"  uv run loco --diagnose {robot}\n"
-        f"  uv run loco --smoke-loco {robot} --interface {network_interface} --loco-service-name {loco_service_name}\n"
-        f"  uv run loco {robot} stop_move --interface {network_interface} --loco-service-name {loco_service_name} --dds-config-mode no_trace\n"
-        f"{suggestion}\n"
-        f"DDS domain: {domain_id}\n"
-        f"DDS interface: {network_interface}\n"
-        f"Loco service: {loco_service_name}\n"
-        f"DDS request topic: {topic}\n"
-        f"Original error: {exc}"
-    )
+def _validate_velocity(vx: float, vy: float, omega: float, duration: float) -> None:
+    values = (vx, vy, omega, duration)
+    if not all(math.isfinite(value) for value in values):
+        raise UnitreeG1Error("Velocity and duration values must be finite.")
+    if abs(vx) > MAX_FORWARD_SPEED_MPS:
+        raise UnitreeG1Error(f"vx must be within +/-{MAX_FORWARD_SPEED_MPS} m/s.")
+    if abs(vy) > MAX_LATERAL_SPEED_MPS:
+        raise UnitreeG1Error(f"vy must be within +/-{MAX_LATERAL_SPEED_MPS} m/s.")
+    if abs(omega) > MAX_YAW_SPEED_RAD_S:
+        raise UnitreeG1Error(f"omega must be within +/-{MAX_YAW_SPEED_RAD_S} rad/s.")
+    if duration <= 0.0 or duration > MAX_MOVE_DURATION_S:
+        raise UnitreeG1Error(f"duration must be > 0 and <= {MAX_MOVE_DURATION_S} seconds.")
 
 
-def g1_camera_candidates(robot_ip: str, camera_url: str | None = None) -> list[str]:
-    explicit_url = camera_url or os.environ.get("G1_CAMERA_URL")
-    if explicit_url:
-        return [explicit_url.format(ip=robot_ip)]
-
-    configured = default_camera_env()
-    if configured:
-        return [candidate.format(ip=robot_ip) for candidate in configured]
-
-    return [template.format(ip=robot_ip) for template in DEFAULT_G1_CAMERA_TEMPLATES]
+RpcFactory = Callable[..., Ros2RequestResponseClient]
 
 
-def get_sdk2_video_sample(
-    robot_ip: str | None = None,
-    network_interface: str | None = None,
-    timeout_s: float = 3.0,
-) -> tuple[bytes, str]:
-    if ChannelFactoryInitialize is None or VideoClient is None:
-        detail = str(_SDK2_IMPORT_ERROR) if _SDK2_IMPORT_ERROR is not None else "missing imports"
-        raise UnitreeG1Error(
-            "Could not import Unitree SDK2 video dependencies. Install and configure unitree-sdk2py and CycloneDDS on the robot-network host.\n"
-            f"Original error: {detail}"
-        )
-
-    if network_interface is None:
-        if robot_ip is None:
-            raise UnitreeG1Error("Pass robot_ip or network_interface for SDK2 video.")
-        network_interface = resolve_network_interface(robot_ip)
-
-    ChannelFactoryInitialize(0, network_interface)
-    client = VideoClient()
-    client.Init()
-    client.SetTimeout(timeout_s)
-
-    code, image = client.GetImageSample()
-    code_int = int(code) if code is not None else -1
-    if code_int != 0:
-        raise UnitreeG1Error(f"SDK2 videohub GetImageSample returned code {code_int}.")
-    if image is None or len(image) == 0:
-        raise UnitreeG1Error("SDK2 videohub GetImageSample returned no image bytes.")
-
-    return bytes(image), network_interface
-
-
-class MotionSwitcherSdk2Client:
-    """Thin wrapper around Unitree SDK2 motion switcher client."""
+class G1Ros2LocoClient:
+    """Bounded G1 locomotion commands over Unitree ROS 2 API topics."""
 
     def __init__(
         self,
-        network_interface: str | None = None,
-        robot_ip: str | None = None,
-        timeout_s: float = 15.0,
-        domain_id: int = 0,
-        cyclonedds_log_file: str | None = None,
-        dds_config_mode: str = DEFAULT_DDS_CONFIG_MODE,
-    ) -> None:
-        self.network_interface = UnitreeSdk2Context.initialize(
-            robot_ip=robot_ip,
-            network_interface=network_interface,
-            domain_id=domain_id,
-            cyclonedds_log_file=cyclonedds_log_file,
-            dds_config_mode=dds_config_mode,
-        )
-        self.timeout_s = timeout_s
-        self.domain_id = domain_id
-
-        try:
-            from unitree_sdk2py.comm.motion_switcher.motion_switcher_client import MotionSwitcherClient
-        except Exception as exc:
-            raise UnitreeG1Error(
-                "Could not import Unitree MotionSwitcherClient from unitree-sdk2py.\n"
-                f"Original error: {exc}"
-            ) from exc
-
-        print("Constructing MotionSwitcherClient", file=sys.stderr)
-        self._client = MotionSwitcherClient()
-        print(f"Setting MotionSwitcherClient timeout={timeout_s}", file=sys.stderr)
-        self._client.SetTimeout(timeout_s)
-        print("Calling MotionSwitcherClient.Init()", file=sys.stderr)
-        init_result = self._client.Init()
-        print(f"MotionSwitcherClient.Init() returned {init_result!r}", file=sys.stderr)
-
-    def _public_methods(self) -> list[str]:
-        methods = []
-        for name in dir(self._client):
-            if name.startswith("_"):
-                continue
-            try:
-                value = getattr(self._client, name)
-            except Exception:
-                continue
-            if callable(value):
-                methods.append(name)
-        return methods
-
-    def check_mode(self) -> UnitreeCommandResult:
-        if not hasattr(self._client, "CheckMode"):
-            report = {
-                "ok": False,
-                "error": "MotionSwitcherClient does not expose CheckMode",
-                "public_methods": self._public_methods(),
-            }
-            return UnitreeCommandResult(
-                command=["loco", "check_motion_mode"],
-                returncode=0,
-                stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
-                stderr="",
-            )
-
-        try:
-            result = self._client.CheckMode()
-            check_mode = unitree_rpc_result_report(result)
-        except Exception as exc:
-            check_mode = {"ok": False, "exception": repr(exc)}
-
-        report = {
-            "ok": bool(check_mode.get("ok")),
-            "domain_id": self.domain_id,
-            "network_interface": self.network_interface,
-            "timeout_s": self.timeout_s,
-            "public_methods": self._public_methods(),
-            "check_mode": check_mode,
-        }
-        return UnitreeCommandResult(
-            command=["loco", "check_motion_mode"],
-            returncode=0,
-            stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
-            stderr="",
-        )
-
-    def select_mode(self, mode: str) -> UnitreeCommandResult:
-        if not hasattr(self._client, "SelectMode"):
-            report = {
-                "ok": False,
-                "requested_mode": mode,
-                "error": "MotionSwitcherClient does not expose SelectMode",
-                "public_methods": self._public_methods(),
-            }
-            return UnitreeCommandResult(
-                command=["loco", "select_motion_mode", mode],
-                returncode=0,
-                stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
-                stderr="",
-            )
-
-        try:
-            result = self._client.SelectMode(mode)
-            select_mode = unitree_rpc_result_report(result)
-        except Exception as exc:
-            select_mode = {"ok": False, "exception": repr(exc)}
-
-        report = {
-            "ok": bool(select_mode.get("ok")),
-            "domain_id": self.domain_id,
-            "network_interface": self.network_interface,
-            "timeout_s": self.timeout_s,
-            "requested_mode": mode,
-            "select_mode": select_mode,
-        }
-        return UnitreeCommandResult(
-            command=["loco", "select_motion_mode", mode],
-            returncode=0,
-            stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
-            stderr="",
-        )
-
-
-class G1LocoSdk2Client:
-    """Thin wrapper around Unitree SDK2 Python G1 loco client."""
-
-    def __init__(
-        self,
-        network_interface: str | None = None,
-        robot_ip: str | None = None,
-        timeout_s: float = 15.0,
-        domain_id: int = 0,
+        *,
+        timeout_s: float = 1.0,
         loco_service_name: str = "auto",
-        cyclonedds_log_file: str | None = None,
-        dds_config_mode: str = DEFAULT_DDS_CONFIG_MODE,
+        runner: Ros2NodeRunner | None = None,
+        clients: Mapping[str, Any] | None = None,
+        rpc_factory: RpcFactory = Ros2RequestResponseClient,
+        sleep: Callable[[float], None] = time.sleep,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
-        self.network_interface = UnitreeSdk2Context.initialize(
-            robot_ip=robot_ip,
-            network_interface=network_interface,
-            domain_id=domain_id,
-            cyclonedds_log_file=cyclonedds_log_file,
-            dds_config_mode=dds_config_mode,
-        )
-        self.timeout_s = timeout_s
-        self.domain_id = domain_id
-        self.loco_service_name = effective_loco_service_name(loco_service_name)
-
-        try:
-            LocoClient, service_report = patch_g1_loco_service_name(loco_service_name)
-        except Exception as exc:
+        if timeout_s <= 0.0:
+            raise ValueError("timeout_s must be positive")
+        if loco_service_name not in LOCO_SERVICE_CHOICES:
+            choices = ", ".join(LOCO_SERVICE_CHOICES)
             raise UnitreeG1Error(
-                "Could not import and patch Unitree G1 LocoClient service name. Install dependencies with: `uv sync`.\n"
-                f"Requested service: {loco_service_name}\n"
-                f"Original error: {exc}"
-            ) from exc
-
-        print(
-            f"Constructing G1 LocoClient service={service_report['effective_service_name']} "
-            f"topic={service_report['rpc_request_topic']}",
-            file=sys.stderr,
-        )
-        try:
-            self._client = LocoClient()
-        except Exception as exc:
-            raise g1_loco_init_error(exc, robot_ip, self.network_interface, domain_id, self.loco_service_name) from exc
-        print(f"Setting LocoClient timeout={timeout_s}", file=sys.stderr)
-        self._client.SetTimeout(timeout_s)
-        print("Calling LocoClient.Init()", file=sys.stderr)
-        init_result = self._client.Init()
-        print(f"LocoClient.Init() returned {init_result!r}", file=sys.stderr)
-        self._arm_low_state = None
-
-    def _result(self, command: list[str], code: int) -> UnitreeCommandResult:
-        code_int = int(code)
-        if code_int != 0:
-            topic = loco_rpc_request_topic(self.loco_service_name)
-            raise UnitreeG1Error(
-                f"unitree-sdk2 command returned non-zero code {code_int} "
-                f"({unitree_error_name(code_int)}): {command}\n\n"
-                "DDS and client construction succeeded, but no robot RPC server responded on "
-                f"{topic}.\n"
-                "Try:\n"
-                "- put robot into high-level sport/ai-sport mode with controller\n"
-                "- test both --loco-service-name ai_sport and --loco-service-name sport\n"
-                "- run probe_loco"
+                f"Unsupported locomotion service {loco_service_name!r}. Use one of: {choices}"
             )
-        return UnitreeCommandResult(command=command, returncode=0, stdout="", stderr="")
+        self.timeout_s = timeout_s
+        self.loco_service_name = loco_service_name
+        self._runner = runner
+        self._rpc_factory = rpc_factory
+        self._sleep = sleep
+        self._monotonic = monotonic
+        self._clients = dict(clients or {})
+        self._owns_clients = clients is None
+        self._owns_runner = runner is None
+        self._selected_service: str | None = None
+        self._started = clients is not None
 
-    def _call(self, method: str, *args: object) -> UnitreeCommandResult:
-        method_obj = getattr(self._client, method)
+    def start(self) -> "G1Ros2LocoClient":
+        if self._started:
+            return self
+        runner = self._runner or Ros2NodeRunner("g1_locomotion_client")
+        self._runner = runner
         try:
-            call_result = method_obj(*args) if args else method_obj()
-        except TypeError:
-            if method == "BalanceStand" and not args:
-                call_result = method_obj(0)
-            else:
-                raise
-        if isinstance(call_result, tuple) and len(call_result) >= 1:
-            code = call_result[0]
-        else:
-            code = call_result
-        return self._result(["loco", method.lower()], code if code is not None else 0)
+            node = runner.start()
+            bindings = runner.bindings
+            services = (
+                ("sport", "ai_sport")
+                if self.loco_service_name == "auto"
+                else (self.loco_service_name,)
+            )
+            for service in services:
+                self._clients[service] = self._rpc_factory(
+                    node,
+                    request_type=bindings.request_type,
+                    response_type=bindings.response_type,
+                    request_topic=f"/api/{service}/request",
+                    response_topic=f"/api/{service}/response",
+                    qos_depth=1,
+                )
+        except (Ros2Unavailable, ImportError, RuntimeError) as exc:
+            if self._owns_runner:
+                runner.close()
+            raise UnitreeG1Error(f"Could not start the ROS 2 locomotion client: {exc}") from exc
+        self._started = True
+        return self
 
-    def _call_first(self, methods: list[str]) -> UnitreeCommandResult:
-        for method in methods:
-            if hasattr(self._client, method):
-                return self._call(method)
-        choices = ", ".join(methods)
-        raise UnitreeG1Error(f"Installed G1 loco client does not expose any of: {choices}")
+    def close(self) -> None:
+        if self._owns_clients:
+            for client in self._clients.values():
+                client.close()
+        self._clients.clear()
+        if self._owns_runner and self._runner is not None:
+            self._runner.close()
+        self._started = False
+        self._selected_service = None
 
-    def get_fsm_id(self) -> UnitreeCommandResult:
-        if hasattr(self._client, "GetFsmId"):
-            result = self._client.GetFsmId()
-            code = result[0] if isinstance(result, tuple) and result else result
-            stdout = ""
-            if isinstance(result, tuple) and len(result) > 1:
-                stdout = f"{result[1]}\n"
-            return UnitreeCommandResult(command=["loco", "get_fsm_id"], returncode=int(code or 0), stdout=stdout, stderr="")
-        raise UnitreeG1Error("get_fsm_id is not implemented by the installed G1 loco client.")
+    def __enter__(self) -> "G1Ros2LocoClient":
+        return self.start()
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
 
     def probe_loco(self) -> UnitreeCommandResult:
-        methods = []
-        for name in dir(self._client):
-            if name.startswith("_"):
-                continue
+        self.start()
+        reports: dict[str, object] = {}
+        selected: str | None = None
+        for service in self._service_candidates():
             try:
-                value = getattr(self._client, name)
-            except Exception as exc:
-                methods.append({"name": name, "available": False, "error": repr(exc)})
-                continue
-            if callable(value):
-                methods.append(name)
-
-        read_results: dict[str, object] = {}
-        for method_name in (
-            "GetApiVersion",
-            "GetServerApiVersion",
-            "GetLeaseId",
-            "GetFsmId",
-            "GetFsmMode",
-            "GetBalanceMode",
-        ):
-            if not hasattr(self._client, method_name):
-                read_results[method_name] = {"available": False}
-                continue
-            method = getattr(self._client, method_name)
-            try:
-                read_results[method_name] = {"available": True, **unitree_rpc_result_report(method())}
-            except Exception as exc:
-                read_results[method_name] = {
-                    "available": True,
-                    "ok": False,
-                    "exception": repr(exc),
-                }
-
-        remote_calls = [
-            result
-            for result in read_results.values()
-            if isinstance(result, dict) and result.get("available") and result.get("code") is not None
-        ]
-        rpc_ok = bool(remote_calls) and any(bool(result.get("ok")) for result in remote_calls)
+                result = self._clients[service].call(
+                    api_id=LOCO_API_GET_FSM_ID,
+                    parameter=_parameter(),
+                    timeout_s=self.timeout_s,
+                )
+                report = unitree_rpc_result_report(result)
+                reports[service] = report
+                if selected is None and result.status_code == 0:
+                    selected = service
+            except (Ros2RpcTimeout, RuntimeError) as exc:
+                reports[service] = {"ok": False, "error": str(exc)}
+        if selected is not None:
+            self._selected_service = selected
         report = {
-            "ok": rpc_ok,
-            "loco_service_name": self.loco_service_name,
-            "rpc_request_topic": loco_rpc_request_topic(self.loco_service_name),
-            "rpc_status": (
-                "at least one read-only RPC returned code 0"
-                if rpc_ok
-                else "no read-only robot RPC call returned code 0"
-            ),
-            "timeout_s": self.timeout_s,
-            "domain_id": self.domain_id,
-            "network_interface": self.network_interface,
-            "public_methods": methods,
-            "read_only_calls": read_results,
+            "ok": selected is not None,
+            "selected_service": selected,
+            "read_only_calls": reports,
         }
-        return UnitreeCommandResult(
-            command=["loco", "probe_loco"],
-            returncode=0,
-            stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
-            stderr="",
-        )
+        return self._command_result(["loco", "probe"], report, ok=selected is not None)
 
-    def start(self) -> UnitreeCommandResult:
-        return self._call("Start")
+    def get_fsm_id(self) -> UnitreeCommandResult:
+        return self._call("get_fsm_id", LOCO_API_GET_FSM_ID)
+
+    def start_robot(self) -> UnitreeCommandResult:
+        return self._call("start", LOCO_API_SET_FSM_ID, {"data": 500})
 
     def stand_up(self) -> UnitreeCommandResult:
-        return self._call_first(["StandUp", "Squat2StandUp", "Lie2StandUp", "HighStand"])
+        return self._call("stand_up", LOCO_API_SET_FSM_ID, {"data": 706})
 
     def balance_stand(self) -> UnitreeCommandResult:
-        return self._call("BalanceStand")
-
-    def stop_move(self) -> UnitreeCommandResult:
-        return self._call("StopMove")
+        return self._call("balance_stand", LOCO_API_SET_BALANCE_MODE, {"data": 0})
 
     def damp(self) -> UnitreeCommandResult:
-        return self._call("Damp")
+        return self._call("damp", LOCO_API_SET_FSM_ID, {"data": 1})
 
-    def move(self, vx: float, vy: float, omega: float, duration: float | None = None) -> UnitreeCommandResult:
-        cmd = ["loco", "move", str(vx), str(vy), str(omega)]
-        if duration is not None:
-            cmd.append(str(duration))
+    def stop_move(self) -> UnitreeCommandResult:
+        return self._send_velocity(0.0, 0.0, 0.0, 0.2, command_name="stop_move")
 
-        result = self._call("Move", vx, vy, omega)
-
-        if duration is not None:
-            time.sleep(duration)
+    def move(
+        self,
+        vx: float,
+        vy: float,
+        omega: float,
+        duration: float | None = None,
+    ) -> UnitreeCommandResult:
+        bounded_duration = 1.0 if duration is None else duration
+        _validate_velocity(vx, vy, omega, bounded_duration)
+        result = self._send_velocity(vx, vy, omega, bounded_duration, command_name="move")
+        try:
+            self._sleep(bounded_duration)
+        finally:
             self.stop_move()
-
         return result
 
     def smooth_move(
@@ -821,17 +387,16 @@ class G1LocoSdk2Client:
         duration: float = 0.5,
         ramp_s: float = 0.25,
     ) -> UnitreeCommandResult:
-        if duration <= 0.0:
-            raise UnitreeG1Error("smooth_move duration must be > 0.0.")
-        if ramp_s <= 0.0:
-            raise UnitreeG1Error("smooth_move ramp_s must be > 0.0.")
-
-        control_dt = 0.05
+        _validate_velocity(vx, vy, omega, duration)
+        if not math.isfinite(ramp_s) or ramp_s <= 0.0:
+            raise UnitreeG1Error("ramp_s must be finite and positive.")
         ramp_s = min(ramp_s, duration / 2.0)
-        started_at = time.monotonic()
+        control_dt = 0.1
+        started_at = self._monotonic()
+        updates = 0
         try:
             while True:
-                elapsed = time.monotonic() - started_at
+                elapsed = self._monotonic() - started_at
                 if elapsed >= duration:
                     break
                 if elapsed < ramp_s:
@@ -840,192 +405,210 @@ class G1LocoSdk2Client:
                     scale = smoothstep((duration - elapsed) / ramp_s)
                 else:
                     scale = 1.0
-                self._call("Move", vx * scale, vy * scale, omega * scale)
-                time.sleep(control_dt)
+                command_duration = min(0.25, max(control_dt, duration - elapsed))
+                self._send_velocity(
+                    vx * scale,
+                    vy * scale,
+                    omega * scale,
+                    command_duration,
+                    command_name="smooth_move_step",
+                )
+                updates += 1
+                self._sleep(min(control_dt, max(0.0, duration - elapsed)))
         finally:
             self.stop_move()
 
-        report = {
-            "ok": True,
-            "command": "smooth_move",
-            "vx": vx,
-            "vy": vy,
-            "omega": omega,
-            "duration": duration,
-            "ramp_s": ramp_s,
-            "easing": "smoothstep",
-        }
-        return UnitreeCommandResult(
-            command=["loco", "smooth_move"],
-            returncode=0,
-            stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
-            stderr="",
+        return self._command_result(
+            ["loco", "smooth_move"],
+            {
+                "ok": True,
+                "vx": vx,
+                "vy": vy,
+                "omega": omega,
+                "duration": duration,
+                "ramp_s": ramp_s,
+                "updates": updates,
+                "easing": "smoothstep",
+            },
         )
-
-    def _low_state_handler(self, msg: object) -> None:
-        self._arm_low_state = msg
-
-    def move_arms_up(
-        self,
-        hold_s: float | None = None,
-        scale: float = 1.0,
-        ramp_s: float = 2.0,
-    ) -> UnitreeCommandResult:
-        if scale <= 0.0 or scale > 1.0:
-            raise UnitreeG1Error("move_arms_up scale must be > 0.0 and <= 1.0.")
-        if ramp_s <= 0.0:
-            raise UnitreeG1Error("move_arms_up ramp_s must be > 0.0.")
-        if hold_s is not None and hold_s < 0.0:
-            raise UnitreeG1Error("move_arms_up hold_s must be >= 0.0.")
-
-        if (
-            ChannelPublisher is None
-            or ChannelSubscriber is None
-            or unitree_hg_msg_dds__LowCmd_ is None
-            or LowCmd_ is None
-            or LowState_ is None
-            or CRC is None
-        ):
-            detail = (
-                str(_SDK2_LOW_LEVEL_IMPORT_ERROR)
-                if _SDK2_LOW_LEVEL_IMPORT_ERROR is not None
-                else "missing low-level SDK2 imports"
-            )
-            raise UnitreeG1Error(f"Could not import SDK2 low-level G1 DDS APIs.\nOriginal error: {detail}")
-
-        publisher = ChannelPublisher("rt/lowcmd", LowCmd_)
-        publisher.Init()
-        subscriber = ChannelSubscriber("rt/lowstate", LowState_)
-        subscriber.Init(self._low_state_handler, 10)
-
-        deadline = time.monotonic() + min(self.timeout_s, 10.0)
-        while self._arm_low_state is None:
-            if time.monotonic() > deadline:
-                raise UnitreeG1Error("Timed out waiting for rt/lowstate before moving arms.")
-            time.sleep(0.01)
-
-        low_cmd = unitree_hg_msg_dds__LowCmd_()
-        crc = CRC()
-        arm_joint_ids = sorted(G1_ARM_FORWARD_TARGETS)
-        start_q = {
-            joint_id: float(self._arm_low_state.motor_state[joint_id].q)
-            for joint_id in arm_joint_ids
-        }
-        target_q = {
-            joint_id: start_q[joint_id] + (G1_ARM_FORWARD_TARGETS[joint_id] - start_q[joint_id]) * scale
-            for joint_id in arm_joint_ids
-        }
-
-        control_dt = 0.02
-        started_at = time.monotonic()
-
-        try:
-            while True:
-                elapsed = time.monotonic() - started_at
-                ratio = min(max(elapsed / ramp_s, 0.0), 1.0)
-                eased_ratio = smoothstep(ratio)
-                if hold_s is not None and elapsed >= ramp_s + hold_s:
-                    report = {
-                        "ok": True,
-                        "command": "move_arms_up",
-                        "scale": scale,
-                        "ramp_s": ramp_s,
-                        "hold_s": hold_s,
-                        "easing": "smoothstep",
-                        "joint_targets": target_q,
-                    }
-                    return UnitreeCommandResult(
-                        command=["loco", "move_arms_up"],
-                        returncode=0,
-                        stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
-                        stderr="",
-                    )
-                low_cmd.mode_pr = 0
-                low_cmd.mode_machine = int(getattr(self._arm_low_state, "mode_machine", 0))
-
-                for joint_id in arm_joint_ids:
-                    motor = low_cmd.motor_cmd[joint_id]
-                    motor.mode = 1
-                    motor.tau = 0.0
-                    motor.q = (1.0 - eased_ratio) * start_q[joint_id] + eased_ratio * target_q[joint_id]
-                    motor.dq = 0.0
-                    motor.kp = 25.0
-                    motor.kd = 1.0
-
-                low_cmd.crc = crc.Crc(low_cmd)
-                publisher.Write(low_cmd)
-                time.sleep(control_dt)
-        except KeyboardInterrupt:
-            return UnitreeCommandResult(command=["loco", "move_arms_up"], returncode=0, stdout="", stderr="")
 
     def command(self, name: str) -> UnitreeCommandResult:
         commands = {
+            "start": self.start_robot,
             "stand_up": self.stand_up,
             "balance_stand": self.balance_stand,
             "stop_move": self.stop_move,
             "damp": self.damp,
-            "move_arms_up": self.move_arms_up,
             "probe_loco": self.probe_loco,
+            "probe": self.probe_loco,
         }
         try:
-            return commands[name]()
+            operation = commands[name]
         except KeyError as exc:
             choices = ", ".join(sorted(commands))
             raise UnitreeG1Error(f"Unsupported G1 command {name!r}. Use one of: {choices}") from exc
+        return operation()
+
+    def _send_velocity(
+        self,
+        vx: float,
+        vy: float,
+        omega: float,
+        duration: float,
+        *,
+        command_name: str,
+    ) -> UnitreeCommandResult:
+        _validate_velocity(vx, vy, omega, duration)
+        return self._call(
+            command_name,
+            LOCO_API_SET_VELOCITY,
+            {"velocity": [vx, vy, omega], "duration": duration},
+        )
+
+    def _call(
+        self,
+        command_name: str,
+        api_id: int,
+        payload: Mapping[str, object] | None = None,
+    ) -> UnitreeCommandResult:
+        service = self._ensure_service()
+        try:
+            result = self._clients[service].call(
+                api_id=api_id,
+                parameter=_parameter(payload),
+                timeout_s=self.timeout_s,
+            )
+        except (Ros2RpcTimeout, RuntimeError) as exc:
+            raise UnitreeG1Error(
+                f"ROS 2 locomotion command {command_name!r} failed on {service}: {exc}"
+            ) from exc
+        report = {"service": service, **unitree_rpc_result_report(result)}
+        if result.status_code != 0:
+            raise UnitreeG1Error(
+                f"Robot rejected {command_name!r} with status {result.status_code} "
+                f"({unitree_error_name(result.status_code)})."
+            )
+        return self._command_result(["loco", command_name], report)
+
+    def _ensure_service(self) -> str:
+        if self._selected_service is not None:
+            return self._selected_service
+        probe = self.probe_loco()
+        if probe.returncode != 0 or self._selected_service is None:
+            raise UnitreeG1Error(
+                "No responsive G1 locomotion service was found. Verify ROS 2 discovery and "
+                "that the robot is in a high-level motion mode."
+            )
+        return self._selected_service
+
+    def _service_candidates(self) -> tuple[str, ...]:
+        if self.loco_service_name == "auto":
+            return ("sport", "ai_sport")
+        return (self.loco_service_name,)
+
+    @staticmethod
+    def _command_result(
+        command: list[str], report: Mapping[str, object], *, ok: bool = True
+    ) -> UnitreeCommandResult:
+        return UnitreeCommandResult(
+            command=command,
+            returncode=0 if ok else 1,
+            stdout=json.dumps(dict(report), indent=2, sort_keys=True) + "\n",
+            stderr="",
+        )
 
 
-class Go2SportSdk2Client(G1LocoSdk2Client):
-    """Explicit lazy Go2 sport backend for debugging only."""
+class MotionSwitcherRos2Client:
+    """ROS 2 client for read-only mode checks and explicit mode changes."""
 
     def __init__(
         self,
-        network_interface: str | None = None,
-        robot_ip: str | None = None,
-        timeout_s: float = 15.0,
-        domain_id: int = 0,
-        cyclonedds_log_file: str | None = None,
-        dds_config_mode: str = DEFAULT_DDS_CONFIG_MODE,
+        *,
+        timeout_s: float = 1.0,
+        runner: Ros2NodeRunner | None = None,
+        rpc_client: Any | None = None,
+        rpc_factory: RpcFactory = Ros2RequestResponseClient,
     ) -> None:
-        self.network_interface = UnitreeSdk2Context.initialize(
-            robot_ip=robot_ip,
-            network_interface=network_interface,
-            domain_id=domain_id,
-            cyclonedds_log_file=cyclonedds_log_file,
-            dds_config_mode=dds_config_mode,
-        )
+        if timeout_s <= 0.0:
+            raise ValueError("timeout_s must be positive")
         self.timeout_s = timeout_s
-        self.domain_id = domain_id
-        self.loco_service_name = "sport"
-        self._arm_low_state = None
+        self._runner = runner
+        self._rpc_client = rpc_client
+        self._rpc_factory = rpc_factory
+        self._owns_runner = runner is None
+        self._owns_client = rpc_client is None
 
+    def start(self) -> "MotionSwitcherRos2Client":
+        if self._rpc_client is not None:
+            return self
+        runner = self._runner or Ros2NodeRunner("g1_motion_mode_client")
+        self._runner = runner
         try:
-            from unitree_sdk2py.go2.sport.sport_client import SportClient
-        except Exception as exc:
-            raise UnitreeG1Error(
-                "Could not import Unitree Go2 SportClient. This backend is only for explicit debugging.\n"
-                f"Original error: {exc}"
-            ) from exc
+            node = runner.start()
+            bindings = runner.bindings
+            self._rpc_client = self._rpc_factory(
+                node,
+                request_type=bindings.request_type,
+                response_type=bindings.response_type,
+                request_topic="/api/motion_switcher/request",
+                response_topic="/api/motion_switcher/response",
+                qos_depth=1,
+            )
+        except (Ros2Unavailable, ImportError, RuntimeError) as exc:
+            if self._owns_runner:
+                runner.close()
+            raise UnitreeG1Error(f"Could not start the ROS 2 motion-mode client: {exc}") from exc
+        return self
 
-        print("Constructing Go2 SportClient", file=sys.stderr)
+    def close(self) -> None:
+        if self._owns_client and self._rpc_client is not None:
+            self._rpc_client.close()
+        self._rpc_client = None
+        if self._owns_runner and self._runner is not None:
+            self._runner.close()
+
+    def __enter__(self) -> "MotionSwitcherRos2Client":
+        return self.start()
+
+    def __exit__(self, *_args: object) -> None:
+        self.close()
+
+    def check_mode(self) -> UnitreeCommandResult:
+        return self._call("check_motion_mode", MOTION_API_CHECK_MODE)
+
+    def select_mode(self, mode: str) -> UnitreeCommandResult:
+        if not mode.strip():
+            raise UnitreeG1Error("Motion mode is required.")
+        return self._call("select_motion_mode", MOTION_API_SELECT_MODE, {"name": mode})
+
+    def release_mode(self) -> UnitreeCommandResult:
+        return self._call("release_motion_mode", MOTION_API_RELEASE_MODE)
+
+    def _call(
+        self,
+        command_name: str,
+        api_id: int,
+        payload: Mapping[str, object] | None = None,
+    ) -> UnitreeCommandResult:
+        self.start()
+        assert self._rpc_client is not None
         try:
-            self._client = SportClient()
-        except Exception as exc:
+            result = self._rpc_client.call(
+                api_id=api_id,
+                parameter=_parameter(payload),
+                timeout_s=self.timeout_s,
+            )
+        except (Ros2RpcTimeout, RuntimeError) as exc:
+            raise UnitreeG1Error(f"ROS 2 motion-mode command {command_name!r} failed: {exc}") from exc
+        report = unitree_rpc_result_report(result)
+        if result.status_code != 0:
             raise UnitreeG1Error(
-                "Failed to initialize explicit Go2 SportClient backend. "
-                "Do not use this backend for G1 unless intentionally debugging SDK topic behavior.\n"
-                f"Original error: {exc}"
-            ) from exc
-        print(f"Setting Go2 SportClient timeout={timeout_s}", file=sys.stderr)
-        self._client.SetTimeout(timeout_s)
-        print("Calling Go2 SportClient.Init()", file=sys.stderr)
-        init_result = self._client.Init()
-        print(f"Go2 SportClient.Init() returned {init_result!r}", file=sys.stderr)
-
-
-def parse_velocity(value: str) -> tuple[float, float, float, float | None]:
-    parts = value.split()
-    if len(parts) not in (3, 4):
-        raise argparse.ArgumentTypeError("Expected 'vx vy omega' or 'vx vy omega duration'.")
-    vx, vy, omega = (float(part) for part in parts[:3])
-    duration = float(parts[3]) if len(parts) == 4 else None
-    return vx, vy, omega, duration
+                f"Robot rejected {command_name!r} with status {result.status_code} "
+                f"({unitree_error_name(result.status_code)})."
+            )
+        return UnitreeCommandResult(
+            command=["loco", command_name],
+            returncode=0,
+            stdout=json.dumps(report, indent=2, sort_keys=True) + "\n",
+            stderr="",
+        )

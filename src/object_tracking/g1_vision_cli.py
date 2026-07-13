@@ -13,10 +13,8 @@ from typing import Iterator
 from urllib.parse import urlparse
 
 import cv2
-import numpy as np
-
 from object_tracking.manual_tracker import open_camera, opencv_gstreamer_enabled, parse_bbox, run
-from object_tracking.unitree_g1 import UnitreeG1Error, g1_camera_candidates, get_sdk2_video_sample, is_gstreamer_pipeline
+from object_tracking.unitree_g1 import g1_camera_candidates, is_gstreamer_pipeline
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -41,21 +39,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument(
         "--camera-url",
         help="Explicit camera source. May be a gstreamer pipeline or URL. {ip} is substituted for plain IP templates.",
-    )
-    parser.add_argument(
-        "--sdk2-video",
-        action="store_true",
-        help="Read one visual frame through Unitree SDK2 videohub GetImageSample instead of URL/GStreamer probing.",
-    )
-    parser.add_argument(
-        "--sdk2-interface",
-        help="Network interface for SDK2 video. Defaults to route-derived interface for robot_ip.",
-    )
-    parser.add_argument(
-        "--sdk2-timeout",
-        type=float,
-        default=3.0,
-        help="SDK2 video request timeout in seconds.",
     )
     parser.add_argument(
         "--bbox",
@@ -589,48 +572,6 @@ def _diagnose_help_if_needed(failed_reason: str) -> None:
     print("Hint: run with --diagnose for network + camera probe output.", file=sys.stderr)
 
 
-def save_sdk2_video_snapshot(robot_ip: str, output_dir: Path, args: argparse.Namespace) -> None:
-    output_dir.mkdir(parents=True, exist_ok=True)
-    try:
-        image_bytes, network_interface = get_sdk2_video_sample(
-            robot_ip=robot_ip,
-            network_interface=args.sdk2_interface,
-            timeout_s=args.sdk2_timeout,
-        )
-    except UnitreeG1Error as exc:
-        print(f"SDK2 video failed: {exc}", file=sys.stderr)
-        raise SystemExit(1) from exc
-
-    encoded = np.frombuffer(image_bytes, dtype=np.uint8)
-    frame = cv2.imdecode(encoded, cv2.IMREAD_COLOR)
-    if frame is None:
-        print(
-            f"SDK2 video returned {len(image_bytes)} bytes, but OpenCV could not decode them as an image.",
-            file=sys.stderr,
-        )
-        raise SystemExit(1)
-
-    snapshot_path = output_dir / "snapshot.jpg"
-    metadata_path = output_dir / "camera.json"
-    if not cv2.imwrite(str(snapshot_path), frame):
-        raise RuntimeError(f"Could not write snapshot to {snapshot_path}")
-
-    metadata = {
-        "timestamp": time.time(),
-        "robot_ip": robot_ip,
-        "camera_source": "unitree_sdk2:videohub:GetImageSample",
-        "network_interface": network_interface,
-        "snapshot": str(snapshot_path),
-        "frame_shape": list(frame.shape),
-        "image_sample_bytes": len(image_bytes),
-    }
-    metadata_path.write_text(json.dumps(metadata, indent=2, sort_keys=True) + "\n")
-    print("SDK2 video frame opened: videohub GetImageSample")
-    print(f"Using network interface: {network_interface}")
-    print(f"Wrote snapshot to {snapshot_path}")
-    print(f"Wrote camera metadata to {metadata_path}")
-
-
 def save_snapshot(robot_ip: str, camera_url: str | None, output_dir: Path, args: argparse.Namespace) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     try:
@@ -696,13 +637,6 @@ def main() -> None:
 
     if args.no_ssh:
         args.ssh = False
-
-    if args.sdk2_video:
-        if args.bbox is not None or args.show:
-            print("--sdk2-video currently captures a visual snapshot only; run it without --bbox/--show first.", file=sys.stderr)
-            raise SystemExit(1)
-        save_sdk2_video_snapshot(args.robot_ip, output_dir, args)
-        return
 
     if args.list_cameras:
         for i, candidate in enumerate(g1_camera_candidates(args.robot_ip, args.camera_url), start=1):

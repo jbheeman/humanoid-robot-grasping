@@ -1,9 +1,8 @@
 import time
 
 import numpy as np
-from fastapi.testclient import TestClient
 
-from scripts.robot.depth_service import CapturedDepth, DepthService, create_app
+from scripts.robot.depth_service import CapturedDepth, DepthService
 
 
 class FakeDepthSource:
@@ -39,22 +38,36 @@ class FakeDepthSource:
         self.started = False
 
 
-def test_depth_service_health_calibration_and_websocket() -> None:
+class FakeCodec:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    def encode(self, z16: np.ndarray, **metadata: object) -> bytes:
+        self.calls.append({"z16": z16.copy(), **metadata})
+        return b"bounded-compressed-depth"
+
+
+def test_depth_service_prepares_latest_ros_payload_and_health() -> None:
     source = FakeDepthSource()
+    codec = FakeCodec()
     service = DepthService(source, transmit_fps=15.0)
+    service.codec = codec  # type: ignore[assignment]
     service.start()
     try:
         deadline = time.monotonic() + 1.0
         while service.latest_sequence < 0 and time.monotonic() < deadline:
             time.sleep(0.005)
-        client = TestClient(create_app(service))
-        health = client.get("/health").json()
+
+        health = service.health()
         assert health["ok"] is True
         assert health["executable"] is True
-        assert client.get("/depth/calibration").json()["calibration_id"] == "test-calibration"
-        with client.websocket_connect("/depth/stream") as websocket:
-            decoded = service.codec.decode(websocket.receive_bytes())
-        assert decoded.header.sequence == 0
-        assert decoded.as_numpy().shape == (3, 4)
+        assert health["calibration_id"] == "test-calibration"
+        assert service.latest_sequence == 0
+        assert service.latest_envelope == b"bounded-compressed-depth"
+        assert codec.calls[0]["registered_to_rgb"] is True
+        assert codec.calls[0]["width"] == 4
+        assert np.asarray(codec.calls[0]["z16"]).shape == (3, 4)
     finally:
         service.stop()
+
+    assert source.started is False

@@ -9,8 +9,6 @@ import time
 from typing import Any, Dict, List, Optional, Protocol
 
 import numpy as np
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-
 from object_tracking.arm_tracking.protocol import DepthEnvelopeCodec
 from object_tracking.arm_tracking.calibration import load_calibration
 
@@ -423,47 +421,10 @@ class DepthService:
             }
 
 
-def create_app(service: DepthService) -> FastAPI:
-    app = FastAPI(title="Unitree G1 RealSense Depth Service", version="1.0")
-
-    @app.get("/health")
-    def health() -> Dict[str, Any]:
-        return service.health()
-
-    @app.get("/depth/calibration")
-    def calibration() -> Dict[str, Any]:
-        return service.source.calibration
-
-    @app.websocket("/depth/stream")
-    async def depth_stream(websocket: WebSocket) -> None:
-        await websocket.accept()
-        last_sequence = -1
-        period = 1.0 / service.transmit_fps
-        try:
-            while True:
-                with service.lock:
-                    sequence = service.latest_sequence
-                    envelope = service.latest_envelope
-                if envelope is not None and sequence != last_sequence:
-                    await websocket.send_bytes(envelope)
-                    last_sequence = sequence
-                await _async_sleep(period)
-        except WebSocketDisconnect:
-            return
-
-    return app
-
-
-async def _async_sleep(seconds: float) -> None:
-    import asyncio
-
-    await asyncio.sleep(seconds)
-
-
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Robot-local RealSense Z16 depth service")
-    parser.add_argument("--host", default="0.0.0.0")
-    parser.add_argument("--port", type=int, default=8767)
+    parser = argparse.ArgumentParser(
+        description="Robot-local RealSense Z16 source used by the ROS 2 robot node"
+    )
     parser.add_argument("--serial")
     parser.add_argument("--width", type=int, default=640)
     parser.add_argument("--height", type=int, default=480)
@@ -527,35 +488,10 @@ def bind_validated_calibration(source: DepthSource, calibration_path: str) -> No
 
 
 def main() -> None:
-    args = build_parser().parse_args()
-    if args.capture_fps <= 0 or args.transmit_fps <= 0 or not math.isfinite(args.transmit_fps):
-        raise SystemExit("FPS values must be finite and positive")
-    direct_source = RealSenseDepthSource(
-        width=args.width,
-        height=args.height,
-        fps=args.capture_fps,
-        serial=args.serial,
+    raise SystemExit(
+        "The standalone depth HTTP server was removed. Start the ROS 2 robot node with "
+        "`uv run g1 robot start`; it publishes compressed depth on /g1/depth."
     )
-    ros_source = RosAlignedDepthSource(
-        image_topic=args.ros_image_topic,
-        camera_info_topic=args.ros_camera_info_topic,
-        depth_scale=args.ros_depth_scale,
-    )
-    if args.source == "ros":
-        source: DepthSource = ros_source
-    elif args.source == "librealsense":
-        source = direct_source
-    else:
-        source = AutoDepthSource(ros_source, direct_source)
-    service = DepthService(source, transmit_fps=args.transmit_fps)
-    service.start(args.calibration)
-    app = create_app(service)
-    import uvicorn
-
-    try:
-        uvicorn.run(app, host=args.host, port=args.port, log_level="info")
-    finally:
-        service.stop()
 
 
 if __name__ == "__main__":

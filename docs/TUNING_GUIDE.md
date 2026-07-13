@@ -2,7 +2,7 @@
 
 The tuning workflow is deliberately split into two parts:
 
-1. prove that the robot, URDF, IK, HTTP payload, and SDK use the same joint contract;
+1. prove that the robot, URDF, IK, ROS target, and Unitree message mapping use the same joint contract;
 2. optimize perception from repeatable dry-run data without weakening movement safety gates.
 
 Neither a high diagnostic score nor a successful dry run authorizes arm movement.
@@ -11,7 +11,7 @@ Neither a high diagnostic score nor a successful dry run authorizes arm movement
 
 The seven-element `right_arm_q` vector is:
 
-| Vector | SDK2 slot | Joint |
+| Vector | 29-DOF slot | Joint |
 |---:|---:|---|
 | 0 | 22 | right shoulder pitch |
 | 1 | 23 | right shoulder roll |
@@ -32,9 +32,7 @@ uv run g1-tune joint-audit
 
 The GB10 setup now performs this audit automatically. IK also refuses to initialize unless Pinocchio reduces the model to exactly seven coordinates in the order above.
 
-The currently locked `pin` installation does not expose `pinocchio.casadi`; therefore a static URDF audit can pass while IK construction still fails. Treat `ik_unavailable` as a dependency/runtime blocker, not as a parameter to tune. Resolve the P1 IK task in `docs/review.md` before any physical command test.
-
-This static audit is necessary but not sufficient. Before motion, capture LowState on the physical robot, confirm it is the 29-DOF model, compare all seven reported values with the robot's known pose, and perform the supervised `0.05 rad` smoke test described in the arm runbook.
+This static audit is necessary but not sufficient. Before motion, capture LowState on the physical robot, confirm it is the 29-DOF model, compare all seven reported values with the robot's known pose, and perform the supervised `0.01 rad` shoulder-jog sequence described in the commissioning runbook.
 
 ## Record a labeled baseline
 

@@ -1,12 +1,15 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# One-command, robot-local commissioning launcher. `move` is the explicit
+# One-command, robot-local ROS commissioning launcher. `move` is the explicit
 # motion-capable mode; the launch command itself is the acknowledgement.
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 MODE="${1:-read-only}"
 
-export ARM_TOKEN_FILE="${ARM_TOKEN_FILE:-${HOME}/.config/g1-arm-token}"
+export CLIENT_IP="${CLIENT_IP:-192.168.0.66}"
+export ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0}"
+export UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
+export ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 export G1_ROBOT_ID="${G1_ROBOT_ID:-g1-lab-01}"
 
 case "${MODE}" in

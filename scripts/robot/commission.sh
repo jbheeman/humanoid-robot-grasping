@@ -3,77 +3,76 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ROBOT_PYTHON="${ROBOT_PYTHON:-${ROOT_DIR}/robot/.venv/bin/python}"
-ARM_HOST="${ARM_HOST:-127.0.0.1}"
-ARM_PORT="${ARM_PORT:-8766}"
-ARM_INTERFACE="${ARM_INTERFACE:-eth0}"
-ARM_TOKEN_FILE="${ARM_TOKEN_FILE:-}"
+CLIENT_IP="${CLIENT_IP:-${GB10_HOST:-}}"
+ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0}"
+UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
+ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
 ALLOW_MOVEMENT="${ALLOW_MOVEMENT:-0}"
 EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-}"
 G1_ROBOT_ID="${G1_ROBOT_ID:-}"
+CALIBRATION="${CALIBRATION:-}"
 COMMISSIONING_ROOT="${COMMISSIONING_ROOT:-${ROOT_DIR}/runs/research/arm_commissioning}"
 COMMISSIONING_PROFILE="${COMMISSIONING_PROFILE:-${HOME}/.config/g1-grasping/right-arm-home.json}"
+DEPTH_SOURCE="${DEPTH_SOURCE:-auto}"
 
 if [[ ! -x "${ROBOT_PYTHON}" ]]; then
   echo "Missing robot environment: ${ROBOT_PYTHON}" >&2
   echo "Run uv run g1 setup robot first." >&2
   exit 1
 fi
-if [[ -z "${ARM_TOKEN_FILE}" || ! -f "${ARM_TOKEN_FILE}" ]]; then
-  echo "ARM_TOKEN_FILE must name a mode-0600 bearer-token file." >&2
-  exit 1
-fi
-if [[ "$(stat -c '%a' "${ARM_TOKEN_FILE}")" != "600" ]]; then
-  echo "ARM_TOKEN_FILE must have permissions 0600." >&2
+if [[ -z "${CLIENT_IP}" ]]; then
+  echo "CLIENT_IP (the GB10 address) is required." >&2
   exit 1
 fi
 if [[ -z "${G1_ROBOT_ID}" ]]; then
   echo "G1_ROBOT_ID is required so saved poses remain robot-specific." >&2
   exit 1
 fi
-if [[ "${ALLOW_MOVEMENT}" == "1" ]]; then
-  if [[ -z "${EXPECTED_MOTION_MODE}" ]]; then
-    echo "EXPECTED_MOTION_MODE is required for movement." >&2
-    exit 1
-  fi
+if [[ "${ALLOW_MOVEMENT}" == "1" && -z "${EXPECTED_MOTION_MODE}" ]]; then
+  echo "EXPECTED_MOTION_MODE is required for movement." >&2
+  exit 1
 fi
 
-export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+source "${ROOT_DIR}/scripts/shared/ros-env.sh"
+g1_source_ros "${ROOT_DIR}" foxy
+g1_configure_cyclonedds \
+  robot-commissioning "${ROBOT_INTERFACE}" \
+  "${CLIENT_IP},${UNITREE_CONTROL_PEER}" "${ROS_DOMAIN_ID}"
+export PYTHONPATH="${ROOT_DIR}:${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 args=(
-  --host "${ARM_HOST}"
-  --port "${ARM_PORT}"
-  --interface "${ARM_INTERFACE}"
   --control-mode commissioning
-  --token-file "${ARM_TOKEN_FILE}"
+  --robot-id "${G1_ROBOT_ID}"
   --commissioning-root "${COMMISSIONING_ROOT}"
   --commissioning-profile "${COMMISSIONING_PROFILE}"
-  --robot-id "${G1_ROBOT_ID}"
+  --depth-source "${DEPTH_SOURCE}"
+  --disable-depth
 )
-if [[ -n "${EXPECTED_MOTION_MODE}" ]]; then
-  args+=(--expected-motion-mode "${EXPECTED_MOTION_MODE}")
+if [[ -n "${CALIBRATION}" ]]; then
+  args+=(--calibration "${CALIBRATION}")
 fi
 if [[ "${ALLOW_MOVEMENT}" == "1" ]]; then
-  args+=(--allow-movement)
+  args+=(--allow-movement --expected-motion-mode "${EXPECTED_MOTION_MODE}")
 fi
 
 echo
 echo "============================================================"
-echo " G1 RIGHT-ARM COMMISSIONING"
+echo " G1 RIGHT-ARM COMMISSIONING (ROS 2)"
 echo "============================================================"
 echo "Movement permitted: ${ALLOW_MOVEMENT}"
 echo "Robot ID:           ${G1_ROBOT_ID}"
 echo "Expected mode:       ${EXPECTED_MOTION_MODE:-unconfigured}"
-echo "DDS interface:       ${ARM_INTERFACE}"
+echo "ROS interface:       ${ROBOT_INTERFACE}"
+echo "ROS domain:          ${ROS_DOMAIN_ID}"
 echo "Research data:       ${COMMISSIONING_ROOT}"
 echo "Promoted home:       ${COMMISSIONING_PROFILE}"
 echo
-echo "On the MacBook, create an SSH tunnel:"
-echo "  ssh -N -L ${ARM_PORT}:127.0.0.1:${ARM_PORT} ${USER:-USER}@<ROBOT_IP>"
-echo "Then open:"
-echo "  http://127.0.0.1:${ARM_PORT}/commissioning/"
+echo "With the GB10 server running, open:"
+echo "  http://${CLIENT_IP}:8000/commissioning/"
+echo "For off-LAN access, tunnel only GB10 port 8000."
 echo
 echo "The webpage Stop button is not a physical e-stop."
 echo "============================================================"
 echo
 
-exec "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/arm_bridge.py" "${args[@]}"
+exec "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${args[@]}"

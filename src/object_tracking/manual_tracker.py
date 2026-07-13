@@ -11,7 +11,7 @@ import numpy as np
 
 from object_tracking.logging import JsonlLogger
 from object_tracking.unitree_g1 import (
-    G1LocoSdk2Client,
+    G1Ros2LocoClient,
     UnitreeG1Error,
     is_gstreamer_pipeline,
     g1_camera_candidates,
@@ -155,16 +155,12 @@ def open_camera(camera: int | str, robot_ip: str | None, robot_camera_url: str |
 
 
 def build_g1_client(
-    network_interface: str | None,
-    robot_ip: str | None,
     needs_robot_commands: bool,
-) -> G1LocoSdk2Client | None:
+    loco_service_name: str = "auto",
+) -> G1Ros2LocoClient | None:
     if not needs_robot_commands:
         return None
-    return G1LocoSdk2Client(
-        network_interface=network_interface,
-        robot_ip=robot_ip,
-    )
+    return G1Ros2LocoClient(loco_service_name=loco_service_name)
 
 
 def log_g1_result(logger: JsonlLogger, event: str, result: object) -> None:
@@ -187,7 +183,7 @@ def run(
     output_dir: Path,
     show: bool,
     record: bool,
-    g1_client: G1LocoSdk2Client | None = None,
+    g1_client: G1Ros2LocoClient | None = None,
     g1_command_on_start: str = "none",
     g1_velocity_on_start: tuple[float, float, float, float | None] | None = None,
     g1_stop_on_exit: bool = False,
@@ -322,7 +318,7 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--robot-ip",
-        help="Robot IP address. Used to resolve G1 camera URLs and SDK network interface.",
+        help="Robot IP address. Used only to resolve G1 camera URLs.",
     )
     parser.add_argument(
         "--robot-camera-url",
@@ -356,8 +352,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="Stop after this many tracked frames.",
     )
     parser.add_argument(
-        "--unitree-network-interface",
-        help="Override the local network interface for SDK2 commands. Usually use --robot-ip instead.",
+        "--loco-service",
+        choices=("auto", "sport", "ai_sport"),
+        default="auto",
+        help="ROS 2 locomotion service. Default: read-only auto-probe.",
     )
     parser.add_argument(
         "--g1-command-on-start",
@@ -381,6 +379,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = build_parser().parse_args()
+    g1_client = None
     try:
         needs_robot_commands = (
             args.g1_command_on_start != "none"
@@ -388,9 +387,8 @@ def main() -> None:
             or args.g1_stop_on_exit
         )
         g1_client = build_g1_client(
-            args.unitree_network_interface,
-            args.robot_ip,
             needs_robot_commands,
+            args.loco_service,
         )
         run(
             parse_camera(args.camera),
@@ -408,6 +406,9 @@ def main() -> None:
         )
     except UnitreeG1Error as exc:
         raise SystemExit(str(exc)) from exc
+    finally:
+        if g1_client is not None:
+            g1_client.close()
 
 
 if __name__ == "__main__":

@@ -2,19 +2,12 @@
 name = "humanoid-robot-grasping-robot"
 version = "0.1.0"
 description = "Minimal runtime dependencies for robot-local G1 services."
-requires-python = ">=3.10"
+requires-python = ">=3.8,<3.9"
 dependencies = [
-    "cyclonedds==0.10.2",
-    "fastapi>=0.111",
-    "numpy<2",
-    "pyyaml>=6",
-    "unitree-sdk2py==1.0.1",
-    "uvicorn[standard]>=0.30",
-    "zstandard>=0.23",
+    "numpy==1.24.4",
+    "pyyaml>=6,<7",
+    "zstandard>=0.23,<0.24",
 ]
 
 [tool.uv]
 package = false
-
-[tool.uv.sources]
-unitree-sdk2py = { git = "https://github.com/unitreerobotics/unitree_sdk2_python.git", rev = "37116c521f1588482e238d8450e471ba78ab9863" }

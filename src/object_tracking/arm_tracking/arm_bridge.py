@@ -349,7 +349,8 @@ class ArmBridgeController:
         sequence: object,
         calibration_id: object,
         right_arm_q: object,
-        source_timestamp: object,
+        source_timestamp: object = None,
+        pipeline_age_ms: object = None,
     ) -> dict[str, object]:
         now = self._monotonic()
         with self._lock:
@@ -376,19 +377,29 @@ class ArmBridgeController:
                 raise ArmBridgeError("sequence must be an integer", code="invalid_sequence")
             if sequence <= self.last_sequence:
                 raise ArmBridgeError("sequence must increase strictly", code="stale_sequence")
-            try:
-                source = float(source_timestamp)
-            except (TypeError, ValueError) as exc:
-                raise ArmBridgeError(
-                    "source_timestamp must be a Unix timestamp", code="invalid_timestamp"
-                ) from exc
-            if not math.isfinite(source):
-                raise ArmBridgeError("source_timestamp must be finite", code="invalid_timestamp")
-            age = self._wall_time() - source
-            if age < -0.050 or age > self.config.target_ttl_s:
+            if pipeline_age_ms is not None:
+                if isinstance(pipeline_age_ms, bool) or not isinstance(pipeline_age_ms, int):
+                    raise ArmBridgeError(
+                        "pipeline_age_ms must be an integer", code="invalid_timestamp"
+                    )
+                age = float(pipeline_age_ms) / 1000.0
+                source = self._wall_time() - age
+            else:
+                try:
+                    source = float(source_timestamp)
+                except (TypeError, ValueError) as exc:
+                    raise ArmBridgeError(
+                        "source_timestamp must be a Unix timestamp", code="invalid_timestamp"
+                    ) from exc
+                if not math.isfinite(source):
+                    raise ArmBridgeError(
+                        "source_timestamp must be finite", code="invalid_timestamp"
+                    )
+                age = self._wall_time() - source
+            if age < 0.0 or age > self.config.target_ttl_s:
                 ttl_ms = round(self.config.target_ttl_s * 1000.0)
                 raise ArmBridgeError(
-                    f"Target source timestamp is outside the {ttl_ms} ms TTL", code="stale_target"
+                    f"Target perception age is outside the {ttl_ms} ms TTL", code="stale_target"
                 )
             target = self._validate_target(right_arm_q)
             assert self.commanded_right is not None
@@ -451,19 +462,22 @@ class ArmBridgeController:
             return self.state_report(now)
 
     def heartbeat(self, *, session_id: object) -> dict[str, object]:
+        """Validate an active session; only commissioning heartbeats refresh its deadman."""
+
         now = self._monotonic()
         with self._lock:
-            if self.control_mode is not ArmControlMode.COMMISSIONING:
-                raise ArmBridgeError("Heartbeat rejected in tracking mode", code="mode_mismatch")
             if self.state not in (ArmState.ARMING, ArmState.ARMED):
                 raise ArmBridgeError(
                     f"Heartbeat rejected: bridge state is {self.state.value} and no "
-                    "commissioning session is armed",
+                    "session is armed",
                     code="not_armed",
                 )
             if self._required_string(session_id, "session_id") != self.session_id:
                 raise ArmBridgeError("Heartbeat session mismatch", code="session_mismatch")
-            self.last_target_at = now
+            # Tracking freshness comes exclusively from accepted targets. A
+            # control heartbeat must never keep stale tracking commands alive.
+            if self.control_mode is ArmControlMode.COMMISSIONING:
+                self.last_target_at = now
             return self.state_report(now)
 
     def stop(self, reason: str = "operator_stop") -> dict[str, object]:
@@ -533,9 +547,7 @@ class ArmBridgeController:
                         and self.left_latch is not None
                         and any(
                             abs(actual - expected) > self.config.max_left_drift_rad
-                            for actual, expected in zip(
-                                robot.arm_q[:7], self.left_latch, strict=True
-                            )
+                            for actual, expected in zip(robot.arm_q[:7], self.left_latch)
                         )
                     ):
                         self._enter_fault("left_arm_drift", now)
@@ -722,9 +734,7 @@ class ArmBridgeController:
                 )
             if any(
                 abs(actual - expected) > self.config.max_waist_deviation_rad
-                for actual, expected in zip(
-                    robot.waist_q, self.config.waist_reference_rad, strict=True
-                )
+                for actual, expected in zip(robot.waist_q, self.config.waist_reference_rad)
             ):
                 raise ArmBridgeError(
                     "Waist differs by more than 3 degrees from calibration",
@@ -746,9 +756,7 @@ class ArmBridgeController:
         if not self._finite(target):
             raise ArmBridgeError("right_arm_q must contain finite positions", code="invalid_target")
         margin = self.config.joint_limit_margin_rad
-        for index, (position, limits) in enumerate(
-            zip(target, self.config.right_joint_limits, strict=True)
-        ):
+        for index, (position, limits) in enumerate(zip(target, self.config.right_joint_limits)):
             lower, upper = limits
             if position < lower + margin or position > upper - margin:
                 raise ArmBridgeError(

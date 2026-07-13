@@ -15,6 +15,8 @@ import threading
 import time
 from typing import Any, Callable
 
+from object_tracking._compat import strict_zip
+
 from .arm_bridge import ArmBridgeController, ArmBridgeError, ArmState
 from .joints import (
     DEFAULT_RIGHT_JOINT_LIMITS,
@@ -141,8 +143,8 @@ def load_home_profile(path: str | Path, *, expected_robot_id: str | None = None)
         raise ArmBridgeError(
             "Right-arm home contains non-finite values", code="invalid_home_profile"
         )
-    for position, limits in zip(
-        (float(item) for item in measured), DEFAULT_RIGHT_JOINT_LIMITS, strict=True
+    for position, limits in strict_zip(
+        (float(item) for item in measured), DEFAULT_RIGHT_JOINT_LIMITS
     ):
         if not limits[0] + 0.05 <= position <= limits[1] - 0.05:
             raise ArmBridgeError(
@@ -379,7 +381,7 @@ class CommissioningController:
                     candidate_q = tuple(float(value) for value in session.candidate["measured_q"])
                     departure = max(
                         abs(actual - target)
-                        for actual, target in zip(measured, candidate_q, strict=True)
+                        for actual, target in strict_zip(measured, candidate_q)
                     )
                     session.candidate["max_departure_rad"] = max(
                         float(session.candidate.get("max_departure_rad", 0.0)), departure
@@ -464,7 +466,7 @@ class CommissioningController:
                 )
             measured = tuple(self._robot_state().arm_q[7:])
             candidate = tuple(float(value) for value in session.candidate["measured_q"])
-            deltas = [target - actual for actual, target in zip(measured, candidate, strict=True)]
+            deltas = [target - actual for actual, target in strict_zip(measured, candidate)]
             index = max(range(7), key=lambda item: abs(deltas[item]))
             if abs(deltas[index]) <= self.config.settle_error_rad / 2.0:
                 return self.report()
@@ -493,7 +495,7 @@ class CommissioningController:
             candidate = tuple(float(value) for value in session.candidate["measured_q"])
             if (
                 max(
-                    abs(actual - target) for actual, target in zip(measured, candidate, strict=True)
+                    abs(actual - target) for actual, target in strict_zip(measured, candidate)
                 )
                 > self.config.settle_error_rad
             ):
@@ -610,7 +612,7 @@ class CommissioningController:
                 if baseline is None or measured is None
                 else [
                     round(actual - start, 6)
-                    for actual, start in zip(measured, baseline, strict=True)
+                    for actual, start in strict_zip(measured, baseline)
                 ],
                 "sign_checks": session.sign_checks,
                 "checkpoints": session.checkpoints,
@@ -655,7 +657,7 @@ class CommissioningController:
         measured = tuple(robot.arm_q[7:])
         velocities = tuple(robot.arm_dq[7:])
         errors = [
-            abs(actual - target) for actual, target in zip(measured, pending.target_q, strict=True)
+            abs(actual - target) for actual, target in strict_zip(measured, pending.target_q)
         ]
         pending.peak_error_rad = max(pending.peak_error_rad, max(errors))
         nonselected_drift = max(

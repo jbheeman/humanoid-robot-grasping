@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from contextlib import asynccontextmanager
 import json
 import os
 import re
@@ -12,14 +13,14 @@ import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from typing import Optional
 
 import cv2
 import numpy as np
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse, Response, StreamingResponse
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 
 from object_tracking.research_session import ResearchSession
 from object_tracking.simple_tracker import SimpleTracker
@@ -50,6 +51,9 @@ UNITREE_UDP_PIPELINE = (
 DEFAULT_CAMERA_NAME = os.environ.get("G1_CAMERA_NAME", "main")
 DEFAULT_CAMERA_DEVICE = os.environ.get("G1_CAMERA_DEVICE", "videohub_pc4")
 DEFAULT_PIPELINE = os.environ.get("G1_CAMERA_PIPELINE") or unitree_g1_videohub_pipeline(DEFAULT_CAMERA_DEVICE)
+REPO_ROOT = Path(__file__).resolve().parents[2]
+GB10_WEB_DIR = REPO_ROOT / "scripts" / "gb10" / "web"
+COMMISSIONING_TEMPLATE = REPO_ROOT / "scripts" / "robot" / "web" / "arm_commissioning.html"
 
 
 @dataclass
@@ -86,7 +90,7 @@ class SharedState:
             "enabled": False,
             "mode": "dry-run",
             "status": "disabled",
-            "reason": "start with --depth-ws to enable hardware-depth tracking",
+            "reason": "start with --calibration to enable ROS 2 depth tracking",
         }
     )
     depth_colormap_jpeg: Optional[bytes] = None
@@ -97,14 +101,19 @@ state = SharedState()
 frame_ready = threading.Condition(state.lock)
 jpeg_ready = threading.Condition(state.lock)
 tracker = SimpleTracker()
-app = FastAPI()
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["GET"],
-    allow_headers=["*"],
-)
+
+
+@asynccontextmanager
+async def app_lifespan(_: FastAPI):
+    yield
+    shutdown_ros_transport()
+
+
+app = FastAPI(lifespan=app_lifespan)
+app.mount("/visual", StaticFiles(directory=GB10_WEB_DIR / "visual"), name="visual")
 research_session: ResearchSession | None = None
+tracking_transport: Any | None = None
+arm_runtime: Any | None = None
 
 
 def yolo_enabled(model_name: str) -> bool:
@@ -552,38 +561,149 @@ def jpeg_loop(jpeg_quality: int) -> None:
                 jpeg_ready.notify_all()
 
 
-@app.get("/", response_class=HTMLResponse)
-def index() -> str:
-    return """
-    <html>
-      <head>
-        <title>Unitree G1 Vision Stream</title>
-        <style>
-          body { font-family: Arial, sans-serif; background: #111; color: #eee; }
-          img { max-width: 100%; height: auto; border: 2px solid #444; }
-          .wrap { max-width: 1100px; margin: 24px auto; }
-          code { background: #222; padding: 2px 5px; }
-        </style>
-      </head>
-      <body>
-        <div class="wrap">
-          <h1>Unitree G1 Vision Stream</h1>
-          <p>Camera stream from Ubuntu vision server.</p>
-          <img src="/stream.mjpg" />
-          <p>
-            Snapshot: <a href="/snapshot.jpg">/snapshot.jpg</a><br/>
-            Capture: <a href="/capture">/capture</a><br/>
-            Detections: <a href="/detections">/detections</a><br/>
-            Tracks: <a href="/tracks">/tracks</a><br/>
-            Arm tracking: <a href="/arm-tracking">/arm-tracking</a><br/>
-            Research summary: <a href="/research/summary">/research/summary</a><br/>
-            Research export: <a href="/research/export.jsonl">/research/export.jsonl</a><br/>
-            Health: <a href="/health">/health</a>
-          </p>
-        </div>
-      </body>
-    </html>
-    """
+@app.get("/")
+def index() -> FileResponse:
+    return FileResponse(GB10_WEB_DIR / "unitree_dual_viewer.html")
+
+
+@app.get("/unitree_dual_viewer.html")
+def viewer() -> FileResponse:
+    return FileResponse(GB10_WEB_DIR / "unitree_dual_viewer.html")
+
+
+def _commissioning_html() -> str:
+    """Serve the existing guarded wizard without the retired bearer-token UI."""
+
+    html = COMMISSIONING_TEMPLATE.read_text(encoding="utf-8")
+    html = html.replace(
+        '<div class="field"><label for="token">Bearer token — held in memory only</label><input id="token" type="password" autocomplete="off" /></div>',
+        "",
+    )
+    html = html.replace(
+        'let state = null, sessionId = null, sequence = 0, pollTimer = null, heartbeatTimer = null, authToken = "";',
+        "let state = null, sessionId = null, sequence = 0, pollTimer = null, heartbeatTimer = null;",
+    )
+    html = html.replace(
+        'const headers = () => ({"Authorization": `Bearer ${authToken}`, "Content-Type": "application/json"});',
+        'const headers = () => ({"Content-Type": "application/json"});',
+    )
+    html = html.replace(
+        'Enter the token and connect. No movement occurs on connection.',
+        'Connect to inspect state. No movement occurs on connection.',
+    )
+    html = html.replace(
+        'authToken=$("token").value; await refresh(); if (state) $("token").value="";',
+        "await refresh();",
+    )
+    return html
+
+
+@app.get("/commissioning")
+def commissioning_redirect() -> RedirectResponse:
+    return RedirectResponse("/commissioning/", status_code=307)
+
+
+@app.get("/commissioning/", response_class=HTMLResponse)
+def commissioning_page() -> str:
+    return _commissioning_html()
+
+
+def _require_transport() -> Any:
+    if tracking_transport is None:
+        raise HTTPException(status_code=503, detail="ROS 2 control transport is unavailable")
+    return tracking_transport
+
+
+def _transport_call(operation: str, call: Callable[[], dict[str, Any]]) -> dict[str, Any]:
+    try:
+        return dict(call())
+    except HTTPException:
+        raise
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"{operation} failed: {type(exc).__name__}: {exc}",
+        ) from exc
+
+
+@app.get("/api/v1/arm/state")
+def arm_state_api() -> dict[str, Any]:
+    transport = _require_transport()
+    return _transport_call("arm state", transport.arm_state)
+
+
+@app.post("/api/v1/arm/enable")
+def arm_enable_api(payload: dict[str, Any]) -> dict[str, Any]:
+    transport = _require_transport()
+    session_id = str(payload.get("session_id") or "")
+    calibration_id = str(payload.get("calibration_id") or "")
+    if not session_id or not calibration_id:
+        raise HTTPException(status_code=422, detail="session_id and calibration_id are required")
+    return _transport_call(
+        "arm enable",
+        lambda: transport.enable_arm(session_id, calibration_id),
+    )
+
+
+@app.post("/api/v1/arm/stop")
+def arm_stop_api(payload: dict[str, Any]) -> dict[str, Any]:
+    transport = _require_transport()
+    reason = str(payload.get("reason") or "operator_stop")
+
+    def stop() -> dict[str, Any]:
+        transport.stop_arm(reason)
+        return {"ok": True, "reason": reason}
+
+    return _transport_call("arm stop", stop)
+
+
+@app.get("/api/v1/commissioning/state")
+def commissioning_state_api() -> dict[str, Any]:
+    transport = _require_transport()
+    return _transport_call(
+        "commissioning state",
+        lambda: transport.commissioning("state", {}),
+    )
+
+
+@app.post("/api/v1/commissioning/sessions")
+def commissioning_session_api(payload: dict[str, Any]) -> dict[str, Any]:
+    transport = _require_transport()
+    return _transport_call(
+        "commissioning session",
+        lambda: transport.commissioning("create_session", dict(payload)),
+    )
+
+
+_COMMISSIONING_ACTIONS = {
+    "enable": "enable",
+    "heartbeat": "heartbeat",
+    "jogs": "jog",
+    "confirmations": "confirm",
+    "checkpoints": "checkpoint",
+    "candidate": "capture_candidate",
+    "replay-steps": "replay_step",
+    "replay-validations": "validate_replay",
+    "stop": "stop",
+    "promote": "promote",
+}
+
+
+@app.post("/api/v1/commissioning/sessions/{session_id}/{action}")
+def commissioning_action_api(
+    session_id: str,
+    action: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    command = _COMMISSIONING_ACTIONS.get(action)
+    if command is None:
+        raise HTTPException(status_code=404, detail="unknown commissioning action")
+    transport = _require_transport()
+    request_payload = {**payload, "session_id": session_id}
+    return _transport_call(
+        f"commissioning {command}",
+        lambda: transport.commissioning(command, request_payload),
+    )
 
 
 @app.get("/health")
@@ -866,12 +986,9 @@ def build_parser() -> argparse.ArgumentParser:
         help="Capture backend to use for camera read. opencv requires GStreamer-enabled cv2 and does not fallback.",
     )
     parser.add_argument(
-        "--depth-ws",
-        help="Robot depth WebSocket, for example ws://192.168.0.213:8767/depth/stream",
+        "--calibration",
+        help="Validated camera-to-torso calibration YAML; enables ROS 2 depth tracking",
     )
-    parser.add_argument("--calibration", help="Validated camera-to-torso calibration YAML")
-    parser.add_argument("--arm-url", default="http://192.168.0.213:8766")
-    parser.add_argument("--arm-token-file", help="Mode-0600 bearer token used with --execute")
     parser.add_argument("--arm-home", help="Validated commissioned right-arm home profile")
     parser.add_argument("--robot-id", help="Robot identity bound to the commissioned arm home")
     parser.add_argument("--target-hz", type=float, default=15.0)
@@ -960,8 +1077,21 @@ def research_recording_loop(sample_hz: float) -> None:
         time.sleep(max(0.0, period - elapsed))
 
 
+def shutdown_ros_transport() -> None:
+    global arm_runtime, tracking_transport
+    if arm_runtime is not None:
+        arm_runtime.stop()
+        arm_runtime = None
+    elif tracking_transport is not None:
+        try:
+            tracking_transport.close()
+        except Exception:
+            pass
+    tracking_transport = None
+
+
 def main() -> None:
-    global research_session
+    global arm_runtime, research_session, tracking_transport
     args = build_parser().parse_args()
     assert_port_available(args.host, args.port)
     detector_enabled = yolo_enabled(args.model)
@@ -969,8 +1099,8 @@ def main() -> None:
         raise SystemExit(
             f"YOLO checkpoint not found: {args.model}. Provision the ignored model artifact before startup."
         )
-    if args.depth_ws and not args.calibration:
-        raise SystemExit("--depth-ws requires --calibration")
+    if args.execute and not args.calibration:
+        raise SystemExit("--execute requires --calibration")
     if args.research_hz <= 0 or args.research_hz > 30:
         raise SystemExit("--research-hz must be greater than 0 and at most 30")
     configure_runtime(args.opencv_threads, args.torch_threads, detector_enabled)
@@ -990,8 +1120,7 @@ def main() -> None:
                 "model": args.model,
                 "expected_fps": args.expected_fps,
                 "target_hz": args.target_hz,
-                "depth_ws": args.depth_ws,
-                "arm_url": args.arm_url,
+                "control_transport": "ros2",
                 "calibration_file": args.calibration,
                 "arm_home_file": args.arm_home,
                 "robot_id": args.robot_id,
@@ -1034,18 +1163,16 @@ def main() -> None:
         daemon=True,
     )
     camera_worker.start()
-    if args.depth_ws:
-        from object_tracking.arm_tracking.runtime import ArmTrackingRuntime, RuntimeConfig
+    try:
+        from object_tracking.ros2_tracking import create_ros_tracking_transport
 
-        try:
+        tracking_transport = create_ros_tracking_transport()
+        if args.calibration:
+            from object_tracking.arm_tracking.runtime import ArmTrackingRuntime, RuntimeConfig
+
             arm_runtime = ArmTrackingRuntime(
                 RuntimeConfig(
-                    depth_ws_url=args.depth_ws,
                     calibration_path=Path(args.calibration),
-                    arm_url=args.arm_url,
-                    arm_token_file=(
-                        None if args.arm_token_file is None else Path(args.arm_token_file)
-                    ),
                     arm_home_path=None if args.arm_home is None else Path(args.arm_home),
                     robot_id=args.robot_id,
                     execute=args.execute,
@@ -1056,19 +1183,28 @@ def main() -> None:
                 ),
                 arm_tracking_snapshot,
                 update_arm_tracking,
-                repo_root=Path(__file__).resolve().parents[2],
+                transport=tracking_transport,
+                repo_root=REPO_ROOT,
             )
             arm_runtime.start()
-        except Exception as exc:
-            update_arm_tracking(
-                {
-                    "enabled": True,
-                    "mode": "execute" if args.execute else "dry-run",
-                    "status": "error",
-                    "reason": f"{type(exc).__name__}: {exc}",
-                },
-                None,
-            )
+        else:
+            tracking_transport.start()
+    except Exception as exc:
+        if tracking_transport is not None:
+            try:
+                tracking_transport.close()
+            except Exception:
+                pass
+        tracking_transport = None
+        update_arm_tracking(
+            {
+                "enabled": bool(args.calibration),
+                "mode": "execute" if args.execute else "dry-run",
+                "status": "error",
+                "reason": f"ROS 2 transport unavailable: {type(exc).__name__}: {exc}",
+            },
+            None,
+        )
     if detector_enabled:
         inference_worker = threading.Thread(
             target=inference_loop,

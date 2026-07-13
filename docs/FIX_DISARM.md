@@ -1,96 +1,48 @@
-# Fixing a Disarmed G1 Arm Bridge
+# Diagnosing a disarmed G1 ROS arm controller
 
-Use this guide when the robot-local arm bridge starts, `/health` and `/state`
-return JSON, but the bridge remains `DISARMED` and prints repeated
-`[ClientStub] send request error` messages.
+`DISARMED`, movement disabled, and zero arm weight are healthy startup values.
+Do not bypass them to test video, detection, or ROS discovery.
 
-## What is healthy and safe
+## Read-only diagnosis
 
-The following state is a successful **read-only** bridge connection, not a
-failure:
-
-```json
-{
-  "ok": true,
-  "state": "DISARMED",
-  "allow_movement": false,
-  "weight": 0.0,
-  "robot_state_fresh": true,
-  "controller_available": true
-}
-```
-
-If `/state` includes fresh `measured_arm_q` values, the bridge is receiving
-the robot's LowState DDS data. It is safe to use this state for camera/pose
-visualization and GB10 dry-run tracking.
-
-`DISARMED`, `allow_movement: false`, and `weight: 0.0` are intentional safety
-gates. Do not bypass them to test video or detection.
-
-## Check the local bridge first
-
-Run these commands **on the robot** while the bridge process is running:
+Run on the robot while its node is active:
 
 ```bash
-curl -s http://127.0.0.1:8766/health
-curl -s http://127.0.0.1:8766/state
+uv run g1 inspect ros --role robot --peer <GB10_IP> --interface wlan0
 ip -br addr
 ip route
 ```
 
-For the current lab layout, the Unitree network interface is `wlan0` and the
-robot address is `192.168.0.213`. Start the bridge explicitly on that
-interface:
+Run on GB10:
 
 ```bash
-export CYCLONEDDS_HOME="$HOME/cyclonedds_ws/install/cyclonedds"
-export CMAKE_PREFIX_PATH="$CYCLONEDDS_HOME"
-export LD_LIBRARY_PATH="$HOME/humanoid-robot-grasping/robot/.venv/lib/python3.12/site-packages/unitree_sdk2py/utils/lib:$CYCLONEDDS_HOME/lib${LD_LIBRARY_PATH:+:$LD_LIBRARY_PATH}"
-
-robot/.venv/bin/python scripts/robot/arm_bridge.py \
-  --interface wlan0 \
-  --domain-id 0 \
-  --port 8766 \
-  --token-file "$HOME/.config/g1-arm-token"
+uv run g1 inspect ros --role gb10 --peer <ROBOT_IP>
 ```
 
-## About `ClientStub send request error`
+The expected minimum is fresh `/lowstate`, `/g1/arm/state`, `/g1/depth`, and
+`/g1/commissioning/state`. The UI at `http://<GB10_IP>:8000/` should show the
+same state. There is no robot `/health` URL.
 
-The bridge uses a background Unitree `MotionSwitcherClient` request to check
-the robot motion mode. A repeated request error means that this RPC check did
-not receive a reply. It does **not** mean that the HTTP bridge, LowState DDS
-subscription, or RGB relay has failed.
+If discovery fails, compare these values on both launchers:
 
-When `/state` still reports fresh arm positions and a motion mode name such as
-`ai`, the read-only bridge is usable. The error becomes a movement blocker only
-when commissioning or execution requires verified motion mode and motor state.
+- peer addresses (`CLIENT_IP` on robot, `ROBOT_HOST` on GB10);
+- `ROS_DOMAIN_ID`;
+- selected network interface;
+- `RMW_IMPLEMENTATION=rmw_cyclonedds_cpp`;
+- generated `CYCLONEDDS_URI` path and static peer contents.
 
-Common causes to investigate before movement:
+On the robot, also verify `UNITREE_CONTROL_PEER` (default
+`192.168.123.1`) and the Unitree motion-switcher/sport services. A fresh
+`/lowstate` with no motion-switch response means state transport works but
+movement mode cannot be verified; movement must remain blocked.
 
-- wrong DDS interface or domain;
-- Unitree motion-switcher service not running or not reachable;
-- another controller owns the arm service;
-- the robot is not in a compatible standing/motion mode;
-- unavailable motor status fields.
+Other movement blockers include another `/arm_sdk` publisher, unstable stance,
+wrong motion mode, stale targets, unavailable motor status, failed calibration,
+or a robot/profile identity mismatch.
 
-## Before authorizing any movement
+## Before movement
 
-Do this only with a cleared exclusion zone, spotter, and physical e-stop:
-
-1. Run the separate commissioning workflow in
-   [ARM_COMMISSIONING_RUNBOOK.md](ARM_COMMISSIONING_RUNBOOK.md).
-2. Start with the observed mode name:
-
-   ```bash
-   EXPECTED_MOTION_MODE=ai \
-   ALLOW_MOVEMENT=1 \
-   COMMISSIONING_ACK="I HAVE A SPOTTER AND PHYSICAL E-STOP" \
-   uv run g1 arm commissioning
-   ```
-
-3. Confirm fresh LowState, verified controller ownership, healthy motor state,
-   and the exact motion mode before enabling a session.
-4. Use the 0.01 rad supervised sign checks before any tracking command.
-
-GB10 `--dry-run` tracking and the browser visualization do not need these
-movement gates. They should be the first stage of every camera test.
+Use a cleared exclusion zone, supported robot, spotter, and physical e-stop.
+Complete the read-only and `0.01 rad` workflow in
+[ARM_COMMISSIONING_RUNBOOK.md](ARM_COMMISSIONING_RUNBOOK.md). GB10 dry-run and
+visualization never require movement permission.

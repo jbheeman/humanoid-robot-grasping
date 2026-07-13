@@ -1,75 +1,68 @@
 # Lab launchers
 
-The lab wrappers keep the working G1/GB10 paths and non-secret network
-defaults in one place. They do not store bearer-token contents and they never
-authorize arm movement.
+These wrappers keep non-secret lab network defaults in one place. They do not
+store tokens and never authorize movement by default.
 
 ## Robot
 
-After stopping the stock `video_hub_pc4` service once with:
+If the stock camera service owns the RGB source, stop it as required by the
+lab image, then start the custom RGB relay and disarmed ROS node:
 
 ```bash
 sudo /unitree/sbin/mscli stopservice video_hub_pc4
-```
-
-start the custom 960x540, 60 FPS RGB producer, relay, depth service, and
-disarmed arm bridge with one command:
-
-```bash
 bash scripts/robot/lab-start.sh
 ```
 
-The defaults are GB10 `192.168.0.66`, robot multicast interface `wlan0`, and
-the mode-0600 token at `~/.config/g1-arm-token`. Override a changed GB10 IP
-without editing the script:
+Defaults:
+
+- GB10 peer `192.168.0.66`
+- ROS and RGB interface `wlan0`
+- Unitree control peer `192.168.123.1`
+- ROS domain `0`
+- RGB `960x540` at `60 FPS`
+
+Override a changed peer without editing the script:
 
 ```bash
-CLIENT_IP=NEW_GB10_IP bash scripts/robot/lab-start.sh
+CLIENT_IP=<NEW_GB10_IP> bash scripts/robot/lab-start.sh
 ```
 
 ## GB10
 
-Start the 60 FPS, 960x540 YOLO11 dry-run server with a 60 FPS browser-output
-target and suppressed successful HTTP access logs:
+Start the ROS client, YOLO server, research recorder, and single browser UI:
 
 ```bash
 bash scripts/gb10/lab-start.sh
 ```
 
-Its default robot Ethernet address is `192.168.123.164`. Override it if the
-router layout changes:
+The default robot peer is `192.168.123.164`; the UI is
+`http://<GB10_IP>:8000/`. Override a changed address or model with environment
+variables:
 
 ```bash
-ROBOT_HOST=NEW_ROBOT_IP bash scripts/gb10/lab-start.sh
+ROBOT_HOST=<NEW_ROBOT_IP> bash scripts/gb10/lab-start.sh
+MODEL=/path/to/best.pt bash scripts/gb10/lab-start.sh
 ```
 
-The default checkpoint is
-`models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt`.
-Use a temporary YOLOv8 test without changing defaults:
+This launcher is always dry-run. No robot HTTP ports or token files are
+involved.
 
-```bash
-MODEL=models/plushie_detector/yolov8n_plushie_mvp/weights/best.pt bash scripts/gb10/lab-start.sh
-```
+## Commissioning
 
-Arm commissioning and movement authorization remain intentionally separate;
-see [ARM_COMMISSIONING_RUNBOOK.md](ARM_COMMISSIONING_RUNBOOK.md).
-
-## Arm commissioning
-
-Stop `lab-start.sh` first because commissioning exclusively owns the arm-bridge
-port. Start a read-only preflight with:
+Stop the normal robot node first so only one process can own `/arm_sdk`.
+Start read-only commissioning:
 
 ```bash
 bash scripts/robot/lab-commission.sh
 ```
 
-Only with a cleared area, spotter, and physical e-stop, start the guarded
-movement-capable commissioning server:
+With the GB10 running, open
+`http://192.168.0.66:8000/commissioning/`. Only after the full read-only
+preflight, a cleared area, spotter, physical e-stop, and supported robot, use:
 
 ```bash
 bash scripts/robot/lab-commission.sh move
 ```
 
-That command requires the physical-e-stop acknowledgement to be typed again;
-it does not move the robot on startup. The MacBook wizard creates and enables
-the session before a guarded 0.01-rad test jog is possible.
+The movement-capable launch still starts disarmed. A short-lived operator
+session and all robot safety gates must pass before a jog can be issued.

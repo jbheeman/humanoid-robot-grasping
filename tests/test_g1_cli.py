@@ -3,6 +3,14 @@ from __future__ import annotations
 import pytest
 
 from object_tracking.g1_cli import ROUTES, _role_launcher, build_parser
+from scripts.robot.ros_node import build_parser as build_robot_parser
+
+
+def test_robot_ros_node_parser_supports_depth_free_commissioning() -> None:
+    args = build_robot_parser().parse_args(["--control-mode", "commissioning", "--disable-depth"])
+
+    assert args.control_mode == "commissioning"
+    assert args.disable_depth is True
 
 
 def test_unified_cli_exposes_expected_workflows() -> None:
@@ -14,6 +22,8 @@ def test_unified_cli_exposes_expected_workflows() -> None:
     assert extras == ["--help"]
     assert ("vision", "server") in ROUTES
     assert ("setup", "robot") in ROUTES
+    assert ("inspect", "ros") in ROUTES
+    assert ("inspect", "dds") not in ROUTES
 
 
 @pytest.mark.parametrize(
@@ -40,14 +50,29 @@ def test_routes_are_explicit(group: str, workflow: str) -> None:
 def test_robot_role_flags_configure_existing_launcher() -> None:
     launcher, forwarded, env = _role_launcher(
         ROUTES[("robot", "start")],
-        ["--client-ip", "192.168.0.66", "--token-file", "/tmp/token", "--arm-port", "9000"],
+        [
+            "--client-ip",
+            "192.168.0.66",
+            "--interface",
+            "wlan0",
+            "--ros-domain-id",
+            "7",
+        ],
     )
 
     assert launcher.name == "start.sh"
     assert forwarded == []
     assert env["CLIENT_IP"] == "192.168.0.66"
-    assert env["ARM_TOKEN_FILE"] == "/tmp/token"
-    assert env["ARM_PORT"] == "9000"
+    assert env["ROBOT_INTERFACE"] == "wlan0"
+    assert env["ROS_DOMAIN_ID"] == "7"
+
+
+def test_removed_robot_http_flags_have_migration_error() -> None:
+    with pytest.raises(SystemExit):
+        _role_launcher(
+            ROUTES[("robot", "start")],
+            ["--client-ip", "192.168.0.66", "--token-file", "/tmp/token"],
+        )
 
 
 def test_local_realsense_role_builds_pipeline() -> None:

@@ -1,71 +1,77 @@
 # Runtime architecture
 
-The project uses three intentionally separate roles. The roles share the
-repository and `uv run g1` interface, but they do not share a Python runtime or
-publish DDS across the network.
+The deployment has three roles and one browser-facing server.
 
 ```text
-Unitree G1 robot
-  RGB multicast relay + RealSense depth service + local arm DDS bridge
-             │ HTTP/WebSocket/RTP over the trusted robot network
-             ▼
-GB10 workstation
-  GStreamer decode + YOLO + depth fusion + IK + FastAPI + browser viewer
-             │ SSH tunnel or trusted LAN HTTP
-             ▼
-MacBook browser
+Unitree G1 / Foxy / Python 3.8
+  official Unitree ROS topics
+  guarded arm + commissioning + depth node
+  H264 RTP relay ─────────────────────────────┐
+       │ ROS 2 over CycloneDDS                │ UDP 5600
+       ▼                                      ▼
+GB10 / Jazzy / Python 3.12
+  ROS client + YOLO + fusion + IK + research + FastAPI UI
+       │ HTTP :8000 (UI and UI-local APIs only)
+       ▼
+Browser
 ```
 
-## Canonical commands
+## Ownership and safety boundary
 
-Run these from the repository root on the machine that owns the role:
+- `scripts/robot/ros_node.py` is the only project process allowed to publish
+  `/arm_sdk`. It subscribes `/lowstate`, owns the 250 Hz guarded controller,
+  publishes compressed depth, and provides ROS commissioning services.
+- The GB10 publishes only high-level seven-joint `ArmTarget` messages. Its UI
+  routes call the local GB10 ROS client; they are not remote robot HTTP calls.
+- The safety controller stays on the robot. A GB10 crash, stale target, ROS
+  link loss, or heartbeat loss causes a bounded release.
+- Locomotion uses Unitree ROS request/response topics. It has no daemon or
+  persistent HTTP server.
+- RGB remains RTP/H264 over UDP. It is a data-only stream and is independent
+  from the ROS control deadman.
 
-```bash
-uv run g1 setup robot
-uv run g1 robot start --client-ip <GB10_IP> --token-file <TOKEN>
+## ROS graph
 
-uv run g1 setup gb10
-uv run g1 gb10 start --robot-host <ROBOT_IP> --dry-run
+Robot-local Unitree interfaces:
 
-uv run g1 setup local
-uv run g1 local start --source realsense --device /dev/video0
-```
+| Name | Type/direction |
+| --- | --- |
+| `/lowstate` | `unitree_hg/msg/LowState` → robot node |
+| `/arm_sdk` | robot node → `unitree_hg/msg/LowCmd` |
+| `/api/motion_switcher/{request,response}` | Unitree RPC topics |
+| `/api/{sport|ai_sport}/{request,response}` | Unitree locomotion RPC topics |
 
-The robot startup is disarmed by default. Arm commissioning is a separate
-explicit workflow:
+Cross-host project interfaces:
 
-```bash
-uv run g1 arm commissioning
-```
+| Name | Type |
+| --- | --- |
+| `/g1/arm/target` | `g1_control_interfaces/msg/ArmTarget` |
+| `/g1/arm/state` | `g1_control_interfaces/msg/ArmState` |
+| `/g1/depth` | `g1_control_interfaces/msg/CompressedDepth` |
+| `/g1/arm/control` | `g1_control_interfaces/srv/ArmControl` |
+| `/g1/commissioning/command` | `g1_control_interfaces/srv/CommissioningCommand` |
+| `/g1/commissioning/state` | `g1_control_interfaces/msg/CommissioningState` |
 
-## Ownership and data flow
+Arm state/targets/services are reliable with bounded queues. Depth is
+best-effort, keep-last-one at 15 Hz so delayed frames are dropped.
 
-- `scripts/robot/` contains robot-local services and the only process that
-  publishes `rt/arm_sdk` DDS commands.
-- `scripts/gb10/` contains inference, fusion, IK, research telemetry, and the
-  static browser viewer. The GB10 sends high-level HTTP targets to the robot
-  arm bridge; it does not publish Unitree DDS.
-- `scripts/local/` contains lightweight camera, OpenCV, RealSense, and replay
-  testing. It is not required for the robot or GB10 deployment.
-- `scripts/data/`, `scripts/training/`, and `scripts/dev/` contain offline
-  workflows and diagnostics and never start robot movement implicitly.
-- Unitree vendor examples are intentionally not tracked; use the maintained
-  project-native robot commands instead of copying interactive vendor demos
-  into the repository.
+Foxy and Jazzy build the same tracked interface definitions. Unitree ROS 2 is
+pinned and built separately for each distribution; generated artifacts are
+never copied between machines.
 
-The MacBook does not need a display server on the robot or GB10. It opens the
-URL printed by the GB10 launcher, optionally through SSH port forwarding.
+## Network surface
 
-## Ports
-
-| Role | Port | Purpose |
+| Host | Port | Purpose |
 | --- | ---: | --- |
-| Robot | 8766 | Authenticated arm bridge |
-| Robot | 8767 | Hardware depth WebSocket service |
-| GB10 | 8000 | FastAPI stream, health, tracking, and research API |
-| GB10 | 8080 | Static browser viewer |
-| Robot → GB10 | UDP 5600 | Compressed H264 RGB relay |
+| GB10 | TCP 8000 | Browser UI, UI health/research, commissioning page |
+| Robot → GB10 | UDP 5600 | H264 RTP RGB relay |
+| Robot ↔ GB10 | dynamic UDP | ROS 2/CycloneDDS discovery and data |
 
-Keep the robot and GB10 services on the trusted lab network. Use SSH tunnels
-when the MacBook is not on that network; do not expose the arm bridge directly
-to an untrusted interface.
+CycloneDDS uses explicit peers, `rmw_cyclonedds_cpp`, and a shared
+`ROS_DOMAIN_ID`; it does not depend on multicast discovery. The robot peer list
+contains GB10 plus the Unitree control peer. There are no robot HTTP ports,
+WebSockets, bearer tokens, or separate viewer on `8080`.
+
+Keep the ROS network trusted. For a browser outside the LAN, forward only GB10
+port `8000`. Protect an untrusted robot/GB10 network with a VPN or SROS2 rather
+than recreating ad-hoc HTTP authentication.

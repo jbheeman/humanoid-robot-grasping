@@ -61,11 +61,8 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("inspect", "cameras"): Route(
         "script", "scripts/dev/cameras.sh", "inspect camera device ownership"
     ),
-    ("inspect", "dds"): Route(
-        "script", "scripts/dev/dds.py", "inspect Unitree DDS discovery"
-    ),
-    ("robot", "command"): Route(
-        "script", "scripts/robot/command.py", "run the explicit robot command wrapper"
+    ("inspect", "ros"): Route(
+        "script", "scripts/dev/ros.sh", "inspect ROS 2 discovery and G1 interfaces"
     ),
     ("robot", "loco"): Route(
         "module", "object_tracking.g1_loco_cli", "send a Unitree G1 locomotion command"
@@ -74,10 +71,10 @@ ROUTES: dict[tuple[str, str], Route] = {
         "module", "object_tracking.g1_scan_cli", "scan the local robot network"
     ),
     ("robot", "services"): Route(
-        "script", "scripts/robot/start.sh", "start disarmed robot services"
+        "script", "scripts/robot/start.sh", "start the disarmed robot ROS 2 node"
     ),
     ("robot", "start"): Route(
-        "script", "scripts/robot/start.sh", "start disarmed robot services"
+        "script", "scripts/robot/start.sh", "start the disarmed robot ROS 2 node"
     ),
     ("setup", "gb10"): Route(
         "script", "scripts/gb10/setup.sh", "install GB10 vision/training environment"
@@ -86,7 +83,7 @@ ROUTES: dict[tuple[str, str], Route] = {
         "script", "scripts/local/opencv-setup.sh", "install system-OpenCV vision environment"
     ),
     ("setup", "robot"): Route(
-        "script", "scripts/robot/setup.sh", "install the isolated robot environment"
+        "script", "scripts/robot/setup.sh", "install the Foxy robot ROS 2 environment"
     ),
     ("setup", "vision"): Route(
         "script", "scripts/local/setup.sh", "install the lightweight vision environment"
@@ -98,7 +95,7 @@ ROUTES: dict[tuple[str, str], Route] = {
         "script", "scripts/local/start.sh", "serve a local camera stream"
     ),
     ("stream", "remote"): Route(
-        "script", "scripts/gb10/start.sh", "run the GB10 research stream and viewer"
+        "script", "scripts/gb10/start.sh", "run the GB10 ROS client, research stream, and UI"
     ),
     ("stream", "viewer"): Route(
         "script", "scripts/local/viewer.sh", "serve the browser viewer"
@@ -130,10 +127,10 @@ ROUTES: dict[tuple[str, str], Route] = {
         "module", "object_tracking.g1_vision_cli", "capture or diagnose a G1 camera stream"
     ),
     ("vision", "server"): Route(
-        "script", "scripts/gb10/start.sh", "run the GB10 vision server and browser UI"
+        "script", "scripts/gb10/start.sh", "run the GB10 ROS client and browser UI"
     ),
     ("gb10", "start"): Route(
-        "script", "scripts/gb10/start.sh", "run the GB10 vision server and browser UI"
+        "script", "scripts/gb10/start.sh", "run the GB10 ROS client and browser UI"
     ),
     ("gb10", "relay-test"): Route(
         "script", "scripts/gb10/relay-test.sh", "decode-test the GB10 UDP video relay"
@@ -205,28 +202,47 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
 
     if route.target == "scripts/robot/start.sh":
         parser.add_argument("--client-ip")
-        parser.add_argument("--token-file")
+        parser.add_argument("--interface")
+        parser.add_argument("--control-peer")
+        parser.add_argument("--ros-domain-id", type=int)
         parser.add_argument("--calibration")
-        parser.add_argument("--arm-port", type=int)
-        parser.add_argument("--depth-port", type=int)
+        parser.add_argument("--robot-id")
+        parser.add_argument("--allow-movement", action="store_true")
+        parser.add_argument("--expected-motion-mode")
+        parser.add_argument("--depth-source", choices=("auto", "ros", "librealsense"))
+        parser.add_argument("--depth-serial")
         parser.add_argument("--robot-python")
+        obsolete = {"--token-file", "--arm-port", "--depth-port"}
+        used_obsolete = sorted(
+            token.split("=", 1)[0] for token in args if token.split("=", 1)[0] in obsolete
+        )
+        if used_obsolete:
+            parser.error(
+                f"removed robot HTTP option(s): {', '.join(used_obsolete)}; "
+                "ROS 2 transport needs only --client-ip"
+            )
         namespace = parser.parse_args(args)
         mappings = {
             "CLIENT_IP": namespace.client_ip,
-            "ARM_TOKEN_FILE": namespace.token_file,
+            "ROBOT_INTERFACE": namespace.interface,
+            "UNITREE_CONTROL_PEER": namespace.control_peer,
+            "ROS_DOMAIN_ID": namespace.ros_domain_id,
             "CALIBRATION": namespace.calibration,
-            "ARM_PORT": namespace.arm_port,
-            "DEPTH_PORT": namespace.depth_port,
+            "G1_ROBOT_ID": namespace.robot_id,
+            "ALLOW_MOVEMENT": "1" if namespace.allow_movement else None,
+            "EXPECTED_MOTION_MODE": namespace.expected_motion_mode,
+            "DEPTH_SOURCE": namespace.depth_source,
+            "DEPTH_SERIAL": namespace.depth_serial,
             "ROBOT_PYTHON": namespace.robot_python,
         }
     elif route.target == "scripts/gb10/start.sh":
         parser.add_argument("--robot-host")
+        parser.add_argument("--ros-interface")
+        parser.add_argument("--ros-domain-id", type=int)
         parser.add_argument("--model")
         parser.add_argument("--host")
         parser.add_argument("--port", type=int)
-        parser.add_argument("--viewer-port", type=int)
         parser.add_argument("--calibration")
-        parser.add_argument("--arm-url")
         parser.add_argument("--arm-home")
         parser.add_argument("--robot-id")
         parser.add_argument("--research-root")
@@ -235,15 +251,24 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
         parser.add_argument("--no-research-record", action="store_true")
         parser.add_argument("--dry-run", action="store_true")
         parser.add_argument("--execute", action="store_true")
+        obsolete = {"--viewer-port", "--arm-url", "--arm-token-file", "--depth-ws"}
+        used_obsolete = sorted(
+            token.split("=", 1)[0] for token in args if token.split("=", 1)[0] in obsolete
+        )
+        if used_obsolete:
+            parser.error(
+                f"removed robot HTTP option(s): {', '.join(used_obsolete)}; "
+                "GB10 now uses ROS 2 and serves one UI on --port"
+            )
         namespace = parser.parse_args(args)
         mappings = {
             "ROBOT_HOST": namespace.robot_host,
+            "ROS_INTERFACE": namespace.ros_interface,
+            "ROS_DOMAIN_ID": namespace.ros_domain_id,
             "MODEL": namespace.model,
             "HOST": namespace.host,
             "PORT": namespace.port,
-            "VIEWER_PORT": namespace.viewer_port,
             "CALIBRATION": namespace.calibration,
-            "ARM_URL": namespace.arm_url,
             "ARM_HOME": namespace.arm_home,
             "G1_ROBOT_ID": namespace.robot_id,
             "RESEARCH_ROOT": namespace.research_root,

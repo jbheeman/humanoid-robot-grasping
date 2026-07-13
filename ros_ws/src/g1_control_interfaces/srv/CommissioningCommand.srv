@@ -1,0 +1,9 @@
+# operation selects the bounded commissioning action. request_json contains its
+# action-specific arguments and report_json contains the resulting state.
+string operation
+string request_json
+---
+bool ok
+string error_code
+string message
+string report_json

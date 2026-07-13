@@ -6,6 +6,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .deps/
+.ros/
+ros_ws/build/
+ros_ws/install/
+ros_ws/log/
 scripts/robot/web/visual/
 scripts/gb10/web/visual/
 *arm-token*

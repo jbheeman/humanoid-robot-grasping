@@ -1,155 +1,112 @@
-# G1 Right-Arm Commissioning Runbook
+# G1 right-arm commissioning runbook
 
-Commissioning validates robot-local joint movement before camera calibration, IK, or object tracking. The 250 Hz `rt/arm_sdk` bridge remains on the robot, commands all 14 arm slots, holds the measured left-arm pose, and permits only one-joint right-arm jogs.
+Commissioning validates robot-local movement before camera tracking. The
+robot ROS node owns all 14 arm command slots, holds the measured left arm, and
+permits only guarded one-joint right-arm jogs. The first session is read-only.
 
-The first session is read-only. Physical movement requires a stable standing robot, cleared exclusion zone, spotter, and physical e-stop. The webpage Stop control is only a bounded software release.
-
-## Topology
-
-Initial commissioning:
-
-```text
-G1 robot: LowState + 250 Hz arm bridge + tiny event log
-       │ SSH tunnel
-       ▼
-MacBook: browser wizard or g1-arm CLI
-```
-
-Later tracking:
-
-```text
-G1 robot: RGB/depth relay + 250 Hz arm bridge
-       │
-       ▼
-GB10: YOLO, depth fusion, IK, telemetry, website
-       │
-       ▼
-MacBook: browser only
-```
-
-GB10 never publishes DDS directly. It sends high-level targets to the robot-local bridge. To route the commissioning page through GB10, bind the robot bridge to its trusted robot-network address and tunnel port 8766 through GB10; never expose it to an untrusted network.
+The browser Stop control is a bounded software release, not a physical e-stop.
 
 ## 1. Read-only preflight
 
-On the robot, provision the mode-0600 bearer token and start commissioning without movement:
+Start the robot commissioning node:
 
 ```bash
-ARM_TOKEN_FILE="$HOME/.config/g1-arm-token" \
-G1_ROBOT_ID="g1-lab-01" \
+CLIENT_IP=<GB10_IP> \
+G1_ROBOT_ID=g1-lab-01 \
 ALLOW_MOVEMENT=0 \
 uv run g1 arm commissioning
 ```
 
-On the MacBook:
+Start GB10 separately in dry-run mode:
 
 ```bash
-ssh -N -L 8766:127.0.0.1:8766 USER@ROBOT_IP
+uv run g1 gb10 start --robot-host <ROBOT_IP> --dry-run
 ```
 
-Open `http://127.0.0.1:8766/commissioning/`, enter the bearer token, and press Connect. Confirm:
+Open `http://<GB10_IP>:8000/commissioning/`. Confirm:
 
-- control mode is `commissioning`;
-- the physical robot is the 29-DOF G1 variant;
-- seven right-arm joints appear in SDK slots 22–28;
-- measured positions and velocities are finite;
-- LowState is fresh;
-- the actual motion-mode name is displayed;
-- motor temperature/lost-status fields are available;
-- the bridge reports no existing `rt/arm_sdk` publisher conflict.
+- control mode is `commissioning` and movement is unavailable;
+- the physical robot is the intended 29-DOF G1;
+- right-arm joints occupy slots 22–28 and values are finite;
+- `/lowstate` and `/g1/arm/state` are fresh;
+- the actual motion-mode name is visible;
+- motor temperature/lost-state fields are healthy;
+- no unexpected `/arm_sdk` publisher exists.
 
-Read-only preflight cannot enable because `--allow-movement` is absent.
+Use `g1 inspect ros` on each host if any state is missing. Do not proceed by
+disabling a gate.
 
-## 2. Explicit movement startup
+## 2. Explicit movement launch
 
-Stop the read-only bridge. Restart using the exact motion-mode name observed during preflight:
+Stop the read-only robot node. Clear the exclusion zone, support the robot,
+assign a spotter, and place the physical e-stop in hand. Restart with the exact
+mode observed during preflight:
 
 ```bash
-ARM_TOKEN_FILE="$HOME/.config/g1-arm-token" \
-G1_ROBOT_ID="g1-lab-01" \
-EXPECTED_MOTION_MODE="EXACT_MODE_FROM_PREFLIGHT" \
+CLIENT_IP=<GB10_IP> \
+G1_ROBOT_ID=g1-lab-01 \
+EXPECTED_MOTION_MODE=<EXACT_MODE_FROM_PREFLIGHT> \
 ALLOW_MOVEMENT=1 \
-COMMISSIONING_ACK="I HAVE A SPOTTER AND PHYSICAL E-STOP" \
 uv run g1 arm commissioning
 ```
 
-The process refuses movement without the expected mode and startup acknowledgment. It never calls `MotionSwitcher.ReleaseMode()`.
+This does not move or enable the arm. The node refuses movement if mode,
+standing, state freshness, motor health, or exclusive ownership cannot be
+verified. It never releases the robot motion mode automatically.
 
-## 3. Create and enable one session
+## 3. Create and enable a session
 
-In the wizard:
+In the GB10 commissioning page:
 
-1. Enter the token and operator name.
-2. Type `I HAVE CLEARED THE ROBOT AREA` exactly.
-3. Create the session.
-4. Enable at the measured pose.
-5. Verify the weight ramp causes no visible position jump.
+1. Enter the operator name and type the displayed area-clear acknowledgement.
+2. Create a short-lived in-memory session.
+3. Enable at the measured pose.
+4. Verify the weight ramp causes no visible position jump.
+5. Test browser close or heartbeat loss and confirm the robot returns to
+   `DISARMED` through the bounded release.
 
-The browser sends a 10 Hz heartbeat after enable. Closing the page, losing the network, or stopping the heartbeat triggers the 500 ms deadman and 250 ms weight release. The first real test should also run the CLI watcher in a terminal so Ctrl-C sends Stop:
-
-```bash
-uv run g1-arm --url http://127.0.0.1:8766 \
-  --token-file /secure/local/g1-arm-token watch SESSION_ID
-```
+No bearer token, robot HTTP URL, or SSH tunnel is used. Off-LAN browsers may
+tunnel GB10 port `8000` only.
 
 ## 4. Verify every joint
 
-Enable “Record jog as sign check.” For each canonical right-arm joint:
+For each canonical right-arm joint:
 
-1. Jog `+0.01 rad` and wait for `AWAITING_CONFIRM`.
-2. Confirm that only the intended joint moved; encoder delta must be positive and between 0.005 and 0.015 rad.
-3. Jog `-0.01 rad` back to baseline and confirm.
-4. Repeat in the negative direction and return.
+1. Enable “record as sign check.”
+2. Jog `+0.01 rad`; wait for `AWAITING_CONFIRM`.
+3. Confirm only the intended joint moved and the encoder delta is positive,
+   between `0.005` and `0.015 rad`.
+4. Jog `-0.01 rad` to baseline and confirm.
+5. Repeat in the negative direction and return.
 
-The server rejects another jog while moving or waiting for confirmation. It faults on nonselected-joint drift above 0.01 rad, left-arm drift above 0.01 rad, following error above 0.05 rad, stale LowState, stance loss, motion-mode change, controller conflict, or motor-state failure.
+The node rejects overlapping jogs and faults on nonselected/left-arm drift,
+following error, stale state, stance loss, mode change, publisher conflict, or
+motor-state failure.
 
-## 5. Teach a candidate pose
+## 5. Teach, replay, and promote
 
-After all fourteen sign checks pass, disable sign-check mode and teach with one `0.01 rad` jog at a time. The server enforces:
+After all sign checks pass, teach one `0.01 rad` jog at a time. Keep each stage
+within `0.05 rad` of its approved baseline and the session within `0.30 rad`
+per joint of the measured start. Capture a candidate only when settled and
+physically verified.
 
-- at most 0.05 rad from the current approved stage baseline;
-- explicit “Approve stage” before rebasing the stage;
-- at most 0.30 rad per joint from the session’s measured starting pose;
-- 0.10 rad/s velocity and 0.50 rad/s² acceleration;
-- five-second motion timeout;
-- velocity below 0.02 rad/s for 0.5 seconds before confirmation.
+Replay the candidate twice from at least `0.02 rad` away. Then press Stop,
+wait for `DISARMED` and zero weight, and promote. Promotion writes an atomic,
+mode-0600, robot-bound profile at
+`~/.config/g1-grasping/right-arm-home.json`; a hash mismatch fails closed.
 
-Capture `safe_chest` only when the arm is settled and the operator has verified physical clearance. V1 stops at the 0.30 rad envelope even if this does not produce a full chest pose.
-
-## 6. Replay and promote
-
-To validate the candidate:
-
-1. Jog at least 0.02 rad away from it.
-2. Use “Replay one 0.01 rad step” until measured values return to the candidate.
-3. Validate the replay.
-4. Repeat the departure and replay a second time.
-5. Press Software Stop and wait for `DISARMED` with zero weight.
-6. Promote the profile.
-
-Promotion writes an atomic, mode-0600 robot-specific profile to `$HOME/.config/g1-grasping/right-arm-home.json`. It stores measured positions, joint order/contract, robot identity, sign-check evidence, replay count, and a content hash. It never changes tracking automatically.
-
-Copy the promoted profile to GB10 over a protected channel and opt into it during dry-run:
+Copy the profile and validated camera calibration to GB10 outside Git, then
+run dry-run tracking:
 
 ```bash
-ARM_HOME=/secure/runtime/g1-right-arm-home.json \
-G1_ROBOT_ID="g1-lab-01" \
-ROBOT_HOST=ROBOT_IP \
-CALIBRATION=/secure/runtime/g1-camera.yaml \
-uv run g1 gb10 start
+ARM_HOME=/secure/g1-right-arm-home.json \
+G1_ROBOT_ID=g1-lab-01 \
+CALIBRATION=/secure/g1-camera.yaml \
+uv run g1 gb10 start --robot-host <ROBOT_IP> --dry-run
 ```
 
-Tracking uses the profile only as an IK seed. It does not command the pose or bypass camera calibration.
+The profile is an IK seed; it is not commanded automatically.
 
-## Research output
-
-Each session writes separately from training and tracking runs:
-
-```text
-runs/research/arm_commissioning/<session-id>/
-  manifest.json
-  events.jsonl
-  telemetry.jsonl
-  summary.json
-```
-
-Events include the measured start/end, target, selected joint, motion type, encoder confirmation, peak error, checkpoints, stops, and faults. Never edit a promoted profile manually; a hash mismatch fails closed.
+Session evidence remains under
+`runs/research/arm_commissioning/<session-id>/` as manifest, event, telemetry,
+and summary JSON. Never edit a promoted profile manually.

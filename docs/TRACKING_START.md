@@ -48,7 +48,4 @@ After manual tracking works, add an automatic detector for the target plush obje
 
 ## Unitree G1 Integration Note
 
-The tracker accepts normal OpenCV sources. For G1, pass `--camera g1` and the
-SDK-provided camera candidates are used automatically.
-
-See `docs/UNITREE_SDK2_NOTES.md` for SDK/loco details.
+The tracker accepts normal OpenCV sources. For G1, pass `--camera g1` and use the configured RTP/GStreamer camera source. Robot control and depth remain on ROS 2; see `docs/ARCHITECTURE.md`.

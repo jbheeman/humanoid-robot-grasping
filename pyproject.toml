@@ -28,10 +28,6 @@ train = [
     "torch>=2.2",
     "ultralytics>=8.2",
 ]
-loco = [
-    "cyclonedds==0.10.2",
-    "unitree-sdk2py==1.0.1",
-]
 arm = [
     "casadi>=3.6.7,<4",
     "pin>=2.7,<4",
@@ -59,9 +55,6 @@ build-backend = "setuptools.build_meta"
 
 [tool.uv]
 package = true
-
-[tool.uv.sources]
-unitree-sdk2py = { git = "https://github.com/unitreerobotics/unitree_sdk2_python.git", rev = "37116c521f1588482e238d8450e471ba78ab9863" }
 
 [tool.pytest.ini_options]
 addopts = "-m 'not hardware'"

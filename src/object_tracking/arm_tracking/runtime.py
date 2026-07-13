@@ -1,14 +1,10 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-import json
 from pathlib import Path
-import stat
 import threading
 import time
-from typing import Any, Callable
-from urllib import request
-from urllib.error import HTTPError, URLError
+from typing import Any, Callable, Protocol, Sequence
 
 import numpy as np
 
@@ -23,7 +19,6 @@ from .geometry import (
     has_plane_clearance,
 )
 from .ik_solver import G1RightArmIK, IKUnavailable, default_urdf_path
-from .protocol import DepthEnvelopeCodec
 from .tracking import PositionVelocityFilter
 from .visualization import visualization_state
 
@@ -32,12 +27,40 @@ StatusCallback = Callable[[dict[str, Any], bytes | None], None]
 SnapshotCallback = Callable[[], dict[str, Any]]
 
 
+class TrackingTransport(Protocol):
+    """ROS-facing transport used by the GB10 tracking runtime.
+
+    The protocol deliberately contains no ROS types so perception and safety
+    behavior remain unit-testable without a ROS installation.
+    """
+
+    def start(self) -> None: ...
+
+    def close(self) -> None: ...
+
+    def receive_depth(self, timeout_s: float) -> DepthFrame | None: ...
+
+    def arm_state(self) -> dict[str, Any]: ...
+
+    def enable_arm(self, session_id: str, calibration_id: str) -> dict[str, Any]: ...
+
+    def publish_target(
+        self,
+        session_id: str,
+        sequence: int,
+        calibration_id: str,
+        right_arm_q: Sequence[float],
+        pipeline_age_ms: float,
+    ) -> None: ...
+
+    def stop_arm(self, reason: str) -> None: ...
+
+    def commissioning(self, command: str, payload: dict[str, Any]) -> dict[str, Any]: ...
+
+
 @dataclass(frozen=True)
 class RuntimeConfig:
-    depth_ws_url: str
     calibration_path: Path
-    arm_url: str = "http://192.168.0.213:8766"
-    arm_token_file: Path | None = None
     arm_home_path: Path | None = None
     robot_id: str | None = None
     execute: bool = False
@@ -49,8 +72,6 @@ class RuntimeConfig:
     def __post_init__(self) -> None:
         if not 10.0 <= self.target_hz <= 15.0:
             raise ValueError("target_hz must be between 10 and 15 Hz")
-        if self.execute and self.arm_token_file is None:
-            raise ValueError("--execute requires an arm token file")
 
 
 def register_depth_in_rgb(
@@ -119,13 +140,14 @@ class ArmTrackingRuntime:
         snapshot: SnapshotCallback,
         update_status: StatusCallback,
         *,
+        transport: TrackingTransport,
         repo_root: Path,
     ) -> None:
         self.config = config
         self.snapshot = snapshot
         self.update_status = update_status
+        self.transport = transport
         self.repo_root = repo_root
-        self.codec = DepthEnvelopeCodec()
         self.calibration = load_calibration(config.calibration_path)
         if config.execute:
             self.calibration.validate_for_execution(
@@ -158,7 +180,6 @@ class ArmTrackingRuntime:
         self.last_arm_poll_at = 0.0
         self.last_arm_state: dict[str, Any] = {"state": "unreachable"}
         self.reference_body_q: tuple[float, ...] | None = None
-        self.arm_token = self._load_token(config.arm_token_file) if config.execute else None
         self.home_q: tuple[float, ...] | None = None
         if config.arm_home_path is not None:
             profile = load_home_profile(
@@ -173,18 +194,6 @@ class ArmTrackingRuntime:
         except IKUnavailable as exc:
             self.ik_error = str(exc)
 
-    @staticmethod
-    def _load_token(path: Path | None) -> str:
-        if path is None:
-            raise ValueError("arm token file is required")
-        mode = stat.S_IMODE(path.stat().st_mode)
-        if mode != 0o600:
-            raise ValueError("arm token file must have mode 0600")
-        token = path.read_text(encoding="utf-8").strip()
-        if not token:
-            raise ValueError("arm token file is empty")
-        return token
-
     def start(self) -> None:
         if self.thread is not None:
             return
@@ -197,41 +206,41 @@ class ArmTrackingRuntime:
         if self.thread is not None:
             self.thread.join(timeout=2.0)
             self.thread = None
+        self._stop_arm("runtime_stopped")
+        self.transport.close()
 
     def _run(self) -> None:
         try:
-            from websockets.sync.client import connect
-        except ImportError as exc:
-            self._report(status="error", reason=f"websockets unavailable: {exc}")
+            self.transport.start()
+        except Exception as exc:
+            self._report(status="error", reason=f"tracking_transport_start_failed: {exc}")
+            try:
+                self.transport.close()
+            except Exception:
+                pass
             return
         retry_s = 0.25
         while not self.stop_event.is_set():
             try:
-                with connect(self.config.depth_ws_url, max_size=10 * 1024 * 1024) as websocket:
-                    retry_s = 0.25
+                frame = self.transport.receive_depth(timeout_s=1.0)
+                if frame is None:
                     self.last_sequence = -1
-                    while not self.stop_event.is_set():
-                        envelope = websocket.recv(timeout=1.0)
-                        if not isinstance(envelope, bytes):
-                            continue
-                        receipt = time.monotonic()
-                        decoded = self.codec.decode(envelope)
-                        if decoded.header.sequence <= self.last_sequence:
-                            continue
-                        self.last_sequence = decoded.header.sequence
-                        self.last_depth = DepthFrame(
-                            sequence=decoded.header.sequence,
-                            receipt_time_s=receipt,
-                            z16=decoded.as_numpy().copy(),
-                            depth_scale=decoded.header.depth_scale,
-                            calibration_id=decoded.header.calibration_id,
-                            sensor_timestamp_ms=decoded.header.sensor_timestamp_ms,
-                            registered_to_rgb=decoded.header.registered_to_rgb,
-                        )
-                        self._process_latest()
+                    self._stop_arm("depth_transport_lost")
+                    self._report(status="waiting_for_depth", reason="depth_receive_timeout")
+                    continue
+                retry_s = 0.25
+                if frame.sequence <= self.last_sequence:
+                    continue
+                self.last_sequence = frame.sequence
+                self.last_depth = frame
+                self._process_latest()
             except Exception as exc:
                 self._stop_arm("depth_transport_lost")
-                self._report(status="waiting_for_depth", reason=f"{type(exc).__name__}: {exc}")
+                self.last_sequence = -1
+                self._report(
+                    status="waiting_for_depth",
+                    reason=f"tracking_transport_error: {type(exc).__name__}: {exc}",
+                )
                 self.stop_event.wait(retry_s)
                 retry_s = min(retry_s * 2.0, 2.0)
 
@@ -457,19 +466,27 @@ class ArmTrackingRuntime:
             if arm_state.get("state") != "ARMED" or not arm_state.get("session_id"):
                 self._reject(base_status, "arm_not_explicitly_enabled", colormap)
                 return
-            self._post_arm(
-                "/arm/target",
-                {
-                    "session_id": arm_state["session_id"],
-                    "sequence": self.target_sequence,
-                    "calibration_id": self.calibration.calibration_id,
-                    "right_arm_q": list(ik.q_rad),
-                    "source_timestamp": time.time(),
-                },
+            pipeline_age_ms = max(
+                0.0,
+                (time.monotonic() - min(frame.receipt_time_s, rgb_time)) * 1000.0,
             )
+            try:
+                self.transport.publish_target(
+                    session_id=str(arm_state["session_id"]),
+                    sequence=self.target_sequence,
+                    calibration_id=self.calibration.calibration_id,
+                    right_arm_q=[float(value) for value in ik.q_rad],
+                    pipeline_age_ms=pipeline_age_ms,
+                )
+            except Exception as exc:
+                base_status["transport_error"] = f"{type(exc).__name__}: {exc}"
+                self._stop_arm("arm_target_publish_failed", force=True)
+                self._reject(base_status, "arm_target_publish_failed", colormap)
+                return
             self.target_sequence += 1
             base_status["status"] = "target_sent"
             base_status["target_sequence"] = self.target_sequence
+            base_status["pipeline_age_ms"] = round(pipeline_age_ms, 3)
         self.last_target_track = int(selected["track_id"])
         self.update_status(base_status, colormap)
 
@@ -492,10 +509,7 @@ class ArmTrackingRuntime:
             return self.last_arm_state
         self.last_arm_poll_at = now
         try:
-            with request.urlopen(
-                f"{self.config.arm_url.rstrip('/')}/state", timeout=0.2
-            ) as response:
-                self.last_arm_state = json.loads(response.read())
+            self.last_arm_state = dict(self.transport.arm_state())
         except Exception:
             self.last_arm_state = {"state": "unreachable"}
         return self.last_arm_state
@@ -539,28 +553,11 @@ class ArmTrackingRuntime:
         }
         return result
 
-    def _post_arm(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-        raw = json.dumps(payload).encode("utf-8")
-        req = request.Request(
-            f"{self.config.arm_url.rstrip('/')}{path}",
-            data=raw,
-            method="POST",
-            headers={
-                "Content-Type": "application/json",
-                "Authorization": f"Bearer {self.arm_token}",
-            },
-        )
-        try:
-            with request.urlopen(req, timeout=0.2) as response:
-                return json.loads(response.read())
-        except (HTTPError, URLError, TimeoutError) as exc:
-            raise RuntimeError(f"arm bridge request failed: {exc}") from exc
-
-    def _stop_arm(self, reason: str) -> None:
-        if not self.config.execute or self.last_target_track is None:
+    def _stop_arm(self, reason: str, *, force: bool = False) -> None:
+        if not self.config.execute or (self.last_target_track is None and not force):
             return
         try:
-            self._post_arm("/arm/stop", {"reason": reason})
+            self.transport.stop_arm(reason)
         except Exception:
             pass
         self.last_target_track = None
