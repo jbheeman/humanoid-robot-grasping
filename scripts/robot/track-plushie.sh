@@ -7,7 +7,10 @@ set -euo pipefail
 TRACKS_URL="${TRACKS_URL:-http://192.168.0.66:8000/tracks}"
 WIDTH="${TRACK_WIDTH:-960}"
 HEIGHT="${TRACK_HEIGHT:-540}"
-RATE="${TRACK_RATE:-20}"
+# GB10 currently produces fresh YOLO tracks at roughly 40 Hz.  Polling faster
+# than that only repeats stale boxes; the native SDK command loop itself runs
+# at TRACK_CONTROL_RATE (50 Hz by default).
+RATE="${TRACK_RATE:-40}"
 GAIN_X="${TRACK_GAIN_X:-0.10}"
 GAIN_Y="${TRACK_GAIN_Y:-0.10}"
 MAX_STEP="${TRACK_MAX_STEP:-0.006}"

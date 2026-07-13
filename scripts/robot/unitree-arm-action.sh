@@ -47,6 +47,24 @@ if action_name not in available:
 print(f"Executing official Unitree action: {action_name} ({available[action_name]})")
 result = client.ExecuteAction(available[action_name])
 print(f"ExecuteAction result: {result}")
+if result != 0:
+    if result == 7404:
+        try:
+            from unitree_sdk2py.g1.loco.g1_loco_client import LocoClient
+
+            loco = LocoClient()
+            loco.SetTimeout(3.0)
+            loco.Init()
+            _, fsm_id = loco.GetFsmId()
+            print(
+                "Arm action refused: FSM "
+                f"{fsm_id!r} is not valid for arm actions. "
+                "Unitree requires FSM 500, 501, or 801 "
+                "(801 additionally requires mode 0 or 3)."
+            )
+        except Exception:
+            print("Arm action refused: FSM is not valid for arm actions (error 7404).")
+    raise SystemExit(1)
 if action_name != "release_arm":
     time.sleep(hold_s)
     print("Releasing arms with the official release_arm action.")

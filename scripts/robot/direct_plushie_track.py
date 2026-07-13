@@ -62,7 +62,7 @@ class TrackerConfig:
     tracks_url: str
     frame_width: float
     frame_height: float
-    refresh_hz: float = 20.0
+    refresh_hz: float = 40.0
     control_hz: float = 50.0
     min_confidence: float = 0.55
     gain_x: float = 0.10
@@ -229,7 +229,12 @@ def _main() -> int:
     parser.add_argument("--tracks-url", default="http://192.168.0.66:8000/tracks")
     parser.add_argument("--width", type=float, default=960)
     parser.add_argument("--height", type=float, default=540)
-    parser.add_argument("--rate", type=float, default=20.0)
+    parser.add_argument(
+        "--rate",
+        type=float,
+        default=float(os.environ.get("TRACK_RATE", "40")),
+        help="GB10 track-poll rate; keep at or below measured YOLO FPS",
+    )
     parser.add_argument(
         "--control-rate",
         type=float,
