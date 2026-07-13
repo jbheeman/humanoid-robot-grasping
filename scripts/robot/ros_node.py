@@ -59,8 +59,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-motion-mode")
     parser.add_argument(
         "--hardware-interface",
-        default="wlan0",
-        help="Robot NIC used only for native Unitree motor DDS (default: wlan0).",
+        default="eth0",
+        help="Robot NIC used only for native Unitree motor DDS (default: eth0).",
     )
     parser.add_argument("--hardware-domain-id", type=int, default=0)
     parser.add_argument("--robot-id", default="g1")

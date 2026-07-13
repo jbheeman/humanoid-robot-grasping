@@ -35,7 +35,7 @@ class UnitreeArmHardware:
     def __init__(
         self,
         *,
-        interface: str = "wlan0",
+        interface: str = "eth0",
         domain_id: int = 0,
         monotonic: Callable[[], float] = time.monotonic,
         max_tilt_rad: float = math.radians(5.0),
