@@ -5,6 +5,13 @@
 The D435I looks down at the floor from the upper G1 body. The useful first
 calibration object is therefore the **floor**, not a vertical board.
 
+> **Camera-pair prerequisite:** the current GB10 H.264 relay and the D435I
+> depth service may be different cameras. Never take a YOLO pixel from one
+> camera and index it into depth from the other. Before this roadmap's 3D
+> steps, either run YOLO on the D435I colour stream used by the tuner, or add a
+> separately validated rigid transform between the relay RGB camera and the
+> D435I. The initial floor measurements are still useful for the D435I path.
+
 For a plush on the floor, the system needs:
 
 1. RGB pixel `(u, v)` from YOLO;
