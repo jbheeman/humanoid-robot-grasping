@@ -243,7 +243,7 @@
         <img id="mainStream" class="stream" alt="Live annotated RGB stream from the G1 camera" />
       </article>
       <article class="panel">
-        <div class="panel-header"><h2>RealSense hardware depth</h2><span id="depthMeta" class="panel-meta">waiting for depth</span></div>
+        <div class="panel-header"><h2>RealSense raw depth</h2><span id="depthMeta" class="panel-meta">waiting for depth</span></div>
         <img id="depthImage" class="stream depth-stream" alt="Latest hardware depth colormap" />
       </article>
     </section>
@@ -284,8 +284,10 @@
       </article>
 
       <article class="panel">
-        <div class="panel-header"><h2>3D state</h2><span class="panel-meta">torso/base frame · metres</span></div>
+        <div class="panel-header"><h2>3D prediction</h2><span class="panel-meta">torso/base frame · metres</span></div>
         <div class="section-body"><table class="kv"><tbody>
+          <tr><th>Predictor</th><td id="predictionSource">—</td></tr>
+          <tr><th>Model checkpoint</th><td id="trajectoryModel">—</td></tr>
           <tr><th>Measured object XYZ</th><td id="objectXyz">—</td></tr>
           <tr><th>Predicted object XYZ</th><td id="predictedXyz">—</td></tr>
           <tr><th>Pregrasp target XYZ</th><td id="targetXyz">—</td></tr>
@@ -499,7 +501,8 @@
         setText("armStateDetail", `arm ${tracking.arm_state || "—"}`);
 
         setText("rgbMeta", `frame ${health.frame_count} · ${number(health.fps, 1, " Hz")}`);
-        setText("depthMeta", `sequence ${tracking.depth_sequence ?? "—"} · age ${number(tracking.depth_age_ms, 1, " ms")}`);
+        const profile = Array.isArray(tracking.depth_profile) ? `${tracking.depth_profile[0]}×${tracking.depth_profile[1]}` : "—";
+        setText("depthMeta", `sequence ${tracking.depth_sequence ?? "—"} · ${profile} · age ${number(tracking.depth_age_ms, 1, " ms")}`);
         if (tracking.depth_sequence !== undefined) byId("depthImage").src = cacheBusted(endpoint("/depth.jpg"));
 
         setText("frameCounts", `${health.frame_count} / ${health.yolo_count}`);
@@ -513,6 +516,8 @@
         setText("objectXyz", vector(tracking.object_xyz_m));
         setText("predictedXyz", vector(tracking.predicted_xyz_m));
         setText("targetXyz", vector(tracking.target_xyz_m));
+        setText("predictionSource", tracking.prediction_source || (tracking.status === "depth_preview" ? "inactive — needs calibration" : "—"));
+        setText("trajectoryModel", tracking.trajectory_model || "not loaded");
         setText("trackId", tracking.track_id);
         setText("depthSequence", tracking.depth_sequence);
         setText("depthValidFraction", number(tracking.depth_valid_fraction, 4));

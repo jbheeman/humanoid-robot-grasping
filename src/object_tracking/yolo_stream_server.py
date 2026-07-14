@@ -114,6 +114,8 @@ app.mount("/visual", StaticFiles(directory=GB10_WEB_DIR / "visual"), name="visua
 research_session: ResearchSession | None = None
 tracking_transport: Any | None = None
 arm_runtime: Any | None = None
+depth_preview_thread: threading.Thread | None = None
+depth_preview_stop = threading.Event()
 
 
 def yolo_enabled(model_name: str) -> bool:
@@ -1054,6 +1056,82 @@ def update_arm_tracking(status: dict[str, Any], depth_jpeg: bytes | None) -> Non
             state.depth_colormap_jpeg = depth_jpeg
 
 
+def raw_depth_preview_loop(transport: Any, trajectory_model: str | None) -> None:
+    """Render the robot's Z16 topic without treating it as RGB-aligned depth.
+
+    This is intentionally an observe-only consumer.  It makes the hardware
+    stream debuggable before calibration, but never fabricates a 3D object
+    position or runs the learned forecaster on unregistered data.
+    """
+
+    from object_tracking.arm_tracking.runtime import depth_colormap_jpeg
+
+    update_arm_tracking(
+        {
+            "enabled": False,
+            "mode": "observe-only",
+            "status": "waiting_for_depth",
+            "reason": "Raw depth preview is waiting on ROS /g1/depth; 3D prediction requires calibration.",
+            "trajectory_model": trajectory_model,
+            "prediction_source": None,
+        },
+        None,
+    )
+    while not depth_preview_stop.is_set():
+        try:
+            frame = transport.receive_depth(timeout_s=0.5)
+            if frame is None:
+                continue
+            age_ms = max(0.0, (time.monotonic() - frame.receipt_time_s) * 1000.0)
+            update_arm_tracking(
+                {
+                    "enabled": False,
+                    "mode": "observe-only",
+                    "status": "depth_preview",
+                    "reason": (
+                        "Raw Z16 depth is live. It is not RGB-registered, so the 3D "
+                        "position predictor is deliberately inactive until calibration."
+                    ),
+                    "depth_sequence": frame.sequence,
+                    "depth_age_ms": round(age_ms, 3),
+                    "depth_scale_m_per_unit": frame.depth_scale,
+                    "depth_profile": [int(frame.z16.shape[1]), int(frame.z16.shape[0])],
+                    "depth_registered_to_rgb": frame.registered_to_rgb,
+                    "calibration_id": frame.calibration_id,
+                    "trajectory_model": trajectory_model,
+                    "prediction_source": None,
+                },
+                depth_colormap_jpeg(frame.z16, frame.depth_scale),
+            )
+        except Exception as exc:
+            update_arm_tracking(
+                {
+                    "enabled": False,
+                    "mode": "observe-only",
+                    "status": "waiting_for_depth",
+                    "reason": f"depth_preview_error: {type(exc).__name__}: {exc}",
+                    "trajectory_model": trajectory_model,
+                    "prediction_source": None,
+                },
+                None,
+            )
+            depth_preview_stop.wait(0.25)
+
+
+def start_raw_depth_preview(transport: Any, trajectory_model: str | None) -> None:
+    global depth_preview_thread
+    if depth_preview_thread is not None:
+        return
+    depth_preview_stop.clear()
+    depth_preview_thread = threading.Thread(
+        target=raw_depth_preview_loop,
+        args=(transport, trajectory_model),
+        daemon=True,
+        name="raw-depth-preview",
+    )
+    depth_preview_thread.start()
+
+
 def research_recording_loop(sample_hz: float) -> None:
     period = 1.0 / sample_hz
     while True:
@@ -1081,7 +1159,11 @@ def research_recording_loop(sample_hz: float) -> None:
 
 
 def shutdown_ros_transport() -> None:
-    global arm_runtime, tracking_transport
+    global arm_runtime, tracking_transport, depth_preview_thread
+    depth_preview_stop.set()
+    if depth_preview_thread is not None:
+        depth_preview_thread.join(timeout=2.0)
+        depth_preview_thread = None
     if arm_runtime is not None:
         arm_runtime.stop()
         arm_runtime = None
@@ -1192,6 +1274,7 @@ def main() -> None:
             arm_runtime.start()
         else:
             tracking_transport.start()
+            start_raw_depth_preview(tracking_transport, args.trajectory_model)
     except Exception as exc:
         if tracking_transport is not None:
             try:

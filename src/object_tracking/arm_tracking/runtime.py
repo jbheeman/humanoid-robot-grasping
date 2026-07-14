@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
 from pathlib import Path
 import threading
@@ -179,6 +180,12 @@ class ArmTrackingRuntime:
         self.last_process_at = 0.0
         self.last_arm_poll_at = 0.0
         self.last_arm_state: dict[str, Any] = {"state": "unreachable"}
+        self._pending_predictions: deque[tuple[float, str, np.ndarray]] = deque()
+        self._prediction_errors: dict[str, deque[float]] = {
+            "learned_trajectory": deque(maxlen=120),
+            "alpha_beta_fallback": deque(maxlen=120),
+        }
+        self._last_prediction_error: dict[str, float] = {}
         self.reference_body_q: tuple[float, ...] | None = None
         self.home_q: tuple[float, ...] | None = None
         if config.arm_home_path is not None:
@@ -344,13 +351,17 @@ class ArmTrackingRuntime:
             self._reject(base_status, "waiting_for_new_rgb_frame", colormap)
             return
         tracked = self.filter.update(torso, rgb_time)
+        alpha_beta_prediction = tracked.predict(self.config.prediction_horizon_s)
         learned_prediction = None
         if self.learned_forecaster is not None:
             self.learned_forecaster.update(torso, rgb_time)
             learned_prediction = self.learned_forecaster.predict(self.config.prediction_horizon_s)
-        predicted = learned_prediction if learned_prediction is not None else tracked.predict(
-            self.config.prediction_horizon_s
-        )
+        self._score_due_predictions(torso, rgb_time)
+        due_time = rgb_time + self.config.prediction_horizon_s
+        self._queue_prediction("alpha_beta_fallback", alpha_beta_prediction, due_time)
+        if learned_prediction is not None:
+            self._queue_prediction("learned_trajectory", learned_prediction, due_time)
+        predicted = learned_prediction if learned_prediction is not None else alpha_beta_prediction
         target = generate_pregrasp_target(predicted, shoulder_position=(0.0, -0.18, 0.35))
         base_status.update(
             {
@@ -368,6 +379,11 @@ class ArmTrackingRuntime:
                     else str(self.config.trajectory_model_path)
                 ),
                 "trajectory_model_error": self.trajectory_model_error,
+                "alpha_beta_predicted_xyz_m": alpha_beta_prediction.round(5).tolist(),
+                "learned_predicted_xyz_m": (
+                    None if learned_prediction is None else learned_prediction.round(5).tolist()
+                ),
+                "prediction_evaluation": self._prediction_evaluation(),
                 "target_xyz_m": target.position.round(5).tolist(),
             }
         )
@@ -489,6 +505,47 @@ class ArmTrackingRuntime:
             base_status["pipeline_age_ms"] = round(pipeline_age_ms, 3)
         self.last_target_track = int(selected["track_id"])
         self.update_status(base_status, colormap)
+
+    def _queue_prediction(self, source: str, position: np.ndarray, due_time_s: float) -> None:
+        """Keep short-lived forecasts until a future measured position can score them."""
+
+        self._pending_predictions.append((due_time_s, source, position.copy()))
+        while len(self._pending_predictions) > 300:
+            self._pending_predictions.popleft()
+
+    def _score_due_predictions(self, actual_position: np.ndarray, timestamp_s: float) -> None:
+        while self._pending_predictions and self._pending_predictions[0][0] <= timestamp_s:
+            _, source, prediction = self._pending_predictions.popleft()
+            error_m = float(np.linalg.norm(prediction - actual_position))
+            if np.isfinite(error_m) and source in self._prediction_errors:
+                self._prediction_errors[source].append(error_m)
+                self._last_prediction_error[source] = error_m
+
+    def _prediction_evaluation(self) -> dict[str, Any]:
+        """A small online holdout: forecast now, compare against later 3D observation."""
+
+        methods: dict[str, Any] = {}
+        for source, errors in self._prediction_errors.items():
+            methods[source] = {
+                "samples": len(errors),
+                "last_error_m": self._last_prediction_error.get(source),
+                "mean_error_m": (None if not errors else round(float(np.mean(errors)), 5)),
+                "median_error_m": (None if not errors else round(float(np.median(errors)), 5)),
+            }
+        learned = methods["learned_trajectory"]
+        fallback = methods["alpha_beta_fallback"]
+        verdict = "collecting"
+        if learned["samples"] >= 10 and fallback["samples"] >= 10:
+            verdict = (
+                "learned_better"
+                if learned["mean_error_m"] < fallback["mean_error_m"]
+                else "fallback_better_or_equal"
+            )
+        return {
+            "horizon_ms": round(self.config.prediction_horizon_s * 1000.0, 1),
+            "verdict": verdict,
+            "methods": methods,
+        }
 
     def _support_plane(self, aligned: np.ndarray, depth_scale: float) -> Any | None:
         try:
