@@ -236,17 +236,18 @@
             }),
           });
           report.textContent = JSON.stringify(result, null, 2);
-          $("sequence").value = sequence + 1;
           await refresh();
         } catch (error) { stateLabel.textContent = error.message; }
       });
       $("confirm").addEventListener("click", async () => {
         try {
+          const sequence = Number($("sequence").value || 1);
           await action("confirmations", "POST", {
-            sequence: Number($("sequence").value || 1),
+            sequence,
             outcome: "accepted",
             notes: $("notes").value,
           });
+          $("sequence").value = sequence + 1;
         } catch (error) {
           stateLabel.textContent = error.message;
         }
