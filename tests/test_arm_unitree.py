@@ -210,3 +210,58 @@ def test_foreign_arm_message_latches_ownership_conflict() -> None:
     assert state is not None
     assert state.controller_available is False
     assert state.controller_ownership_verified is False
+
+
+def test_motion_mode_poll_keeps_a_recent_verified_mode_through_one_rpc_failure() -> None:
+    now = [10.0]
+    hardware = UnitreeArmHardware(
+        monotonic=lambda: now[0], motion_poll_s=0.01, motion_mode_grace_s=5.0
+    )
+
+    class Client:
+        calls = 0
+
+        def CheckMode(self) -> object:
+            self.calls += 1
+            if self.calls == 1:
+                return (0, {"name": "ai"})
+            raise RuntimeError("temporary rpc timeout")
+
+    class StopAfterTwoPolls:
+        def __init__(self) -> None:
+            self.stopped = False
+            self.waits = 0
+
+        def is_set(self) -> bool:
+            return self.stopped
+
+        def wait(self, _: float) -> bool:
+            self.waits += 1
+            if self.waits >= 2:
+                self.stopped = True
+            return self.stopped
+
+    hardware._motion_client = Client()
+    hardware._motion_stop = StopAfterTwoPolls()  # type: ignore[assignment]
+    hardware._poll_motion_mode()
+
+    assert hardware._motion_mode_name == "ai"
+    assert hardware._motion_mode_checked is True
+    assert hardware._motion_mode_verified_at == 10.0
+    assert hardware._motion_mode_error == "RuntimeError: temporary rpc timeout"
+
+
+def test_motion_mode_verification_expires_after_bounded_grace() -> None:
+    now = [10.0]
+    hardware = UnitreeArmHardware(monotonic=lambda: now[0], motion_mode_grace_s=5.0)
+    hardware.expected_motion_mode = "ai"
+    hardware._motion_mode_name = "ai"
+    hardware._motion_mode_checked = True
+    hardware._motion_mode_verified_at = 10.0
+    hardware._low_state_callback(LowState())
+
+    assert hardware.latest_state() is not None
+    assert hardware.latest_state().compatible_motion_mode is True
+    now[0] = 15.01
+    assert hardware.latest_state() is not None
+    assert hardware.latest_state().compatible_motion_mode is False

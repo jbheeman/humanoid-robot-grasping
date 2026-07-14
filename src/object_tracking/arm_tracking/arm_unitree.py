@@ -44,11 +44,14 @@ class UnitreeArmHardware:
         expected_motion_mode: Optional[str] = None,
         ownership_quiet_s: float = 1.0,
         motion_poll_s: float = 0.25,
+        motion_mode_grace_s: float = 5.0,
     ) -> None:
         if ownership_quiet_s < 0.0:
             raise ValueError("ownership_quiet_s must be non-negative")
         if motion_poll_s <= 0.0:
             raise ValueError("motion_poll_s must be positive")
+        if motion_mode_grace_s <= 0.0:
+            raise ValueError("motion_mode_grace_s must be positive")
         self.interface = interface
         self.domain_id = domain_id
         self._monotonic = monotonic
@@ -58,6 +61,7 @@ class UnitreeArmHardware:
         self.expected_motion_mode = expected_motion_mode
         self.ownership_quiet_s = ownership_quiet_s
         self.motion_poll_s = motion_poll_s
+        self.motion_mode_grace_s = motion_mode_grace_s
         self._lock = threading.Lock()
         self._state: Optional[RobotState] = None
         self._standing_since: Optional[float] = None
@@ -73,6 +77,8 @@ class UnitreeArmHardware:
         self._ownership_conflict = False
         self._motion_mode_name: Optional[str] = None
         self._motion_mode_checked = False
+        self._motion_mode_verified_at: Optional[float] = None
+        self._motion_mode_error: Optional[str] = None
         self._motion_thread: Optional[threading.Thread] = None
         self._motion_stop = threading.Event()
 
@@ -122,6 +128,10 @@ class UnitreeArmHardware:
         self._started_at = self._monotonic()
         self._ownership_conflict = False
         self._published_fingerprints.clear()
+        self._motion_mode_name = None
+        self._motion_mode_checked = False
+        self._motion_mode_verified_at = None
+        self._motion_mode_error = None
         self._motion_stop.clear()
         self._started = True
         self._motion_thread = threading.Thread(
@@ -146,6 +156,8 @@ class UnitreeArmHardware:
                 self.expected_motion_mode is not None
                 and self._motion_mode_checked
                 and self._motion_mode_name == self.expected_motion_mode
+                and self._motion_mode_verified_at is not None
+                and now - self._motion_mode_verified_at <= self.motion_mode_grace_s
             )
             return replace(
                 state,
@@ -218,12 +230,24 @@ class UnitreeArmHardware:
                 if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[1], dict):
                     candidate = result[1].get("name")
                     name = str(candidate).strip() if candidate is not None else None
+                if not name:
+                    raise RuntimeError("MotionSwitcherClient.CheckMode returned no mode name")
                 with self._lock:
+                    # A successful reply that names a *different* mode must
+                    # take effect immediately.  A transient RPC failure below
+                    # must not turn a verified \"ai\" mode into a false fault.
                     self._motion_mode_name = name
-                    self._motion_mode_checked = bool(name)
-            except Exception:
+                    self._motion_mode_checked = True
+                    self._motion_mode_verified_at = self._monotonic()
+                    self._motion_mode_error = None
+            except Exception as exc:
+                # CheckMode occasionally drops a reply on the stock G1 image
+                # while native arm DDS remains healthy.  Keep the last
+                # verified result only for the bounded grace window; a real
+                # mode change is still applied immediately on the next valid
+                # reply and a persistent outage fails closed after the grace.
                 with self._lock:
-                    self._motion_mode_checked = False
+                    self._motion_mode_error = f"{type(exc).__name__}: {exc}"
             self._motion_stop.wait(self.motion_poll_s)
 
     def _arm_command_callback(self, message: object) -> None:
