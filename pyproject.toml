@@ -25,6 +25,7 @@ vision = [
 ]
 train = [
     "opencv-python>=4.9",
+    "tensorrt-cu13>=7.0.0,!=10.2.0",
     "torch>=2.2",
     "ultralytics>=8.2",
 ]
