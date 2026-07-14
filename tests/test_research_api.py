@@ -113,6 +113,40 @@ def test_tabletop_calibration_saves_ordered_tape_corners(tmp_path) -> None:
         yolo_stream_server.TABLETOP_CALIBRATION_PATH = previous
 
 
+def test_tabletop_localization_maps_track_center_to_table_metres(tmp_path) -> None:
+    previous_path = yolo_stream_server.TABLETOP_CALIBRATION_PATH
+    previous_cache = yolo_stream_server._tabletop_cache
+    previous_mtime = yolo_stream_server._tabletop_cache_mtime
+    path = tmp_path / "tabletop.json"
+    path.write_text(
+        """{
+  "camera_frame": {"width": 960, "height": 540},
+  "tabletop": {"width_m": 0.65, "depth_m": 0.4},
+  "corners_px": [
+    {"name": "near_left", "x": 100, "y": 400},
+    {"name": "near_right", "x": 800, "y": 400},
+    {"name": "far_right", "x": 800, "y": 100},
+    {"name": "far_left", "x": 100, "y": 100}
+  ]
+}""",
+        encoding="utf-8",
+    )
+    yolo_stream_server.TABLETOP_CALIBRATION_PATH = path
+    yolo_stream_server._tabletop_cache = None
+    yolo_stream_server._tabletop_cache_mtime = None
+    try:
+        result = yolo_stream_server.tabletop_localization(
+            [{"track_id": 7, "confidence": 0.9, "center_xy": [450, 250]}]
+        )
+        assert result["status"] == "localized"
+        assert result["track_id"] == 7
+        assert result["table_xy_m"] == [0.325, 0.2]
+    finally:
+        yolo_stream_server.TABLETOP_CALIBRATION_PATH = previous_path
+        yolo_stream_server._tabletop_cache = previous_cache
+        yolo_stream_server._tabletop_cache_mtime = previous_mtime
+
+
 def test_ui_control_routes_forward_only_to_injected_ros_transport() -> None:
     previous = yolo_stream_server.tracking_transport
     transport = FakeRosTransport()

@@ -65,6 +65,9 @@ class SharedState:
     jpeg_bytes: Optional[bytes] = None
     latest_detections: list[dict[str, Any]] = field(default_factory=list)
     latest_tracks: list[dict[str, Any]] = field(default_factory=list)
+    tabletop_localization: dict[str, Any] = field(
+        default_factory=lambda: {"configured": False, "status": "not_configured"}
+    )
     last_error: Optional[str] = None
     frame_count: int = 0
     jpeg_frame_id: int = 0
@@ -102,6 +105,9 @@ state = SharedState()
 frame_ready = threading.Condition(state.lock)
 jpeg_ready = threading.Condition(state.lock)
 tracker = SimpleTracker()
+_tabletop_cache_lock = threading.Lock()
+_tabletop_cache_mtime: float | None = None
+_tabletop_cache: dict[str, Any] | None = None
 
 
 @asynccontextmanager
@@ -492,10 +498,75 @@ def _inference_loop(
         with frame_ready:
             state.latest_detections = detections
             state.latest_tracks = tracks
+            state.tabletop_localization = tabletop_localization(tracks)
             state.yolo_count += 1
             if yolo_fps is not None:
                 state.yolo_fps = yolo_fps
             frame_ready.notify_all()
+
+
+def _tabletop_homography(value: dict[str, Any]) -> np.ndarray | None:
+    frame = value.get("camera_frame") or {}
+    tabletop = value.get("tabletop") or {}
+    corners = value.get("corners_px") or []
+    if len(corners) != 4:
+        return None
+    try:
+        width = float(tabletop["width_m"])
+        depth = float(tabletop["depth_m"])
+        src = np.array([[float(c["x"]), float(c["y"])] for c in corners], dtype=float)
+        dst = np.array([[0.0, 0.0], [width, 0.0], [width, depth], [0.0, depth]], dtype=float)
+    except (KeyError, TypeError, ValueError):
+        return None
+    if not frame.get("width") or not frame.get("height") or width <= 0 or depth <= 0:
+        return None
+    rows: list[list[float]] = []
+    rhs: list[float] = []
+    for (u, v), (x, y) in zip(src, dst):
+        rows.extend([[u, v, 1.0, 0.0, 0.0, 0.0, -u * x, -v * x], [0.0, 0.0, 0.0, u, v, 1.0, -u * y, -v * y]])
+        rhs.extend([x, y])
+    try:
+        h = np.linalg.solve(np.asarray(rows, dtype=float), np.asarray(rhs, dtype=float))
+    except np.linalg.LinAlgError:
+        return None
+    return np.r_[h, 1.0].reshape(3, 3)
+
+
+def tabletop_localization(tracks: list[dict[str, Any]]) -> dict[str, Any]:
+    global _tabletop_cache_mtime, _tabletop_cache
+    try:
+        mtime = TABLETOP_CALIBRATION_PATH.stat().st_mtime
+    except OSError:
+        return {"configured": False, "status": "not_configured"}
+    with _tabletop_cache_lock:
+        if _tabletop_cache is None or _tabletop_cache_mtime != mtime:
+            try:
+                _tabletop_cache = json.loads(TABLETOP_CALIBRATION_PATH.read_text(encoding="utf-8"))
+                _tabletop_cache_mtime = mtime
+            except (OSError, json.JSONDecodeError):
+                return {"configured": False, "status": "invalid_map"}
+        value = _tabletop_cache
+    homography = _tabletop_homography(value)
+    if homography is None:
+        return {"configured": False, "status": "invalid_map"}
+    target = max(tracks, key=lambda item: float(item.get("confidence", 0.0)), default=None)
+    if target is None or not isinstance(target.get("center_xy"), list):
+        return {"configured": True, "status": "waiting_for_track"}
+    u, v = (float(target["center_xy"][0]), float(target["center_xy"][1]))
+    projected = homography @ np.array([u, v, 1.0], dtype=float)
+    if abs(projected[2]) < 1e-9:
+        return {"configured": True, "status": "projection_failed", "track_id": target.get("track_id")}
+    x, y = (float(projected[0] / projected[2]), float(projected[1] / projected[2]))
+    tabletop = value["tabletop"]
+    inside = 0.0 <= x <= float(tabletop["width_m"]) and 0.0 <= y <= float(tabletop["depth_m"])
+    return {
+        "configured": True,
+        "status": "localized" if inside else "outside_tabletop",
+        "track_id": target.get("track_id"),
+        "pixel_xy": [round(u, 2), round(v, 2)],
+        "table_xy_m": [round(x, 4), round(y, 4)],
+        "inside": inside,
+    }
 
 
 def inference_loop(
@@ -745,6 +816,7 @@ def health() -> dict[str, object]:
             "inference_status": state.inference_status,
             "inference_error": state.inference_error,
             "inference_warmup_seconds": state.inference_warmup_seconds,
+            "tabletop_localization": dict(state.tabletop_localization),
             "opencv_threads": state.opencv_threads,
             "torch_threads": state.torch_threads,
             "arm_tracking": dict(state.arm_tracking),

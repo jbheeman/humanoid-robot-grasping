@@ -320,6 +320,7 @@
             <button id="clearTabletop" class="button" type="button">Clear points</button>
             <button id="saveTabletop" class="button" type="button" disabled>Save tabletop map</button>
           </div>
+          <p id="tabletopPosition" class="tabletop-status">Current plush tabletop position: waiting for a saved map and track.</p>
           <p id="tabletopStatus" class="tabletop-status" aria-live="polite">Click “Set four corners” to begin.</p>
         </div>
       </div>
@@ -521,6 +522,10 @@
       setText("modelStatus", modelLoaded
         ? `Trajectory model loaded: ${shortPath(tracking.trajectory_model)}. It is held until calibrated 3D observations exist.`
         : `Trajectory model unavailable: ${tracking.trajectory_model_error || "no checkpoint configured"}`);
+      const tabletop = health.tabletop_localization || {};
+      setText("tabletopPosition", tabletop.status === "localized"
+        ? `Current plush tabletop position: x=${number(tabletop.table_xy_m?.[0], 3, " m")}, y=${number(tabletop.table_xy_m?.[1], 3, " m")} (track ${tabletop.track_id})`
+        : `Current plush tabletop position: ${tabletop.status || "waiting"}.`);
     }
 
     function endpoint(path) { return `${apiBase}${path}`; }
