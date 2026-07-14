@@ -34,6 +34,7 @@ from scripts.robot.depth_service import (
     AutoDepthSource,
     DepthService,
     RealSenseDepthSource,
+    RealSenseRgbRtpRelay,
     RosAlignedDepthSource,
 )
 
@@ -86,6 +87,9 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--depth-height", type=int, default=480)
     parser.add_argument("--depth-capture-fps", type=int, default=30)
     parser.add_argument("--depth-publish-fps", type=float, default=15.0)
+    parser.add_argument("--realsense-rgb-target", default="")
+    parser.add_argument("--realsense-rgb-port", type=int, default=5600)
+    parser.add_argument("--realsense-rgb-fps", type=int, default=60)
     parser.add_argument("--depth-serial")
     parser.add_argument(
         "--disable-depth",
@@ -268,6 +272,8 @@ class RobotRosNode:
             height=self.args.depth_height,
             fps=self.args.depth_capture_fps,
             serial=self.args.depth_serial,
+            color_fps=self.args.realsense_rgb_fps,
+            registered_to_output_rgb=bool(self.args.realsense_rgb_target),
         )
         ros = RosAlignedDepthSource(
             image_topic=self.args.ros_image_topic,
@@ -280,7 +286,20 @@ class RobotRosNode:
             source = direct
         else:
             source = AutoDepthSource(ros, direct)
-        return DepthService(source, transmit_fps=self.args.depth_publish_fps)
+        rgb_relay = None
+        if self.args.realsense_rgb_target:
+            if self.args.depth_source != "librealsense":
+                raise ValueError("--realsense-rgb-target requires --depth-source librealsense")
+            rgb_relay = RealSenseRgbRtpRelay(
+                host=self.args.realsense_rgb_target,
+                port=self.args.realsense_rgb_port,
+                fps=self.args.realsense_rgb_fps,
+            )
+        return DepthService(
+            source,
+            transmit_fps=self.args.depth_publish_fps,
+            rgb_relay=rgb_relay,
+        )
 
     def _on_target(self, message: object) -> None:
         try:

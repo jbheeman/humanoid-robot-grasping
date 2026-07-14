@@ -18,6 +18,7 @@ class CapturedDepth:
     z16: np.ndarray
     sensor_timestamp_ms: float
     timestamp_domain: str
+    color_bgr: np.ndarray | None = None
 
 
 class DepthSource(Protocol):
@@ -31,14 +32,30 @@ class DepthSource(Protocol):
 
 
 class RealSenseDepthSource:
-    """Depth-only librealsense source that never claims unverified RGB alignment."""
+    """One D435I pipeline providing colour and depth aligned to that colour stream."""
 
-    def __init__(self, *, width: int, height: int, fps: int, serial: Optional[str]) -> None:
+    def __init__(
+        self,
+        *,
+        width: int,
+        height: int,
+        fps: int,
+        serial: Optional[str],
+        color_width: int = 960,
+        color_height: int = 540,
+        color_fps: int = 60,
+        registered_to_output_rgb: bool = False,
+    ) -> None:
         self.width = width
         self.height = height
         self.fps = fps
         self.serial = serial
+        self.color_width = color_width
+        self.color_height = color_height
+        self.color_fps = color_fps
+        self.registered_to_output_rgb = registered_to_output_rgb
         self.pipeline: Any = None
+        self.align: Any = None
         self.spatial: Any = None
         self.temporal: Any = None
         self.hole_filling: Any = None
@@ -67,10 +84,18 @@ class RealSenseDepthSource:
         config = rs.config()
         config.enable_device(self.serial)
         config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
+        config.enable_stream(
+            rs.stream.color,
+            self.color_width,
+            self.color_height,
+            rs.format.bgr8,
+            self.color_fps,
+        )
         self.pipeline = rs.pipeline(context)
         profile = self.pipeline.start(config)
         depth_profile = profile.get_stream(rs.stream.depth).as_video_stream_profile()
-        intrinsics = depth_profile.get_intrinsics()
+        color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
+        intrinsics = color_profile.get_intrinsics()
         depth_sensor = profile.get_device().first_depth_sensor()
         depth_scale = float(depth_sensor.get_depth_scale())
 
@@ -101,22 +126,30 @@ class RealSenseDepthSource:
 
         self.calibration = {
             "schema_version": 1,
-            "source": "librealsense_depth_only",
-            "aligned_to_rgb": False,
-            "registration_validated": False,
+            "source": "librealsense_aligned_color_depth",
+            "aligned_to_rgb": self.registered_to_output_rgb,
+            "registration_validated": self.registered_to_output_rgb,
             "camera_serial": self.serial,
             "firmware": device.get_info(rs.camera_info.firmware_version),
             "depth_profile": {
-                "width": intrinsics.width,
-                "height": intrinsics.height,
+                "width": color_profile.width(),
+                "height": color_profile.height(),
                 "fps": self.fps,
                 "format": "z16",
                 "intrinsics": _intrinsics_dict(intrinsics),
                 "depth_scale": depth_scale,
             },
+            "color_profile": {
+                "width": color_profile.width(),
+                "height": color_profile.height(),
+                "fps": self.color_fps,
+                "format": "bgr8",
+                "intrinsics": _intrinsics_dict(intrinsics),
+            },
             "factory_color_profiles": color_profiles,
-            "calibration_id": f"factory-{self.serial}-{intrinsics.width}x{intrinsics.height}",
+            "calibration_id": f"d435i-aligned-{self.serial}-{color_profile.width()}x{color_profile.height()}",
         }
+        self.align = rs.align(rs.stream.color)
         self.spatial = rs.spatial_filter()
         self.temporal = rs.temporal_filter()
         self.hole_filling = rs.hole_filling_filter()
@@ -128,8 +161,12 @@ class RealSenseDepthSource:
             frames = self.pipeline.wait_for_frames(timeout_ms=max(1, int(timeout_s * 1000)))
         except RuntimeError:
             return None
-        depth = frames.get_depth_frame()
-        if not depth:
+        if self.align is None:
+            raise RuntimeError("RealSense alignment is not started")
+        aligned = self.align.process(frames)
+        depth = aligned.get_depth_frame()
+        color = aligned.get_color_frame()
+        if not depth or not color:
             return None
         for filter_ in (self.spatial, self.temporal, self.hole_filling):
             depth = filter_.process(depth)
@@ -138,6 +175,7 @@ class RealSenseDepthSource:
             z16=z16,
             sensor_timestamp_ms=float(depth.get_timestamp()),
             timestamp_domain=str(depth.get_frame_timestamp_domain()),
+            color_bgr=np.asanyarray(color.get_data()).copy(),
         )
 
     def close(self) -> None:
@@ -330,7 +368,13 @@ def _intrinsics_dict(intrinsics: Any) -> Dict[str, Any]:
 
 
 class DepthService:
-    def __init__(self, source: DepthSource, *, transmit_fps: float = 15.0) -> None:
+    def __init__(
+        self,
+        source: DepthSource,
+        *,
+        transmit_fps: float = 15.0,
+        rgb_relay: "RealSenseRgbRtpRelay | None" = None,
+    ) -> None:
         self.source = source
         self.transmit_fps = transmit_fps
         self.codec = DepthEnvelopeCodec()
@@ -342,6 +386,7 @@ class DepthService:
         self.started_at = time.monotonic()
         self.frames_captured = 0
         self.source_restarts = 0
+        self.rgb_relay = rgb_relay
         self._calibration_path: Optional[str] = None
         self.thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
@@ -351,6 +396,11 @@ class DepthService:
         self.source.start()
         if calibration_path:
             bind_validated_calibration(self.source, calibration_path)
+        if self.rgb_relay is not None:
+            color = self.source.calibration.get("color_profile")
+            if not isinstance(color, dict):
+                raise RuntimeError("RGB relay requires a source with a color profile")
+            self.rgb_relay.start(width=int(color["width"]), height=int(color["height"]))
         self.stop_event.clear()
         self.thread = threading.Thread(
             target=self._capture_loop, daemon=True, name="realsense-depth"
@@ -362,6 +412,8 @@ class DepthService:
         if self.thread is not None:
             self.thread.join(timeout=2.0)
         self.source.close()
+        if self.rgb_relay is not None:
+            self.rgb_relay.close()
 
     def _capture_loop(self) -> None:
         sequence = 0
@@ -379,6 +431,8 @@ class DepthService:
                         consecutive_timeouts = 0
                     continue
                 consecutive_timeouts = 0
+                if self.rgb_relay is not None and frame.color_bgr is not None:
+                    self.rgb_relay.write(frame.color_bgr)
                 calibration = self.source.calibration
                 profile = calibration["depth_profile"]
                 envelope = self.codec.encode(
@@ -447,7 +501,69 @@ class DepthService:
                 "registration_validated": self.source.calibration.get(
                     "registration_validated", False
                 ),
+                "rgb_relay": None if self.rgb_relay is None else self.rgb_relay.health(),
             }
+
+
+class RealSenseRgbRtpRelay:
+    """Low-latency H264 RTP output fed by the same D435I frames as depth."""
+
+    def __init__(self, *, host: str, port: int, fps: int, bitrate: int = 8_000_000) -> None:
+        if not host:
+            raise ValueError("RGB relay host is required")
+        if not (0 < port < 65536 and fps > 0 and bitrate > 0):
+            raise ValueError("invalid RGB relay configuration")
+        self.host = host
+        self.port = port
+        self.fps = fps
+        self.bitrate = bitrate
+        self.writer: Any = None
+        self.frames_sent = 0
+        self.last_error: str | None = None
+
+    def start(self, *, width: int, height: int) -> None:
+        try:
+            import cv2
+        except ImportError as exc:
+            raise RuntimeError("OpenCV with GStreamer is required for the RGB relay") from exc
+        pipeline = (
+            "appsrc is-live=true block=true format=time do-timestamp=true ! "
+            f"video/x-raw,format=BGR,width={width},height={height},framerate={self.fps}/1 ! "
+            "videoconvert ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "
+            f"nvv4l2h264enc bitrate={self.bitrate} iframeinterval={self.fps} "
+            f"idrinterval={self.fps} insert-sps-pps=1 ! h264parse ! "
+            "rtph264pay pt=96 config-interval=1 ! "
+            f"udpsink host={self.host} port={self.port} sync=false async=false"
+        )
+        self.writer = cv2.VideoWriter(pipeline, cv2.CAP_GSTREAMER, 0, self.fps, (width, height))
+        if not self.writer.isOpened():
+            self.writer.release()
+            self.writer = None
+            raise RuntimeError("Could not open the D435I H264 RTP relay pipeline")
+
+    def write(self, frame: np.ndarray) -> None:
+        if self.writer is None:
+            return
+        try:
+            self.writer.write(frame)
+            self.frames_sent += 1
+            self.last_error = None
+        except Exception as exc:
+            self.last_error = f"{type(exc).__name__}: {exc}"
+
+    def close(self) -> None:
+        if self.writer is not None:
+            self.writer.release()
+            self.writer = None
+
+    def health(self) -> Dict[str, Any]:
+        return {
+            "host": self.host,
+            "port": self.port,
+            "fps": self.fps,
+            "frames_sent": self.frames_sent,
+            "last_error": self.last_error,
+        }
 
 
 def build_parser() -> argparse.ArgumentParser:

@@ -21,10 +21,12 @@ DEPTH_SOURCE="${DEPTH_SOURCE:-librealsense}"
 ROS_IMAGE_TOPIC="${ROS_IMAGE_TOPIC:-/camera/camera/depth/image_rect_raw}"
 ROS_CAMERA_INFO_TOPIC="${ROS_CAMERA_INFO_TOPIC:-/camera/camera/depth/camera_info}"
 ROS_DEPTH_SCALE="${ROS_DEPTH_SCALE:-0.001}"
-DEPTH_WIDTH="${DEPTH_WIDTH:-640}"
+DEPTH_WIDTH="${DEPTH_WIDTH:-848}"
 DEPTH_HEIGHT="${DEPTH_HEIGHT:-480}"
-DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS:-30}"
-DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS:-15}"
+DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS:-60}"
+DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS:-60}"
+REALSENSE_RGB_PORT="${CLIENT_PORT:-5600}"
+REALSENSE_RGB_FPS="${REALSENSE_RGB_FPS:-60}"
 DEPTH_SERIAL="${DEPTH_SERIAL:-}"
 # Keep rclpy separate from the native SDK2 CycloneDDS domain in this process.
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
@@ -86,6 +88,13 @@ fi
 if [[ "${ALLOW_MOVEMENT}" == "1" ]]; then
   node_args+=(--allow-movement --expected-motion-mode "${EXPECTED_MOTION_MODE}")
 fi
+if [[ "${RGB_MODE}" == "realsense" ]]; then
+  node_args+=(
+    --realsense-rgb-target "${CLIENT_IP}"
+    --realsense-rgb-port "${REALSENSE_RGB_PORT}"
+    --realsense-rgb-fps "${REALSENSE_RGB_FPS}"
+  )
+fi
 
 pids=()
 cleanup() {
@@ -114,8 +123,11 @@ case "${RGB_MODE}" in
       "${ROOT_DIR}/scripts/robot/rgb-relay.sh" &
     pids+=("$!")
     ;;
+  realsense)
+    echo "D435I RGB and RGB-aligned depth will be captured together at ${REALSENSE_RGB_FPS} FPS."
+    ;;
   *)
-    echo "RGB_MODE must be unitree, 30fps, or highfps-service, got: ${RGB_MODE}" >&2
+    echo "RGB_MODE must be unitree, 30fps, highfps-service, or realsense, got: ${RGB_MODE}" >&2
     exit 2
     ;;
 esac
