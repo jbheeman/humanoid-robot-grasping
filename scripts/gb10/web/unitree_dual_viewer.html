@@ -474,6 +474,33 @@
       return entries.length ? `${entries[0][0]} (${entries[0][1]})` : "none";
     }
 
+    let lastDepthSequence = null;
+    let depthRefreshInFlight = false;
+
+    function renderDepthPreview(tracking) {
+      const profile = Array.isArray(tracking.depth_profile) ? `${tracking.depth_profile[0]}×${tracking.depth_profile[1]}` : "—";
+      setText("depthMeta", `sequence ${tracking.depth_sequence ?? "—"} · ${profile} · age ${number(tracking.depth_age_ms, 1, " ms")}`);
+      setText("depthAge", number(tracking.depth_age_ms, 1, " ms"));
+      setText("depthValidity", tracking.status === "depth_preview" ? "raw / unregistered" : `valid ${number(tracking.depth_valid_fraction, 3)}`);
+      const sequence = tracking.depth_sequence;
+      if (sequence !== undefined && sequence !== lastDepthSequence) {
+        lastDepthSequence = sequence;
+        byId("depthImage").src = cacheBusted(endpoint("/depth.jpg"));
+      }
+    }
+
+    async function refreshDepthPreview() {
+      if (depthRefreshInFlight) return;
+      depthRefreshInFlight = true;
+      try {
+        renderDepthPreview(await json("/arm-tracking"));
+      } catch (_) {
+        // The once-per-second dashboard refresh reports connection failures.
+      } finally {
+        depthRefreshInFlight = false;
+      }
+    }
+
     async function refresh() {
       try {
         const [health, detections, tracks, tracking, session, summary, telemetry] = await Promise.all([
@@ -492,8 +519,6 @@
         setText("cameraFpsDetail", `expected ${number(health.expected_fps, 0, " Hz")}`);
         setText("yoloFps", number(health.yolo_fps, 1, " Hz"));
         setText("inferenceDetail", `${health.inference_status} · warmup ${number(health.inference_warmup_seconds, 2, " s")}`);
-        setText("depthAge", number(tracking.depth_age_ms, 1, " ms"));
-        setText("depthValidity", `valid ${number(tracking.depth_valid_fraction, 3)}`);
         setText("pairSkew", number(tracking.pair_skew_ms, 1, " ms"));
         setText("detectionCount", `${detections.detections.length} / ${tracks.tracks.length}`);
         setText("activeTrack", `active track ${tracking.track_id ?? "—"}`);
@@ -501,9 +526,7 @@
         setText("armStateDetail", `arm ${tracking.arm_state || "—"}`);
 
         setText("rgbMeta", `frame ${health.frame_count} · ${number(health.fps, 1, " Hz")}`);
-        const profile = Array.isArray(tracking.depth_profile) ? `${tracking.depth_profile[0]}×${tracking.depth_profile[1]}` : "—";
-        setText("depthMeta", `sequence ${tracking.depth_sequence ?? "—"} · ${profile} · age ${number(tracking.depth_age_ms, 1, " ms")}`);
-        if (tracking.depth_sequence !== undefined) byId("depthImage").src = cacheBusted(endpoint("/depth.jpg"));
+        renderDepthPreview(tracking);
 
         setText("frameCounts", `${health.frame_count} / ${health.yolo_count}`);
         setText("encodeFps", number(health.encode_fps, 1, " Hz"));
@@ -558,6 +581,7 @@
     applyStream();
     refresh();
     window.setInterval(refresh, 1000);
+    window.setInterval(refreshDepthPreview, 100);
     import("./visual/g1_visualizer.js").then(({mountG1Visualizer}) => mountG1Visualizer({
       container: byId("robotVisual"), stateUrl: () => endpoint("/visualization/state"),
       referenceToggle: byId("showReference"), measuredToggle: byId("showMeasured"), commandedToggle: byId("showCommanded"), resetButton: byId("resetView"), jointSelect: byId("visualJointSelect"),
