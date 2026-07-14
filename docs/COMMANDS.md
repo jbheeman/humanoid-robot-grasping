@@ -16,7 +16,7 @@ bash scripts/robot/setup.sh
 bash scripts/gb10/setup.sh
 
 # Normal operation
-uv run g1 robot start --client-ip <GB10_IP>
+uv run g1 robot start  # defaults to GB10 192.168.0.66
 uv run g1 gb10 start --robot-host <ROBOT_IP> --dry-run
 ```
 

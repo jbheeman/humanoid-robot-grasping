@@ -9,7 +9,7 @@ if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
   exit 1
 fi
 
-MODEL="${MODEL:-${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.pt}"
+MODEL="${MODEL:-${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.engine}"
 ROBOT_HOST="${ROBOT_HOST:-}"
 ROS_INTERFACE="${ROS_INTERFACE:-auto}"
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}"
@@ -40,6 +40,7 @@ RESEARCH_HZ="${RESEARCH_HZ:-5}"
 RESEARCH_ROOT="${RESEARCH_ROOT:-runs/research/arm_tracking}"
 RESEARCH_LABEL="${RESEARCH_LABEL:-}"
 RESEARCH_NOTES="${RESEARCH_NOTES:-}"
+TRAJECTORY_MODEL="${TRAJECTORY_MODEL:-}"
 GB10_LAN_IP="${GB10_LAN_IP:-}"
 
 if [[ -z "${ROBOT_HOST}" ]]; then
@@ -89,6 +90,13 @@ if [[ -n "${ARM_HOME}" ]]; then
     exit 1
   fi
   tracking_args+=(--arm-home "${ARM_HOME}" --robot-id "${G1_ROBOT_ID}")
+fi
+if [[ -n "${TRAJECTORY_MODEL}" ]]; then
+  if [[ ! -f "${TRAJECTORY_MODEL}" ]]; then
+    echo "TRAJECTORY_MODEL does not exist: ${TRAJECTORY_MODEL}" >&2
+    exit 1
+  fi
+  tracking_args+=(--trajectory-model "${TRAJECTORY_MODEL}")
 fi
 
 access_log_args=()
@@ -148,6 +156,7 @@ echo "YOLO model:          ${MODEL}"
 echo "Tracking profile:    ${VISION_WIDTH}x${VISION_HEIGHT} at ${VISION_FPS} FPS"
 echo "Movement requested:  ${EXECUTE} (robot safety gates still apply)"
 echo "Research recording:  ${RESEARCH_RECORD} at ${RESEARCH_HZ} Hz"
+echo "Trajectory model:    ${TRAJECTORY_MODEL:-alpha-beta fallback only}"
 echo
 echo "Open the single GB10 UI:"
 echo "  http://${DISPLAY_HOST}:${PORT}/"

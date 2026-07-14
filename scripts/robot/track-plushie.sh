@@ -11,9 +11,9 @@ HEIGHT="${TRACK_HEIGHT:-540}"
 # than that only repeats stale boxes; the native SDK command loop itself runs
 # at TRACK_CONTROL_RATE (50 Hz by default).
 RATE="${TRACK_RATE:-40}"
-GAIN_X="${TRACK_GAIN_X:-0.10}"
-GAIN_Y="${TRACK_GAIN_Y:-0.10}"
-MAX_STEP="${TRACK_MAX_STEP:-0.006}"
+GAIN_X="${TRACK_GAIN_X:-0.03}"
+GAIN_Y="${TRACK_GAIN_Y:-0.03}"
+MAX_STEP="${TRACK_MAX_STEP:-0.003}"
 INTERFACE="${HARDWARE_INTERFACE:-eth0}"
 DOMAIN_ID="${HARDWARE_DOMAIN_ID:-0}"
 CLASSES="${TRACK_CLASSES:-plush,bunny}"
@@ -31,6 +31,16 @@ if [[ ! -d "$UNITREE_SDK_PYTHONPATH" ]]; then
 fi
 
 export PYTHONPATH="${UNITREE_SDK_PYTHONPATH}:${PYTHONPATH:-}"
+# First live-tracking defaults: no start-up motion, require a confident stable
+# target, and constrain shoulder motion to a small envelope around the measured
+# pose.  Operators may widen these only after a supervised smoke test.
+export TRACK_STARTUP_RAISE_RAD="${TRACK_STARTUP_RAISE_RAD:-0}"
+export TRACK_MIN_CONFIDENCE="${TRACK_MIN_CONFIDENCE:-0.70}"
+export TRACK_LOCK_FRAMES="${TRACK_LOCK_FRAMES:-12}"
+export TRACK_DEADBAND_DEG="${TRACK_DEADBAND_DEG:-5}"
+export TRACK_PITCH_ENVELOPE_RAD="${TRACK_PITCH_ENVELOPE_RAD:-0.03}"
+export TRACK_YAW_ENVELOPE_RAD="${TRACK_YAW_ENVELOPE_RAD:-0.03}"
+export TRACK_SLEW_STEP_RAD="${TRACK_SLEW_STEP_RAD:-0.0005}"
 
 exec python3 "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/direct_plushie_track.py" \
   --tracks-url "$TRACKS_URL" \

@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 import json
 from pathlib import Path
@@ -11,6 +12,7 @@ from typing import Iterable
 
 import numpy as np
 
+from object_tracking.synthetic_trajectory import synthetic_batch
 from object_tracking.trajectory_forecaster import trajectory_features
 from object_tracking.trajectory_training import TrajectoryGRU
 
@@ -109,6 +111,108 @@ def baseline_mae(samples: list[tuple[np.ndarray, np.ndarray, np.ndarray]], horiz
     return float(np.mean(errors)) if errors else float("inf")
 
 
+def synthetic_baseline_mae(features: np.ndarray, targets: np.ndarray, horizons: tuple[float, ...]) -> float:
+    predicted = np.asarray(horizons, dtype=np.float32)[None, :, None] * features[:, -1:, 3:]
+    return float(np.abs(predicted - targets).mean())
+
+
+def train_synthetic(args: argparse.Namespace) -> None:
+    """Pretrain from procedural motion without retaining a large dataset."""
+    import time
+
+    import torch
+
+    torch.manual_seed(args.seed)
+    rng = np.random.default_rng(args.seed)
+    validation_rng = np.random.default_rng(args.seed + 1)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    model = TrajectoryGRU(hidden_size=args.hidden_size, outputs=len(args.horizons)).to(device)
+    optimizer = torch.optim.AdamW(model.parameters(), lr=8e-4, weight_decay=1e-4)
+    deadline = time.monotonic() + args.hours * 3600
+    best_state = None
+    best_mae = float("inf")
+    best_baseline = float("inf")
+    step = 0
+    args.output.mkdir(parents=True, exist_ok=True)
+    validation = [
+        synthetic_batch(
+            validation_rng, batch_size=args.batch, history=args.history, horizons_s=args.horizons
+        )
+        for _ in range(args.validation_batches)
+    ]
+
+    def make_batch(batch_seed: int) -> tuple[np.ndarray, np.ndarray]:
+        return synthetic_batch(
+            np.random.default_rng(batch_seed),
+            batch_size=args.batch,
+            history=args.history,
+            horizons_s=args.horizons,
+        )
+
+    next_seed = args.seed + 10_000
+    with ThreadPoolExecutor(max_workers=args.prefetch_workers) as pool:
+        pending = [pool.submit(make_batch, next_seed + index) for index in range(args.prefetch_workers * 2)]
+        next_seed += len(pending)
+        while time.monotonic() < deadline and (args.max_steps <= 0 or step < args.max_steps):
+            future = pending.pop(0)
+            features, targets = future.result()
+            pending.append(pool.submit(make_batch, next_seed))
+            next_seed += 1
+            x = torch.from_numpy(features).to(device, non_blocking=device.type == "cuda")
+            y = torch.from_numpy(targets).to(device, non_blocking=device.type == "cuda")
+            model.train()
+            optimizer.zero_grad(set_to_none=True)
+            loss = torch.nn.functional.smooth_l1_loss(model(x), y)
+            loss.backward()
+            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
+            optimizer.step()
+            step += 1
+            if step % args.eval_every:
+                continue
+
+            model.eval()
+            errors: list[float] = []
+            baselines: list[float] = []
+            with torch.inference_mode():
+                for val_features, val_targets in validation:
+                    prediction = model(torch.from_numpy(val_features).to(device)).cpu().numpy()
+                    errors.append(float(np.abs(prediction - val_targets).mean()))
+                    baselines.append(synthetic_baseline_mae(val_features, val_targets, args.horizons))
+            mae = float(np.mean(errors))
+            baseline = float(np.mean(baselines))
+            if mae < best_mae:
+                best_mae, best_baseline = mae, baseline
+                best_state = {key: value.detach().cpu() for key, value in model.state_dict().items()}
+                temporary_checkpoint = args.output / "best.pt.tmp"
+                torch.save(
+                    {
+                        "model_state": best_state,
+                        "history_length": args.history,
+                        "horizons_s": list(args.horizons),
+                        "position_scale_m": 1.0,
+                        "max_speed_mps": 2.0,
+                        "hidden_size": args.hidden_size,
+                    },
+                    temporary_checkpoint,
+                )
+                temporary_checkpoint.replace(args.output / "best.pt")
+            print(json.dumps({"step": step, "validation_mae_m": mae, "baseline_mae_m": baseline}), flush=True)
+
+    if best_state is None:
+        raise SystemExit("synthetic training ended before its first validation")
+    report = {
+        "checkpoint": str(args.output / "best.pt"),
+        "mode": "synthetic_pretrain",
+        "steps": step,
+        "validation_mae_m": best_mae,
+        "baseline_mae_m": best_baseline,
+        "promotable": best_mae < best_baseline,
+        "real_data_required": True,
+    }
+    (args.output / "report.json").write_text(json.dumps(report, indent=2) + "\n", encoding="utf-8")
+    print(json.dumps(report, sort_keys=True), flush=True)
+
+
 def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--research-root", type=Path, default=Path("runs/research/arm_tracking"))
@@ -119,9 +223,21 @@ def main() -> None:
     parser.add_argument("--batch", type=int, default=512)
     parser.add_argument("--min-windows", type=int, default=2000)
     parser.add_argument("--seed", type=int, default=20260710)
+    parser.add_argument("--synthetic-pretrain", action="store_true")
+    parser.add_argument("--hours", type=float, default=17.0)
+    parser.add_argument("--eval-every", type=int, default=2500)
+    parser.add_argument("--validation-batches", type=int, default=128)
+    parser.add_argument("--max-steps", type=int, default=0, help="Test-only cap; zero runs until deadline")
+    parser.add_argument("--hidden-size", type=int, default=64)
+    parser.add_argument("--prefetch-workers", type=int, default=2)
     args = parser.parse_args()
-    if args.history < 3 or args.epochs <= 0 or args.batch <= 0:
-        raise SystemExit("history, epochs, and batch must be positive")
+    if args.history < 3 or args.epochs <= 0 or args.batch <= 0 or args.hidden_size <= 0:
+        raise SystemExit("history, epochs, batch, and hidden-size must be positive")
+    if args.hours <= 0 or args.eval_every <= 0 or args.validation_batches <= 0 or args.prefetch_workers <= 0:
+        raise SystemExit("hours, eval-every, validation-batches, and prefetch-workers must be positive")
+    if args.synthetic_pretrain:
+        train_synthetic(args)
+        return
 
     sessions = collect(args.research_root, args.history, args.horizons)
     session_ids = sorted(sessions)
@@ -129,7 +245,7 @@ def main() -> None:
     if len(session_ids) < 2 or all_count < args.min_windows:
         raise SystemExit(
             f"Insufficient real 3D trajectory data: {len(session_ids)} sessions, {all_count} windows. "
-            f"Need at least 2 sessions and {args.min_windows} windows; keep --depth-ws research recording on."
+            f"Need at least 2 sessions and {args.min_windows} windows; keep ROS depth recording on."
         )
 
     split = max(1, int(round(len(session_ids) * 0.2)))

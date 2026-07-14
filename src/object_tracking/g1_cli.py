@@ -201,7 +201,7 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
     parser.add_argument("--set", action="append", default=[], metavar="KEY=VALUE")
 
     if route.target == "scripts/robot/start.sh":
-        parser.add_argument("--client-ip")
+        parser.add_argument("--client-ip", default="192.168.0.66")
         parser.add_argument("--interface")
         parser.add_argument("--control-peer")
         parser.add_argument("--ros-domain-id", type=int)

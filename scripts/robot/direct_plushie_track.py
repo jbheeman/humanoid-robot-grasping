@@ -156,7 +156,10 @@ class TrackerConfig:
     hold_seconds: float = 0.6
     interface: str = "eth0"
     domain_id: int = 0
-    startup_raise_rad: float = 0.10
+    # Never move merely because the process starts.  A visible startup raise
+    # can be requested explicitly for supervised commissioning, but it is not
+    # part of normal visual-lock tracking.
+    startup_raise_rad: float = 0.0
     startup_raise_seconds: float = 1.0
     reverse_x: bool = False
     reverse_y: bool = False
@@ -402,8 +405,8 @@ def _main() -> int:
     parser.add_argument(
         "--startup-raise-rad",
         type=float,
-        default=float(os.environ.get("TRACK_STARTUP_RAISE_RAD", "0.10")),
-        help="initial right-shoulder-pitch lift used as a tracking-start indicator",
+        default=float(os.environ.get("TRACK_STARTUP_RAISE_RAD", "0")),
+        help="optional supervised initial shoulder-pitch lift; defaults to zero motion",
     )
     parser.add_argument(
         "--startup-raise-seconds",
@@ -431,7 +434,9 @@ def _main() -> int:
         startup_raise_seconds=max(0.1, args.startup_raise_seconds),
         reverse_x=args.reverse_x,
         reverse_y=args.reverse_y,
-        slew_step_rad=max(0.001, min(abs(args.slew_step_rad), abs(args.max_step_rad))),
+        # Permit a very slow supervised sign-check rate.  The value must stay
+        # positive so a locked target can still converge inside its envelope.
+        slew_step_rad=max(0.0001, min(abs(args.slew_step_rad), abs(args.max_step_rad))),
         aim_x_px=args.aim_x_px,
         aim_y_px=args.aim_y_px,
         deadband_rad=max(0.0, math.radians(args.deadband_deg)),
@@ -476,9 +481,8 @@ def _main() -> int:
     hardware = UnitreeArmHardware(interface=cfg.interface, domain_id=cfg.domain_id)
     hardware.start()
 
-    # Give a visible, bounded indication that tracking has started.  This is
-    # deliberately a small shoulder-only ramp; the remaining arm joints stay
-    # at their measured positions.  Set TRACK_STARTUP_RAISE_RAD=0 to disable.
+    # An optional supervised start indicator.  It is disabled by default so
+    # process startup cannot move the robot before a target is locked.
     startup_state = None
     startup_deadline = _now() + 3.0
     while startup_state is None and _now() < startup_deadline:

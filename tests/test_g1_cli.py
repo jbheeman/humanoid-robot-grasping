@@ -67,6 +67,13 @@ def test_robot_role_flags_configure_existing_launcher() -> None:
     assert env["ROS_DOMAIN_ID"] == "7"
 
 
+def test_robot_role_uses_lab_gb10_default() -> None:
+    _launcher, forwarded, env = _role_launcher(ROUTES[("robot", "start")], [])
+
+    assert forwarded == []
+    assert env["CLIENT_IP"] == "192.168.0.66"
+
+
 def test_removed_robot_http_flags_have_migration_error() -> None:
     with pytest.raises(SystemExit):
         _role_launcher(

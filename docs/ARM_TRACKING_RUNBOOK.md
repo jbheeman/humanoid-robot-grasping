@@ -39,7 +39,7 @@ Robot:
 
 ```bash
 CALIBRATION=/secure/g1-camera.yaml \
-uv run g1 robot start --client-ip <GB10_IP>
+uv run g1 robot start
 ```
 
 GB10:

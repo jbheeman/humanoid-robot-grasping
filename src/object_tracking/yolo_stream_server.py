@@ -408,12 +408,15 @@ def _inference_loop(
     with state.lock:
         state.model_name = model_name
 
-    model = YOLO(model_name)
-    model.to(device)
-    try:
-        model.fuse()
-    except Exception as exc:
-        print(f"YOLO fuse skipped: {exc}")
+    model = YOLO(model_name, task="detect")
+    if model_name.lower().endswith(".pt"):
+        model.to(device)
+        try:
+            model.fuse()
+        except Exception as exc:
+            print(f"YOLO fuse skipped: {exc}")
+    else:
+        print("Skipping PyTorch-only model setup for exported inference model")
 
     warmup_started = time.perf_counter()
     warmup_frame = np.zeros((720, 1280, 3), dtype=np.uint8)
