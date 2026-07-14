@@ -12,7 +12,9 @@ fi
 MODEL="${MODEL:-${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.engine}"
 ROBOT_HOST="${ROBOT_HOST:-}"
 ROS_INTERFACE="${ROS_INTERFACE:-auto}"
-ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-1}"
+# The robot project bridge runs in domain 42. Keep it separate from Unitree's
+# native motor DDS domain 0 and match it by default for ROS discovery.
+ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 UDP_PORT="${UDP_PORT:-5600}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
