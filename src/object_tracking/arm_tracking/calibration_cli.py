@@ -91,17 +91,43 @@ def probe_realsense() -> dict[str, Any]:
 
     pipeline = rs.pipeline()
     config = rs.config()
+    # The normal robot launcher already owns the RGB V4L relay.  Open only
+    # depth here, then query the device's factory color profiles below.  This
+    # avoids a second RGB stream request failing on a robot-mounted D435.
     config.enable_stream(rs.stream.depth, rs.format.z16)
-    config.enable_stream(rs.stream.color, rs.format.rgb8)
     profile = pipeline.start(config)
     try:
         device = profile.get_device()
         depth_profile = profile.get_stream(rs.stream.depth).as_video_stream_profile()
-        rgb_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
         depth_intrinsics = depth_profile.get_intrinsics()
-        rgb_intrinsics = rgb_profile.get_intrinsics()
-        extrinsics = depth_profile.get_extrinsics_to(rgb_profile)
         depth_sensor = device.first_depth_sensor()
+
+        color_candidates = []
+        for sensor in device.query_sensors():
+            for candidate in sensor.get_stream_profiles():
+                try:
+                    video = candidate.as_video_stream_profile()
+                    if video.stream_type() != rs.stream.color:
+                        continue
+                    intrinsics = video.get_intrinsics()
+                    extrinsics = depth_profile.get_extrinsics_to(video)
+                    color_candidates.append((video, intrinsics, extrinsics))
+                except RuntimeError:
+                    continue
+        if not color_candidates:
+            raise RuntimeError("RealSense device exposes no usable color stream profiles")
+
+        # The lab relay runs 960x540 at 60 FPS. Prefer that exact factory
+        # profile, otherwise use the densest available profile rather than
+        # failing the probe because a particular RGB format is unavailable.
+        rgb_profile, rgb_intrinsics, extrinsics = max(
+            color_candidates,
+            key=lambda item: (
+                item[0].width() == 960 and item[0].height() == 540 and item[0].fps() == 60,
+                item[0].width() * item[0].height(),
+                item[0].fps(),
+            ),
+        )
 
         def stream(value: Any) -> dict[str, Any]:
             return {
