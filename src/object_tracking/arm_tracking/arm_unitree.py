@@ -179,6 +179,20 @@ class UnitreeArmHardware:
         low_cmd = self._low_cmd
         low_cmd.mode_pr = 0
         low_cmd.mode_machine = command.mode_machine
+        # Unitree's rt/arm_sdk consumer expects a complete G1 command frame.
+        # Keep every non-arm joint at its measured position so the packet is
+        # valid without taking ownership of the legs or waist.
+        with self._lock:
+            state = self._state
+        if state is not None and len(state.body_q) >= 29:
+            for joint_index in range(29):
+                motor = low_cmd.motor_cmd[joint_index]
+                motor.mode = 1
+                motor.q = state.body_q[joint_index]
+                motor.dq = 0.0
+                motor.tau = 0.0
+                motor.kp = 0.0
+                motor.kd = 0.0
         for offset, joint_index in enumerate(ARM_INDICES):
             motor = low_cmd.motor_cmd[joint_index]
             motor.mode = 1
