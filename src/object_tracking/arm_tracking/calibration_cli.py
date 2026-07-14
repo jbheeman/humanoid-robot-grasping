@@ -89,15 +89,58 @@ def probe_realsense() -> dict[str, Any]:
     except ImportError as exc:
         raise RuntimeError("pyrealsense2 is required only for calibration probe") from exc
 
-    pipeline = rs.pipeline()
-    config = rs.config()
-    # The normal robot launcher already owns the RGB V4L relay.  Open only
-    # depth here, then query the device's factory color profiles below.  This
-    # avoids a second RGB stream request failing on a robot-mounted D435.
-    config.enable_stream(rs.stream.depth, rs.format.z16)
-    profile = pipeline.start(config)
+    context = rs.context()
+    devices = context.query_devices()
+    if not devices:
+        raise RuntimeError("No RealSense device is available")
+    device = devices[0]
+    serial = device.get_info(rs.camera_info.serial_number)
+    depth_candidates = []
+    for sensor in device.query_sensors():
+        for candidate in sensor.get_stream_profiles():
+            try:
+                video = candidate.as_video_stream_profile()
+                if video.stream_type() == rs.stream.depth and video.format() == rs.format.z16:
+                    depth_candidates.append(video)
+            except RuntimeError:
+                continue
+    if not depth_candidates:
+        raise RuntimeError("RealSense device exposes no Z16 depth stream profiles")
+    depth_candidates.sort(
+        key=lambda item: (
+            item.width() == 640 and item.height() == 480 and item.fps() == 30,
+            item.width() * item.height(),
+            item.fps(),
+        ),
+        reverse=True,
+    )
+
+    # The normal robot launcher already owns the RGB V4L relay. Open only a
+    # supported depth profile here, then query factory color profiles below.
+    pipeline = rs.pipeline(context)
+    profile = None
+    failures: list[str] = []
+    for candidate in depth_candidates:
+        config = rs.config()
+        config.enable_device(serial)
+        config.enable_stream(
+            rs.stream.depth,
+            candidate.width(),
+            candidate.height(),
+            candidate.format(),
+            candidate.fps(),
+        )
+        try:
+            profile = pipeline.start(config)
+            break
+        except RuntimeError as exc:
+            failures.append(
+                f"{candidate.width()}x{candidate.height()}@{candidate.fps()}: {exc}"
+            )
+    if profile is None:
+        detail = "; ".join(failures[:4])
+        raise RuntimeError(f"could not start a supported depth profile ({detail})")
     try:
-        device = profile.get_device()
         depth_profile = profile.get_stream(rs.stream.depth).as_video_stream_profile()
         depth_intrinsics = depth_profile.get_intrinsics()
         depth_sensor = device.first_depth_sensor()
