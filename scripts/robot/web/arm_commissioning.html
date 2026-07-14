@@ -164,7 +164,7 @@
   </main>
   <script>
     const $ = (id) => document.getElementById(id);
-    let state = null, sessionId = null, sequence = 0, pollTimer = null, heartbeatTimer = null, authToken = "";
+    let state = null, sessionId = null, sequence = 0, pollTimer = null, heartbeatTimer = null, heartbeatInFlight = false, authToken = "";
     const headers = () => ({"Authorization": `Bearer ${authToken}`, "Content-Type": "application/json"});
     async function api(path, body) {
       const response = await fetch(path, {method: body === undefined ? "GET" : "POST", headers: headers(), body: body === undefined ? undefined : JSON.stringify(body), cache: "no-store"});
@@ -218,11 +218,11 @@
         : fallback;
     }
     async function refresh() { try { const value=await api("/api/v1/commissioning/state"); render(value); if (value.phase === "FAULT" || value.bridge?.state === "FAULT") { clearInterval(heartbeatTimer); message(faultMessage(value, "Commissioning fault"), true); } } catch (error) { message(error.message, true); } }
-    async function post(action, body={}, quiet=false) { try { const result=await api(sessionPath(action), body); render(result); if (result.phase === "FAULT" || result.bridge?.state === "FAULT") { clearInterval(heartbeatTimer); message(faultMessage(result, `${action} faulted`), true); return null; } if (!quiet) message(`${action} accepted`); return result; } catch(error) { try { const current=await api("/api/v1/commissioning/state"); render(current); if (current.phase === "FAULT" || current.bridge?.state === "FAULT") { clearInterval(heartbeatTimer); message(faultMessage(current, error.message), true); return null; } } catch (_) {} message(error.message, true); return null; } }
+    async function post(action, body={}, quiet=false) { try { const result=await api(sessionPath(action), body); render(result); if (result.phase === "FAULT" || result.bridge?.state === "FAULT" || result.bridge?.state === "HOLDING" || result.phase === "STOPPED") { clearInterval(heartbeatTimer); heartbeatTimer=null; if (result.bridge?.state === "HOLDING" || result.phase === "STOPPED") message("Session released; create a new session and enable again.", true); else message(faultMessage(result, `${action} faulted`), true); return null; } if (!quiet) message(`${action} accepted`); return result; } catch(error) { try { const current=await api("/api/v1/commissioning/state"); render(current); if (current.phase === "FAULT" || current.bridge?.state === "FAULT" || current.bridge?.state === "HOLDING" || current.phase === "STOPPED") { clearInterval(heartbeatTimer); heartbeatTimer=null; message(current.bridge?.state === "HOLDING" ? "Session released; create a new session and enable again." : faultMessage(current, error.message), true); return null; } } catch (_) {} if (!quiet) message(error.message, true); return null; } }
     async function jog(joint_name, direction) { sequence += 1; await post("jogs", {sequence, joint_name, direction, kind: $("signMode").checked ? "sign_check" : "jog"}); }
     $("connectBtn").addEventListener("click", async () => { authToken=$("token").value; await refresh(); if (state) $("token").value=""; clearInterval(pollTimer); pollTimer=setInterval(refresh, 250); });
     $("startBtn").addEventListener("click", async () => { try { const value=await api("/api/v1/commissioning/sessions", {operator: $("operator").value, client_id: $("clientId").value}); sequence=0; render(value); message("Session created. Enabling will latch the measured pose."); } catch(error) { message(error.message, true); } });
-    $("enableBtn").addEventListener("click", async () => { const result=await post("enable"); if (!result) return; clearInterval(heartbeatTimer); heartbeatTimer=setInterval(() => post("heartbeat", {}, true), 100); });
+    $("enableBtn").addEventListener("click", async () => { const result=await post("enable"); if (!result) return; clearInterval(heartbeatTimer); heartbeatTimer=setInterval(async () => { if (heartbeatInFlight) return; heartbeatInFlight=true; try { await post("heartbeat", {}, true); } finally { heartbeatInFlight=false; } }, 200); });
     $("confirmBtn").addEventListener("click", () => post("confirmations", {sequence: ++sequence, outcome: "accepted"}));
     $("confirmSignBtn").addEventListener("click", () => post("confirmations", {sequence: ++sequence, outcome: "expected"}));
     $("rejectBtn").addEventListener("click", () => post("confirmations", {sequence: ++sequence, outcome: "rejected"}));

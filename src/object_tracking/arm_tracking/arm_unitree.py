@@ -31,6 +31,7 @@ class UnitreeArmHardware:
         max_angular_rate_rad_s: float = 0.5,
         expected_motion_mode: str | None = None,
         ownership_quiet_s: float = 1.0,
+        motion_mode_grace_s: float = 5.0,
     ) -> None:
         self.interface = interface
         self.domain_id = domain_id
@@ -40,6 +41,7 @@ class UnitreeArmHardware:
         self.max_angular_rate_rad_s = max_angular_rate_rad_s
         self.expected_motion_mode = expected_motion_mode
         self.ownership_quiet_s = ownership_quiet_s
+        self.motion_mode_grace_s = motion_mode_grace_s
         self._lock = threading.Lock()
         self._state: RobotState | None = None
         self._standing_since: float | None = None
@@ -54,6 +56,7 @@ class UnitreeArmHardware:
         self._ownership_conflict = False
         self._motion_mode_name: str | None = None
         self._motion_mode_checked = False
+        self._motion_mode_last_seen: float | None = None
         self._motion_client = None
         self._motion_thread: threading.Thread | None = None
         self._motion_stop = threading.Event()
@@ -115,10 +118,15 @@ class UnitreeArmHardware:
                 and now - self._started_at >= self.ownership_quiet_s
                 and not self._ownership_conflict
             )
+            mode_recent = (
+                self._motion_mode_last_seen is not None
+                and self._motion_mode_name is not None
+                and now - self._motion_mode_last_seen <= self.motion_mode_grace_s
+            )
             mode_verified = bool(
                 self.expected_motion_mode is not None
-                and self._motion_mode_checked
                 and self._motion_mode_name == self.expected_motion_mode
+                and (self._motion_mode_checked or mode_recent)
             )
             return replace(
                 state,
@@ -180,6 +188,8 @@ class UnitreeArmHardware:
                 name: str | None = None
                 if isinstance(result, tuple) and len(result) >= 2 and isinstance(result[1], dict):
                     name = str(result[1].get("name") or "")
+                if name == self.expected_motion_mode:
+                    self._motion_mode_last_seen = self._monotonic()
                 with self._lock:
                     self._motion_mode_name = name
                     self._motion_mode_checked = name is not None
