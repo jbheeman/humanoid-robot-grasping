@@ -341,10 +341,13 @@ class DepthService:
         self.last_error: Optional[str] = None
         self.started_at = time.monotonic()
         self.frames_captured = 0
+        self.source_restarts = 0
+        self._calibration_path: Optional[str] = None
         self.thread: Optional[threading.Thread] = None
         self.stop_event = threading.Event()
 
     def start(self, calibration_path: Optional[str] = None) -> None:
+        self._calibration_path = calibration_path
         self.source.start()
         if calibration_path:
             bind_validated_calibration(self.source, calibration_path)
@@ -362,11 +365,20 @@ class DepthService:
 
     def _capture_loop(self) -> None:
         sequence = 0
+        consecutive_timeouts = 0
         while not self.stop_event.is_set():
             try:
                 frame = self.source.read(timeout_s=0.5)
                 if frame is None:
+                    consecutive_timeouts += 1
+                    # librealsense can leave a pipeline open but stop yielding
+                    # frames after a USB/camera hiccup. Recreate it instead of
+                    # publishing one stale frame forever.
+                    if consecutive_timeouts >= 4:
+                        self._restart_source()
+                        consecutive_timeouts = 0
                     continue
+                consecutive_timeouts = 0
                 calibration = self.source.calibration
                 profile = calibration["depth_profile"]
                 envelope = self.codec.encode(
@@ -392,6 +404,22 @@ class DepthService:
                     self.last_error = f"{type(exc).__name__}: {exc}"
                 time.sleep(0.1)
 
+    def _restart_source(self) -> None:
+        try:
+            self.source.close()
+            if self.stop_event.is_set():
+                return
+            self.source.start()
+            if self._calibration_path:
+                bind_validated_calibration(self.source, self._calibration_path)
+            with self.lock:
+                self.source_restarts += 1
+                self.last_error = "depth source stalled; restarting capture"
+        except Exception as exc:
+            with self.lock:
+                self.last_error = f"depth source restart failed: {type(exc).__name__}: {exc}"
+            self.stop_event.wait(0.5)
+
     def health(self) -> Dict[str, Any]:
         now = time.monotonic()
         with self.lock:
@@ -410,6 +438,7 @@ class DepthService:
                 "sequence": self.latest_sequence,
                 "frame_age_ms": None if age is None else round(age * 1000.0, 3),
                 "frames_captured": self.frames_captured,
+                "source_restarts": self.source_restarts,
                 "transmit_fps": self.transmit_fps,
                 "last_error": self.last_error,
                 "uptime_s": round(now - self.started_at, 3),

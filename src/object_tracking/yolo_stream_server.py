@@ -1077,11 +1077,25 @@ def raw_depth_preview_loop(transport: Any, trajectory_model: str | None) -> None
         },
         None,
     )
+    last_frame_at = time.monotonic()
     while not depth_preview_stop.is_set():
         try:
             frame = transport.receive_depth(timeout_s=0.5)
             if frame is None:
+                if time.monotonic() - last_frame_at >= 1.0:
+                    update_arm_tracking(
+                        {
+                            "enabled": False,
+                            "mode": "observe-only",
+                            "status": "waiting_for_depth",
+                            "reason": "ROS /g1/depth stopped publishing; retaining the last preview frame.",
+                            "trajectory_model": trajectory_model,
+                            "prediction_source": None,
+                        },
+                        None,
+                    )
                 continue
+            last_frame_at = time.monotonic()
             age_ms = max(0.0, (time.monotonic() - frame.receipt_time_s) * 1000.0)
             update_arm_tracking(
                 {
