@@ -1,175 +1,150 @@
-# Roadmap: point the G1 arm toward a plush
+# Roadmap: top-down D435 plush pointing
 
-## Decision
+## Correct physical model
 
-The first milestone is **image-plane pointing**: with a stationary G1 and a
-plush constrained to a marked plane in front of the camera, move the right arm
-toward the plush's detected image position. This is deliberately not a 3D
-reach, grasp, catch, or intercept.
+The D435I looks down at the floor from the upper G1 body. The useful first
+calibration object is therefore the **floor**, not a vertical board.
 
-Use a **taught 2D pointing map**. The operator teaches five to nine safe arm
-postures against known cells on a fixed board. GB10 maps a fresh YOLO plush
-center to an interpolated, bounded right-arm pose and sends it through the
-existing guarded ROS bridge.
+For a plush on the floor, the system needs:
 
-This is the highest-value first route because it needs no hand-measured torso
-XYZ, does not misuse the current unregistered raw Z16 depth, and uses the
-existing GB10 YOLO → `/g1/arm/target` → G1 safety bridge path.
+1. RGB pixel `(u, v)` from YOLO;
+2. D435 depth at that pixel, giving a 3D point in the camera optical frame;
+3. one fixed transform from camera optical coordinates to the robot torso
+   frame;
+4. a conservative arm target/pointing posture derived from that torso point.
 
-## What is deferred
+The RealSense supplies the per-frame range. A ruler is used only to establish
+the camera-to-robot geometry once; it is not used every time the plush moves.
 
-- 3D reach, distance-aware standoff, grasping, catching, and contact;
-- locomotion, torso/head rotation, or tracking outside the camera view;
-- learned 3D trajectory prediction in the command path.
+## The simplest calibration that is still meaningful
 
-The current trajectory model stays observation-only until RGB-aligned depth
-and camera-to-torso geometry are validated.
+Use a few **floor marks** measured relative to the stationary robot, then fit
+camera-to-torso geometry from their observed RGB/depth positions.
 
-## Why this instead of full localization now?
+One measurement is not enough: camera height, forward/back and lateral offset,
+pitch, roll, and yaw all affect the mapping. The floor plane from depth gives
+height/pitch/roll strongly; two or more known floor points establish the
+remaining in-plane position/yaw. In practice, use six marks to fit and four
+separate marks to validate. This is far easier than measuring a moving plush
+in arbitrary 3D space.
 
-| Option | Decision | Reason |
-| --- | --- | --- |
-| Manual plush torso XYZ samples | Later | Operator-heavy and easy to measure inconsistently. |
-| Full wrist-tag hand-eye calibration | Later 3D upgrade | Accurate, but needs multi-pose supervised arm collection. |
-| 2D visual-servo Jacobian | Later upgrade | Useful continuous correction, but needs wrist-tag identification. |
-| **Taught 2D pointing map** | **Now** | Directly maps a plush image location to pre-approved safe poses. |
+## Physical setup
 
-Use a printed AprilTag grid as a repeatable board reference if available. It
-does not require torso measurements in this stage. AprilTag pose estimation
-requires the true tag edge length and camera intrinsics; OpenCV PnP estimates
-pose from known object points and their image projections. Sources:
-[AprilTag ROS documentation](https://docs.ros.org/en/rolling/p/apriltag/) and
-[OpenCV PnP](https://docs.opencv.org/master/d5/d1f/calib3d_solvePnP.html).
+### 1. Keep the robot fixed
 
-## Safety boundary
+- Stand the G1 in its normal stance on a flat floor.
+- Keep it disarmed. Do not move the torso/head or relocate the camera after
+  calibration.
+- Mark the feet with tape so the same standing position can be restored.
+- Use a spotter and e-stop whenever arm commissioning begins later.
 
-- The G1 stays standing and fixed; right arm only; hand open.
-- GB10 provides intent only. G1 remains the only Unitree SDK/hardware owner.
-- Never run `scripts/robot/direct_plushie_track.py` for this workflow.
-- A lost target, stale RGB, confidence drop, outside-board pixel, bridge fault,
-  state mismatch, or operator stop holds/releases the arm; no extrapolation.
-- Initial commands are limited to approved joints and a small envelope around
-  taught poses, with the existing bridge's limits and stop/release behavior.
+### 2. Choose the floor coordinate convention
 
-## Physical setup: do this first
+Use the horizontal floor plane as the initial working surface:
 
-### Materials
+- `x`: forward from the torso/centerline;
+- `y`: robot-left;
+- `z = 0`: floor.
 
-- Rigid matte board, roughly 60–90 cm wide and 45–70 cm high.
-- A clearly drawn 3×3 grid, with cells at least 15 cm apart.
-- Plush, e-stop, and spotter.
-- Optional: AprilTags in the board corners and a small flat wrist marker.
+The exact torso origin can be an approximate point centered between the hip
+axes, vertically projected to the floor. What matters is that every mark uses
+the same origin and axes. For the first arm-toward-plush demo, centimetre-level
+absolute perfection is not required; held-out validation decides whether the
+fit is good enough.
 
-### Setup procedure
+### 3. Make ten tape marks on the visible floor
 
-1. Keep the G1 **disarmed** and standing still.
-2. Place the board about 0.7 m in front of the chest D435I. Adjust it until
-   every cell, the plush, and the right wrist/hand are visible in GB10 RGB.
-3. Tape or clamp the board, then mark its feet. It must not move during
-   teaching or tracking.
-4. Put the plush at the center cell. Confirm YOLO gives a stable box for ten
-   seconds.
-5. If the hand is hard to see, rigidly attach a small matte high-contrast
-   marker or AprilTag to the outside of the wrist/hand.
+Put small pieces of non-reflective tape or paper dots where the camera can see
+them. Write each name and measured `(x, y, 0)` in metres on a note.
 
-### Before any arm motion
+Use these positions as a starting pattern, adjusting to your visible floor:
 
-- YOLO confidence is at least 0.60 for three consecutive frames at each of
-  `center`, `left`, `right`, `up`, and `down`.
-- RGB/timestamps are fresh in the GB10 viewer.
-- The robot remains disarmed and no target is published.
+| Name | Suggested torso-floor coordinate (m) |
+| --- | --- |
+| center | `(0.55, 0.00, 0.00)` |
+| left | `(0.55, 0.25, 0.00)` |
+| right | `(0.55, -0.25, 0.00)` |
+| near | `(0.35, 0.00, 0.00)` |
+| far | `(0.80, 0.00, 0.00)` |
+| high_left | `(0.70, 0.30, 0.00)` |
+| high_right | `(0.70, -0.30, 0.00)` |
+| low_left | `(0.40, 0.20, 0.00)` |
+| low_right | `(0.40, -0.20, 0.00)` |
+| off_axis | `(0.65, 0.12, 0.00)` |
 
-## Stage 1 — guarded arm commissioning
+These are **not** required to be exact numbers. Measure the actual distance
+from your chosen origin/centerline with a tape measure and enter those actual
+numbers. The marks must cover the floor area where the plush will initially
+move.
 
-Complete [`ARM_COMMISSIONING_RUNBOOK.md`](ARM_COMMISSIONING_RUNBOOK.md) on the
-G1 before teaching poses. This records the measured right-arm home pose and
-performs existing tiny supervised sign checks. Do not use guessed joint signs.
+## Calibration capture
 
-Advance only when:
+The existing no-actuation tuner is suitable for this setup. Place the plush on
+each floor mark, draw its box, and enter the mark's measured coordinates:
 
-- the right-arm home profile is saved for this robot;
-- each proposed pointing joint passes a supervised sign check;
-- `/g1/arm/state` is healthy;
-- stop/release behavior has been observed successfully.
+```bash
+# On G1, with the robot disarmed
+cd ~/humanoid-robot-grasping
+python3 scripts/robot/localization_tuner.py runs/localization/floor_poses.json
+```
 
-## Stage 2 — teach five safe pointing poses
+For example, if the plush is on the measured `left` mark:
 
-Start with `center`, `left`, `right`, `up`, and `down`; expand to all nine
-cells after this works. For each point:
+```text
+name torso_x torso_y torso_z metres:
+left 0.55 0.25 0.00
+```
 
-1. Put the plush at the cell center and wait for a stable YOLO lock.
-2. With spotter/e-stop, use guarded commissioning controls to slowly position
-   the open right arm toward the plush. Keep a generous board clearance.
-3. Capture: board ID, plush pixel center, confidence, measured right-arm joint
-   state, optional wrist-marker pixel, and timestamp.
-4. Return to home before teaching the next point.
+The tuner captures the real D435 intrinsics, aligned RGB/depth image, selected
+plush box, and median depth. It never commands the robot.
 
-Reject a sample unless board and target are stable, state is fresh, and only
-approved joints differ from home.
+Fit with six marks and keep four unseen marks for validation:
 
-## Stage 3 — dry-run pointing map
+```bash
+# On GB10
+cd ~/Documents/project
+uv run g1 calibrate localization \
+  runs/localization/floor_poses.json \
+  --fit center left right near far high_left \
+  --validation high_right low_left low_right off_axis \
+  --output runs/localization/floor_report.json
+```
 
-GB10 selects the tracked plush center, then performs bounded interpolation
-between taught poses. It renders a commanded ghost but publishes **no** arm
-target.
+Pass only when the report has median error ≤5 cm, p95 ≤8 cm, and no left/right
+or up/down inversion. If it fails, remeasure the tape marks, ensure the plush
+is centered on each mark, and keep the robot/camera fixed.
 
-Required rules:
+## First arm behaviour
 
-- interpolate only within the convex hull of taught image points;
-- reject image edges and every target outside the board;
-- use a pixel deadband to suppress detection jitter;
-- clamp all joints to taught-pose envelopes and bridge limits;
-- log desired pose, nearest cells, confidence, target age, and rejection.
+After the floor transform validates, do **not** start with grasping or future
+prediction. First run a dry simulation of a pointing target: YOLO + aligned
+depth → camera XYZ → torso XYZ → conservative arm pointing posture/IK. The UI
+must show the measured floor plush point, proposed arm pose, and every
+rejection, while sending no arm target.
 
-Required implementation surfaces:
+Only after dry-run checks and existing arm commissioning pass, enable a fixed
+stance, open-hand, right-arm-only mode. Keep the plush in the calibrated floor
+area. The arm should move toward the target direction but stop short of the
+floor/plush by a conservative standoff distance.
 
-- `src/object_tracking/arm_tracking/pointing_map.py` — schema, interpolation,
-  hull rejection, and allowed-joint envelope;
-- `src/object_tracking/arm_tracking/pointing_runtime.py` — stable-target,
-  freshness, deadband, dry-run telemetry;
-- `src/object_tracking/yolo_stream_server.py` — runtime status;
-- `scripts/gb10/web/unitree_dual_viewer.html` — board, plush/wrist markers,
-  selected cells, desired pose, and rejection reason.
+## Prediction, later
 
-Tests must cover anchors, interpolation, hull/stale/lost-target rejection,
-allowed joint mask, and proof that dry-run never publishes.
+Once measured torso XYZ is valid, log moving plush trajectories. Score a
+150 ms predicted position against the later observed position. Use the
+alpha-beta fallback unless the learned model wins on held-out real trajectories.
+Prediction remains dry-run before it affects arm targets.
 
-### Dry-run acceptance
+## Constraints that stay in force
 
-- 20 static placements, including held-out cells.
-- Desired pose changes in the correct direction every time.
-- No desired joint is outside its envelope.
-- Zero arm targets are published.
+- no locomotion, head/torso rotation, hand closure, catch, or grasp;
+- no targets outside the calibrated floor region or arm workspace;
+- stale RGB/depth, lost plush, low confidence, failed IK, or bridge fault:
+  hold/release, never continue;
+- GB10 computes intent; the G1 ROS bridge remains the only hardware authority.
 
-## Stage 4 — limited live pointing
+## References
 
-After all prior gates pass, use the G1 movement gate with spotter and e-stop.
-Begin center cell only, then neighboring cells.
-
-- 10 Hz maximum target update rate;
-- no more than 1 degree per update until observed behavior is reviewed;
-- confidence ≥0.60, 3–6 stable frames, target age <200 ms;
-- hand open; fixed stance; right arm only;
-- lost target/rejection: hold briefly, then bounded release home.
-
-Success means the wrist/hand moves toward the plush and settles inside the
-agreed image tolerance. It does not need to touch the plush.
-
-## Stage 5 — moving plush and later 3D
-
-Once static pointing works, move the plush slowly within the board plane. Add
-150 ms 2D prediction only after its scored error matches or beats the
-alpha-beta baseline on held-out runs. Keep every predicted pixel inside the
-taught board hull.
-
-For later 3D prediction/interception, replace the taught map with RGB-aligned
-depth and a validated camera-to-torso transform. A wrist-mounted AprilTag grid
-paired with measured arm FK poses is the preferred no-manual-XYZ calibration.
-Depth must be aligned to RGB before a YOLO box uses it; see the
-[RealSense alignment example](https://github.com/IntelRealSense/librealsense/blob/master/wrappers/python/examples/align-depth2color.py).
-
-## Next operator action
-
-Build/place the board and confirm the GB10 viewer can see the plush in the
-five starting cells plus the right wrist/hand. Do not move the arm yet. Then
-complete guarded commissioning before teaching the first pose.
+The RealSense SDK documents depth-to-color alignment and use of stream
+intrinsics for projection/deprojection:
+[RealSense alignment example](https://github.com/IntelRealSense/librealsense/blob/master/wrappers/python/examples/align-depth2color.py) and
+[projection/deprojection overview](https://dev.realsenseai.com/docs/projection-texture-mapping-and-occlusion-with-intel-realsense-depth-cameras/).
