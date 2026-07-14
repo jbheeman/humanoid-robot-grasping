@@ -291,6 +291,7 @@ class ArmTrackingRuntime:
             "pair_skew_ms": round(skew_s * 1000.0, 3),
             "calibration_id": self.calibration.calibration_id,
             "target_sequence": self.target_sequence,
+            "target_age_ms": round(max(0.0, (time.monotonic() - rgb_time) * 1000.0), 3),
         }
         arm_state = self._arm_state()
         base_status["visualization"] = self._visualization_context(arm_state)
@@ -326,6 +327,8 @@ class ArmTrackingRuntime:
             self.filter.reset()
             self._reject(base_status, "target_lost", colormap)
             return
+        base_status["detector_confidence"] = round(float(selected.get("confidence", 0.0)), 5)
+        base_status["depth_valid"] = False
         rgb_shape = snapshot.get("rgb_shape")
         if not rgb_shape:
             self._reject(base_status, "rgb_unavailable", colormap)
@@ -343,6 +346,12 @@ class ArmTrackingRuntime:
         if estimate is None or not estimate.is_certain:
             self._reject(base_status, "depth_uncertain", colormap)
             return
+        base_status.update(
+            {
+                "depth_valid": True,
+                "median_aligned_depth_m": round(estimate.depth_m, 5),
+            }
+        )
         optical = deproject_pixel(
             estimate.pixel_xy, estimate.depth_m, self.calibration.rgb_intrinsics
         )
@@ -437,6 +446,12 @@ class ArmTrackingRuntime:
         if not ik.ok or ik.q_rad is None:
             self._reject(base_status, f"ik_{ik.reason}", colormap)
             return
+        base_status["predicted_bounded_arm_command_rad"] = [
+            round(float(value), 6) for value in ik.q_rad
+        ]
+        base_status["processing_latency_ms"] = round(
+            max(0.0, (time.monotonic() - rgb_time) * 1000.0), 3
+        )
         robot_visual = arm_state.get("visualization") or {}
         measured_body = robot_visual.get("measured_pose_rad")
         if isinstance(measured_body, list) and len(measured_body) == 29:

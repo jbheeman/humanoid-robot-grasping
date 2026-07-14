@@ -49,6 +49,9 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("calibrate", "camera"): Route(
         "module", "object_tracking.arm_tracking.calibration_cli", "camera calibration workflow"
     ),
+    ("calibrate", "localization"): Route(
+        "module", "object_tracking.localization_cli", "validate paired D435I RGB/depth localization"
+    ),
     ("data", "augment"): Route(
         "module", "object_tracking.augment_plushie_dataset", "train-only dataset augmentation"
     ),
