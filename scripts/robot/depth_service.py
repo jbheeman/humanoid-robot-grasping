@@ -44,6 +44,7 @@ class RealSenseDepthSource:
         color_width: int = 960,
         color_height: int = 540,
         color_fps: int = 60,
+        enable_color: bool = False,
         registered_to_output_rgb: bool = False,
     ) -> None:
         self.width = width
@@ -53,6 +54,7 @@ class RealSenseDepthSource:
         self.color_width = color_width
         self.color_height = color_height
         self.color_fps = color_fps
+        self.enable_color = enable_color
         self.registered_to_output_rgb = registered_to_output_rgb
         self.pipeline: Any = None
         self.align: Any = None
@@ -84,18 +86,27 @@ class RealSenseDepthSource:
         config = rs.config()
         config.enable_device(self.serial)
         config.enable_stream(rs.stream.depth, self.width, self.height, rs.format.z16, self.fps)
-        config.enable_stream(
-            rs.stream.color,
-            self.color_width,
-            self.color_height,
-            rs.format.bgr8,
-            self.color_fps,
-        )
+        if self.enable_color:
+            config.enable_stream(
+                rs.stream.color,
+                self.color_width,
+                self.color_height,
+                rs.format.bgr8,
+                self.color_fps,
+            )
         self.pipeline = rs.pipeline(context)
         profile = self.pipeline.start(config)
         depth_profile = profile.get_stream(rs.stream.depth).as_video_stream_profile()
-        color_profile = profile.get_stream(rs.stream.color).as_video_stream_profile()
-        intrinsics = color_profile.get_intrinsics()
+        color_profile = (
+            profile.get_stream(rs.stream.color).as_video_stream_profile()
+            if self.enable_color
+            else None
+        )
+        intrinsics = (
+            color_profile.get_intrinsics()
+            if color_profile is not None
+            else depth_profile.get_intrinsics()
+        )
         depth_sensor = profile.get_device().first_depth_sensor()
         depth_scale = float(depth_sensor.get_depth_scale())
 
@@ -126,20 +137,24 @@ class RealSenseDepthSource:
 
         self.calibration = {
             "schema_version": 1,
-            "source": "librealsense_aligned_color_depth",
+            "source": (
+                "librealsense_aligned_color_depth"
+                if self.enable_color
+                else "librealsense_depth_only"
+            ),
             "aligned_to_rgb": self.registered_to_output_rgb,
             "registration_validated": self.registered_to_output_rgb,
             "camera_serial": self.serial,
             "firmware": device.get_info(rs.camera_info.firmware_version),
             "depth_profile": {
-                "width": color_profile.width(),
-                "height": color_profile.height(),
+                "width": (color_profile.width() if color_profile is not None else depth_profile.width()),
+                "height": (color_profile.height() if color_profile is not None else depth_profile.height()),
                 "fps": self.fps,
                 "format": "z16",
                 "intrinsics": _intrinsics_dict(intrinsics),
                 "depth_scale": depth_scale,
             },
-            "color_profile": {
+            "color_profile": None if color_profile is None else {
                 "width": color_profile.width(),
                 "height": color_profile.height(),
                 "fps": self.color_fps,
@@ -147,9 +162,13 @@ class RealSenseDepthSource:
                 "intrinsics": _intrinsics_dict(intrinsics),
             },
             "factory_color_profiles": color_profiles,
-            "calibration_id": f"d435i-aligned-{self.serial}-{color_profile.width()}x{color_profile.height()}",
+            "calibration_id": (
+                f"d435i-aligned-{self.serial}-{color_profile.width()}x{color_profile.height()}"
+                if color_profile is not None
+                else f"factory-{self.serial}-{depth_profile.width()}x{depth_profile.height()}"
+            ),
         }
-        self.align = rs.align(rs.stream.color)
+        self.align = rs.align(rs.stream.color) if self.enable_color else None
         self.spatial = rs.spatial_filter()
         self.temporal = rs.temporal_filter()
         self.hole_filling = rs.hole_filling_filter()
@@ -161,12 +180,10 @@ class RealSenseDepthSource:
             frames = self.pipeline.wait_for_frames(timeout_ms=max(1, int(timeout_s * 1000)))
         except RuntimeError:
             return None
-        if self.align is None:
-            raise RuntimeError("RealSense alignment is not started")
-        aligned = self.align.process(frames)
+        aligned = self.align.process(frames) if self.align is not None else frames
         depth = aligned.get_depth_frame()
-        color = aligned.get_color_frame()
-        if not depth or not color:
+        color = aligned.get_color_frame() if self.enable_color else None
+        if not depth or (self.enable_color and not color):
             return None
         for filter_ in (self.spatial, self.temporal, self.hole_filling):
             depth = filter_.process(depth)
@@ -175,7 +192,7 @@ class RealSenseDepthSource:
             z16=z16,
             sensor_timestamp_ms=float(depth.get_timestamp()),
             timestamp_domain=str(depth.get_frame_timestamp_domain()),
-            color_bgr=np.asanyarray(color.get_data()).copy(),
+            color_bgr=None if color is None else np.asanyarray(color.get_data()).copy(),
         )
 
     def close(self) -> None:

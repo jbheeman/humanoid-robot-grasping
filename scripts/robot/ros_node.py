@@ -273,6 +273,7 @@ class RobotRosNode:
             fps=self.args.depth_capture_fps,
             serial=self.args.depth_serial,
             color_fps=self.args.realsense_rgb_fps,
+            enable_color=bool(self.args.realsense_rgb_target),
             registered_to_output_rgb=bool(self.args.realsense_rgb_target),
         )
         ros = RosAlignedDepthSource(
