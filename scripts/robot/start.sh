@@ -14,7 +14,10 @@ RGB_MODE="${RGB_MODE:-unitree}"
 ALLOW_MOVEMENT="${ALLOW_MOVEMENT:-0}"
 EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-}"
 G1_ROBOT_ID="${G1_ROBOT_ID:-}"
-DEPTH_SOURCE="${DEPTH_SOURCE:-auto}"
+# The robot's RealSense exposes depth directly but not a usable ROS-aligned
+# RGB stream. Prefer that known-good source; operators can explicitly request
+# --depth-source ros when an aligned sensor_msgs/Image pipeline is present.
+DEPTH_SOURCE="${DEPTH_SOURCE:-librealsense}"
 ROS_IMAGE_TOPIC="${ROS_IMAGE_TOPIC:-/camera/camera/depth/image_rect_raw}"
 ROS_CAMERA_INFO_TOPIC="${ROS_CAMERA_INFO_TOPIC:-/camera/camera/depth/camera_info}"
 ROS_DEPTH_SCALE="${ROS_DEPTH_SCALE:-0.001}"

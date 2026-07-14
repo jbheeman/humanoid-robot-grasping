@@ -64,7 +64,7 @@ def test_robot_role_flags_configure_existing_launcher() -> None:
     assert forwarded == []
     assert env["CLIENT_IP"] == "192.168.0.66"
     assert env["ROBOT_INTERFACE"] == "wlan0"
-    assert env["ROS_DOMAIN_ID"] == "7"
+    assert env["G1_PROJECT_ROS_DOMAIN_ID"] == "7"
 
 
 def test_robot_role_uses_lab_gb10_default() -> None:

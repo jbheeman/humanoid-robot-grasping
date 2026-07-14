@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ROLE=""
 PEER=""
 INTERFACE="auto"
-DOMAIN_ID="${ROS_DOMAIN_ID:-0}"
+DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
 
 usage() {
