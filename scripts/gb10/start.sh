@@ -40,7 +40,9 @@ RESEARCH_HZ="${RESEARCH_HZ:-5}"
 RESEARCH_ROOT="${RESEARCH_ROOT:-runs/research/arm_tracking}"
 RESEARCH_LABEL="${RESEARCH_LABEL:-}"
 RESEARCH_NOTES="${RESEARCH_NOTES:-}"
-TRAJECTORY_MODEL="${TRAJECTORY_MODEL:-}"
+# Compact 3D GRU forecaster trained on synthetic trajectories. Override only
+# to compare a new checkpoint; the launcher should exercise this by default.
+TRAJECTORY_MODEL="${TRAJECTORY_MODEL:-${ROOT_DIR}/models/plushie_detector/trajectory_gru_synth_pretrain_17h/best.pt}"
 GB10_LAN_IP="${GB10_LAN_IP:-}"
 
 if [[ -z "${ROBOT_HOST}" ]]; then
