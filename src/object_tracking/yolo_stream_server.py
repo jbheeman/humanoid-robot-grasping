@@ -1057,11 +1057,11 @@ def update_arm_tracking(status: dict[str, Any], depth_jpeg: bytes | None) -> Non
 
 
 def raw_depth_preview_loop(transport: Any, trajectory_model: str | None) -> None:
-    """Render the robot's Z16 topic without treating it as RGB-aligned depth.
+    """Render the robot's Z16 topic without inventing torso-frame localization.
 
-    This is intentionally an observe-only consumer.  It makes the hardware
-    stream debuggable before calibration, but never fabricates a 3D object
-    position or runs the learned forecaster on unregistered data.
+    This is intentionally an observe-only consumer. It reports factory D435
+    colour registration separately from the still-required camera-to-torso
+    calibration, and never fabricates a robot-frame position.
     """
 
     from object_tracking.arm_tracking.runtime import depth_colormap_jpeg
@@ -1097,15 +1097,24 @@ def raw_depth_preview_loop(transport: Any, trajectory_model: str | None) -> None
                 continue
             last_frame_at = time.monotonic()
             age_ms = max(0.0, (time.monotonic() - frame.receipt_time_s) * 1000.0)
+            if frame.registered_to_rgb:
+                status = "aligned_depth_preview"
+                reason = (
+                    "D435 RGB-aligned depth is live. Pixel-level 3D is ready; "
+                    "camera-to-torso calibration is still required before IK or prediction."
+                )
+            else:
+                status = "depth_preview"
+                reason = (
+                    "Raw Z16 depth is live. It is not RGB-registered, so the 3D "
+                    "position predictor is deliberately inactive until calibration."
+                )
             update_arm_tracking(
                 {
                     "enabled": False,
                     "mode": "observe-only",
-                    "status": "depth_preview",
-                    "reason": (
-                        "Raw Z16 depth is live. It is not RGB-registered, so the 3D "
-                        "position predictor is deliberately inactive until calibration."
-                    ),
+                    "status": status,
+                    "reason": reason,
                     "depth_sequence": frame.sequence,
                     "depth_age_ms": round(age_ms, 3),
                     "depth_scale_m_per_unit": frame.depth_scale,
