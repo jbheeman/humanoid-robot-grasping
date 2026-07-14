@@ -10,7 +10,8 @@ if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
 fi
 
 MODEL="${MODEL:-${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.engine}"
-ROBOT_HOST="${ROBOT_HOST:-}"
+#ROBOT_HOST="${ROBOT_HOST:-}"
+ROBOT_HOST="192.168.0.213"
 ROS_INTERFACE="${ROS_INTERFACE:-auto}"
 # The robot project bridge runs in domain 42. Keep it separate from Unitree's
 # native motor DDS domain 0 and match it by default for ROS discovery.
