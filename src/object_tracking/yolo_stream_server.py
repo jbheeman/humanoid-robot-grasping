@@ -54,6 +54,7 @@ DEFAULT_PIPELINE = os.environ.get("G1_CAMERA_PIPELINE") or unitree_g1_videohub_p
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GB10_WEB_DIR = REPO_ROOT / "scripts" / "gb10" / "web"
 COMMISSIONING_TEMPLATE = REPO_ROOT / "scripts" / "robot" / "web" / "arm_commissioning.html"
+TABLETOP_CALIBRATION_PATH = REPO_ROOT / "runs" / "localization" / "tabletop-rectangle.json"
 
 
 @dataclass
@@ -753,6 +754,70 @@ def health() -> dict[str, object]:
                 else research_session.session_report()
             ),
         }
+
+
+_TABLETOP_CORNER_ORDER = ("near_left", "near_right", "far_right", "far_left")
+
+
+def _validate_tabletop_calibration(payload: dict[str, Any]) -> dict[str, Any]:
+    try:
+        width_m = float(payload["width_m"])
+        depth_m = float(payload["depth_m"])
+        image_width = int(payload["image_width"])
+        image_height = int(payload["image_height"])
+        corners = payload["corners"]
+    except (KeyError, TypeError, ValueError) as exc:
+        raise HTTPException(status_code=422, detail="invalid tabletop calibration payload") from exc
+    if not (0.05 <= width_m <= 5.0 and 0.05 <= depth_m <= 5.0):
+        raise HTTPException(status_code=422, detail="tabletop dimensions must be between 5 cm and 5 m")
+    if image_width <= 0 or image_height <= 0:
+        raise HTTPException(status_code=422, detail="camera frame dimensions must be positive")
+    if not isinstance(corners, list) or len(corners) != len(_TABLETOP_CORNER_ORDER):
+        raise HTTPException(status_code=422, detail="exactly four tabletop corners are required")
+    validated: list[dict[str, Any]] = []
+    for expected, item in zip(_TABLETOP_CORNER_ORDER, corners):
+        if not isinstance(item, dict) or item.get("name") != expected:
+            raise HTTPException(status_code=422, detail="corners must be near-left, near-right, far-right, far-left")
+        try:
+            x = float(item["x"])
+            y = float(item["y"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise HTTPException(status_code=422, detail=f"invalid {expected} corner") from exc
+        if not (0.0 <= x <= image_width and 0.0 <= y <= image_height):
+            raise HTTPException(status_code=422, detail=f"{expected} is outside the camera frame")
+        validated.append({"name": expected, "x": round(x, 3), "y": round(y, 3)})
+    return {
+        "schema_version": 1,
+        "camera_frame": {"width": image_width, "height": image_height},
+        "tabletop": {"width_m": width_m, "depth_m": depth_m},
+        "corner_order": list(_TABLETOP_CORNER_ORDER),
+        "corners_px": validated,
+    }
+
+
+@app.get("/api/v1/tabletop-calibration")
+def tabletop_calibration_get() -> dict[str, Any]:
+    if not TABLETOP_CALIBRATION_PATH.is_file():
+        return {"configured": False}
+    try:
+        value = json.loads(TABLETOP_CALIBRATION_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=500, detail=f"could not read tabletop calibration: {exc}") from exc
+    return {"configured": True, "calibration": value}
+
+
+@app.post("/api/v1/tabletop-calibration")
+def tabletop_calibration_save(payload: dict[str, Any]) -> dict[str, Any]:
+    value = _validate_tabletop_calibration(payload)
+    value["saved_at"] = datetime.now().astimezone().isoformat(timespec="seconds")
+    try:
+        TABLETOP_CALIBRATION_PATH.parent.mkdir(parents=True, exist_ok=True)
+        temporary = TABLETOP_CALIBRATION_PATH.with_suffix(".tmp")
+        temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        temporary.replace(TABLETOP_CALIBRATION_PATH)
+    except OSError as exc:
+        raise HTTPException(status_code=500, detail=f"could not save tabletop calibration: {exc}") from exc
+    return {"ok": True, "path": str(TABLETOP_CALIBRATION_PATH), "calibration": value}
 
 
 @app.get("/snapshot.jpg")

@@ -142,6 +142,18 @@
     .panel-meta { color: var(--muted); font: 12px var(--mono); }
     .stream { display: block; width: 100%; aspect-ratio: 16 / 9; object-fit: contain; background: #000; }
     .depth-stream { image-rendering: auto; }
+    .rgb-stage { position: relative; background: #000; }
+    .rgb-stage.calibrating { cursor: crosshair; }
+    .tabletop-overlay { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
+    .tabletop-overlay circle { fill: var(--accent); stroke: #07131a; stroke-width: 0.7; }
+    .tabletop-overlay text { fill: var(--text); font: 2.6px var(--sans); paint-order: stroke; stroke: #07131a; stroke-width: 0.7px; }
+    .tabletop-setup { margin-top: 12px; }
+    .tabletop-layout { display: grid; grid-template-columns: minmax(270px, 0.8fr) minmax(320px, 1.2fr); gap: 12px; padding: 12px; }
+    .tabletop-copy { margin: 0; max-width: 58ch; color: var(--muted); }
+    .tabletop-fields { display: grid; grid-template-columns: repeat(2, minmax(110px, 1fr)); gap: 8px; align-content: start; }
+    .tabletop-fields label { display: grid; gap: 4px; }
+    .tabletop-actions { grid-column: 1 / -1; display: flex; flex-wrap: wrap; gap: 8px; }
+    .tabletop-status { grid-column: 1 / -1; margin: 0; color: var(--muted); font: 12px var(--mono); }
 
     .metric-strip {
       display: flex;
@@ -234,6 +246,7 @@
       .metric-value { font-size: 16px; }
       .gate-list { grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .gate { border-bottom: 1px solid var(--line); }
+      .tabletop-layout { grid-template-columns: 1fr; }
     }
 
     @media (prefers-reduced-motion: reduce) {
@@ -284,12 +297,32 @@
     <section class="visual-grid" aria-label="Live sensor views">
       <article id="forecastPanel" class="panel">
         <div class="panel-header"><h2>Annotated RGB</h2><span id="rgbMeta" class="panel-meta">waiting for frames</span></div>
-        <img id="mainStream" class="stream" alt="Live annotated RGB stream from the G1 camera" />
+        <div id="rgbStage" class="rgb-stage">
+          <img id="mainStream" class="stream" src="/snapshot.jpg" alt="Live annotated RGB stream from the G1 camera" />
+          <svg id="tabletopOverlay" class="tabletop-overlay" viewBox="0 0 100 100" preserveAspectRatio="none" aria-hidden="true"></svg>
+        </div>
       </article>
       <article class="panel">
         <div class="panel-header"><h2>RealSense raw depth</h2><span id="depthMeta" class="panel-meta">waiting for depth</span></div>
-        <img id="depthImage" class="stream depth-stream" alt="Latest hardware depth colormap" />
+        <img id="depthImage" class="stream depth-stream" src="/depth.jpg" alt="Latest hardware depth colormap" />
       </article>
+    </section>
+
+    <section class="panel tabletop-setup" aria-labelledby="tabletopTitle">
+      <div class="panel-header"><h2 id="tabletopTitle">Tabletop setup</h2><span id="tabletopSaved" class="panel-meta">not configured</span></div>
+      <div class="tabletop-layout">
+        <p class="tabletop-copy">Your tape rectangle is prefilled as 65 cm wide × 40 cm deep. Press <strong>Set four corners</strong>, then click the tape intersections on the RGB image in the order shown. This saves a tabletop pixel map only; it never enables arm motion.</p>
+        <div class="tabletop-fields">
+          <label>Width, left ↔ right (cm)<input id="tabletopWidth" type="number" value="65" min="5" max="500" step="0.1" /></label>
+          <label>Depth, near ↔ far (cm)<input id="tabletopDepth" type="number" value="40" min="5" max="500" step="0.1" /></label>
+          <div class="tabletop-actions">
+            <button id="startTabletop" class="button" type="button">Set four corners</button>
+            <button id="clearTabletop" class="button" type="button">Clear points</button>
+            <button id="saveTabletop" class="button" type="button" disabled>Save tabletop map</button>
+          </div>
+          <p id="tabletopStatus" class="tabletop-status" aria-live="polite">Click “Set four corners” to begin.</p>
+        </div>
+      </div>
     </section>
 
     <section class="panel robot-visual" aria-labelledby="robotVisualTitle">
@@ -492,6 +525,85 @@
 
     function endpoint(path) { return `${apiBase}${path}`; }
 
+    const TABLETOP_CORNERS = ["near_left", "near_right", "far_right", "far_left"];
+    const TABLETOP_LABELS = ["Near-left", "Near-right", "Far-right", "Far-left"];
+    let tabletopCorners = [];
+    let tabletopCapturing = false;
+
+    function tabletopImageSize() {
+      const image = byId("mainStream");
+      return image.naturalWidth && image.naturalHeight
+        ? {width: image.naturalWidth, height: image.naturalHeight}
+        : null;
+    }
+
+    function tabletopPrompt() {
+      const next = TABLETOP_LABELS[tabletopCorners.length];
+      return next ? `Click ${next} on the tape intersection (${tabletopCorners.length + 1} of 4).` : "All four corners captured. Save the tabletop map.";
+    }
+
+    function renderTabletop() {
+      const overlay = byId("tabletopOverlay");
+      overlay.replaceChildren();
+      tabletopCorners.forEach((corner, index) => {
+        const group = document.createElementNS("http://www.w3.org/2000/svg", "g");
+        const dot = document.createElementNS("http://www.w3.org/2000/svg", "circle");
+        dot.setAttribute("cx", String(corner.u * 100)); dot.setAttribute("cy", String(corner.v * 100)); dot.setAttribute("r", "1.3");
+        const label = document.createElementNS("http://www.w3.org/2000/svg", "text");
+        label.setAttribute("x", String(corner.u * 100 + 1.8)); label.setAttribute("y", String(corner.v * 100 - 1.8));
+        label.textContent = `${index + 1}. ${TABLETOP_LABELS[index]}`;
+        group.append(dot, label); overlay.append(group);
+      });
+      byId("rgbStage").classList.toggle("calibrating", tabletopCapturing);
+      byId("saveTabletop").disabled = tabletopCorners.length !== 4;
+      setText("tabletopStatus", tabletopPrompt());
+    }
+
+    function clearTabletop() {
+      tabletopCorners = [];
+      tabletopCapturing = false;
+      renderTabletop();
+    }
+
+    async function loadTabletop() {
+      const result = await json("/api/v1/tabletop-calibration");
+      if (!result.configured) return;
+      const calibration = result.calibration;
+      const frame = calibration.camera_frame;
+      const corners = calibration.corners_px;
+      if (!frame || !Array.isArray(corners) || corners.length !== 4) return;
+      byId("tabletopWidth").value = Number(calibration.tabletop?.width_m || 0.65) * 100;
+      byId("tabletopDepth").value = Number(calibration.tabletop?.depth_m || 0.40) * 100;
+      tabletopCorners = corners.map((corner) => ({
+        u: Number(corner.x) / Number(frame.width), v: Number(corner.y) / Number(frame.height),
+      }));
+      renderTabletop();
+      setText("tabletopSaved", `saved ${calibration.saved_at || ""}`.trim());
+    }
+
+    async function saveTabletop() {
+      const size = tabletopImageSize();
+      if (!size || tabletopCorners.length !== 4) throw new Error("four corners and a live RGB frame are required");
+      const payload = {
+        width_m: Number(byId("tabletopWidth").value) / 100,
+        depth_m: Number(byId("tabletopDepth").value) / 100,
+        image_width: size.width,
+        image_height: size.height,
+        corners: tabletopCorners.map((corner, index) => ({
+          name: TABLETOP_CORNERS[index], x: corner.u * size.width, y: corner.v * size.height,
+        })),
+      };
+      const response = await fetch(endpoint("/api/v1/tabletop-calibration"), {
+        method: "POST", headers: {"Content-Type": "application/json"}, body: JSON.stringify(payload),
+      });
+      if (!response.ok) throw new Error(await response.text());
+      const result = await response.json();
+      tabletopCapturing = false;
+      renderTabletop();
+      setText("tabletopSaved", `saved ${result.calibration.saved_at}`);
+      setText("tabletopStatus", "Saved. This map is ready for dry-run tabletop localization.");
+    }
+
     function applyStream() {
       streamUrl = byId("mainInput").value.trim() || streamUrl;
       apiBase = streamUrl.replace(/\/stream\.mjpg(?:\?.*)?$/, "").replace(/\/$/, "");
@@ -671,10 +783,24 @@
     }
 
     byId("applyBtn").addEventListener("click", () => { applyStream(); refresh(); });
+    byId("startTabletop").addEventListener("click", () => { tabletopCapturing = true; tabletopCorners = []; renderTabletop(); });
+    byId("clearTabletop").addEventListener("click", clearTabletop);
+    byId("saveTabletop").addEventListener("click", () => saveTabletop().catch((error) => setText("tabletopStatus", `Save failed: ${error.message}`)));
+    byId("rgbStage").addEventListener("click", (event) => {
+      if (!tabletopCapturing || tabletopCorners.length >= 4) return;
+      const rect = byId("mainStream").getBoundingClientRect();
+      if (!rect.width || !rect.height || !tabletopImageSize()) return;
+      const u = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+      const v = Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height));
+      tabletopCorners.push({u, v});
+      if (tabletopCorners.length === 4) tabletopCapturing = false;
+      renderTabletop();
+    });
     byId("mainStream").addEventListener("load", () => setText("connectionText", `Live stream ${streamUrl}`));
     byId("mainStream").addEventListener("error", () => setText("connectionText", `Stream unavailable ${streamUrl}`));
     byId("mainInput").value = streamUrl;
     applyStream();
+    loadTabletop().catch(() => {});
     refresh();
     window.setInterval(refresh, 1000);
     window.setInterval(refreshDepthPreview, 100);

@@ -81,6 +81,38 @@ def test_single_server_serves_viewer_visual_assets_and_tokenless_commissioning()
     assert "right_wrist_roll" not in commissioning.text
 
 
+def test_tabletop_calibration_saves_ordered_tape_corners(tmp_path) -> None:
+    previous = yolo_stream_server.TABLETOP_CALIBRATION_PATH
+    yolo_stream_server.TABLETOP_CALIBRATION_PATH = tmp_path / "tabletop.json"
+    try:
+        client = TestClient(yolo_stream_server.app)
+        assert client.get("/api/v1/tabletop-calibration").json() == {"configured": False}
+        response = client.post(
+            "/api/v1/tabletop-calibration",
+            json={
+                "width_m": 0.65,
+                "depth_m": 0.40,
+                "image_width": 960,
+                "image_height": 540,
+                "corners": [
+                    {"name": "near_left", "x": 100, "y": 400},
+                    {"name": "near_right", "x": 800, "y": 400},
+                    {"name": "far_right", "x": 760, "y": 100},
+                    {"name": "far_left", "x": 140, "y": 100},
+                ],
+            },
+        )
+        assert response.status_code == 200
+        saved = response.json()["calibration"]
+        assert saved["tabletop"] == {"width_m": 0.65, "depth_m": 0.4}
+        assert [corner["name"] for corner in saved["corners_px"]] == [
+            "near_left", "near_right", "far_right", "far_left"
+        ]
+        assert client.get("/api/v1/tabletop-calibration").json()["configured"] is True
+    finally:
+        yolo_stream_server.TABLETOP_CALIBRATION_PATH = previous
+
+
 def test_ui_control_routes_forward_only_to_injected_ros_transport() -> None:
     previous = yolo_stream_server.tracking_transport
     transport = FakeRosTransport()
