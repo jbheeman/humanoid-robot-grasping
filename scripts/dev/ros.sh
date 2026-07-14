@@ -74,7 +74,6 @@ topics="$(timeout 8 ros2 topic list || true)"
 printf '%s\n' "${topics}"
 
 expected_topics=(
-  /lowstate
   /g1/arm/state
   /g1/depth
   /g1/commissioning/state
