@@ -269,6 +269,8 @@
         <h2 id="readinessTitle">Arm-only tracking gate</h2>
         <p>Observe first. This console never enables motion; it shows whether the GB10 can safely form a fresh pointing candidate for the G1 bridge.</p>
         <span id="armOnlyGate" class="readiness-state">Waiting for live telemetry</span>
+        <span id="modelStatus" class="panel-meta">Trajectory model status is loading</span>
+        <div class="actions"><a class="button" href="#forecastPanel">View 3D forecast details</a></div>
       </div>
       <div class="gate-list" aria-label="Arm tracking readiness checks">
         <div id="cameraGate" class="gate"><span class="gate-label">1 · Camera + YOLO</span><span class="gate-value">Waiting</span><span class="gate-detail">live plush detection</span></div>
@@ -280,7 +282,7 @@
     </section>
 
     <section class="visual-grid" aria-label="Live sensor views">
-      <article class="panel">
+      <article id="forecastPanel" class="panel">
         <div class="panel-header"><h2>Annotated RGB</h2><span id="rgbMeta" class="panel-meta">waiting for frames</span></div>
         <img id="mainStream" class="stream" alt="Live annotated RGB stream from the G1 camera" />
       </article>
@@ -455,10 +457,16 @@
       return `${evaluation.verdict || "collecting"}: learned ${number(learned.mean_error_m, 3, " m")} / fallback ${number(fallback.mean_error_m, 3, " m")}`;
     }
 
+    function shortPath(value) {
+      return typeof value === "string" && value ? value.split("/").pop() : "no checkpoint";
+    }
+
     function renderReadiness(health, tracking) {
       const hasDetection = Number(health.yolo_count) > 0 && tracking.track_id !== undefined && tracking.track_id !== null;
       const depthReady = tracking.depth_valid === true;
-      const calibrated = Boolean(tracking.calibration_id);
+      const calibrationId = String(tracking.calibration_id || "");
+      const calibrated = Boolean(calibrationId) && !calibrationId.startsWith("factory-");
+      const modelLoaded = Boolean(tracking.trajectory_model) && !tracking.trajectory_model_error;
       const predictionReady = Array.isArray(tracking.predicted_xyz_m);
       const ikReady = tracking.ik_status === "ok";
       const targetSent = tracking.status === "target_sent";
@@ -467,8 +475,8 @@
 
       setGate("cameraGate", hasDetection ? "Ready" : "Waiting", hasDetection ? `track ${tracking.track_id}` : "live plush detection", hasDetection ? "good" : "warn");
       setGate("depthGate", depthReady ? "Valid" : "Blocked", depthReady ? `${number(tracking.median_aligned_depth_m, 3, " m")} median` : (tracking.reason || "needed for 3D target"), depthReady ? "good" : "warn");
-      setGate("calibrationGate", calibrated ? "Loaded" : "Required", calibrated ? tracking.calibration_id : "validated optical → torso", calibrated ? "good" : "warn");
-      setGate("predictionGate", predictionReady ? "Forecasting" : "Collecting", predictionReady ? predictionSummary(tracking.prediction_evaluation) : "needs calibrated 3D history", predictionReady ? "good" : "warn");
+      setGate("calibrationGate", calibrated ? "Validated" : (calibrationId ? "Factory only" : "Required"), calibrated ? calibrationId : "sensor metadata is not optical → torso validation", calibrated ? "good" : "warn");
+      setGate("predictionGate", predictionReady ? "Forecasting" : (modelLoaded ? "Model loaded" : "No model"), predictionReady ? predictionSummary(tracking.prediction_evaluation) : (modelLoaded ? `${shortPath(tracking.trajectory_model)} awaits valid 3D history` : "configure a trajectory checkpoint"), predictionReady ? "good" : "warn");
       setGate("commandGate", targetSent ? "Sent" : mode === "execute" ? "Held" : "Dry-run", targetSent ? `ROS sequence ${tracking.target_sequence ?? "—"}` : (candidateReady ? "candidate only, no target sent" : (tracking.reason || "no target is sent")), targetSent ? "good" : mode === "execute" ? "warn" : "good");
 
       const overall = targetSent ? ["good", "ROS target is reaching the guarded bridge"]
@@ -477,6 +485,9 @@
       const gate = byId("armOnlyGate");
       gate.className = `readiness-state ${overall[0]}`;
       gate.textContent = overall[1];
+      setText("modelStatus", modelLoaded
+        ? `Trajectory model loaded: ${shortPath(tracking.trajectory_model)}. It is held until calibrated 3D observations exist.`
+        : `Trajectory model unavailable: ${tracking.trajectory_model_error || "no checkpoint configured"}`);
     }
 
     function endpoint(path) { return `${apiBase}${path}`; }
