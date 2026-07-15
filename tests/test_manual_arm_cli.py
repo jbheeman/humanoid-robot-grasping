@@ -1,9 +1,12 @@
+import math
+
 import pytest
 
 from object_tracking.manual_arm_cli import (
     RemoteArmError,
     MAX_IK_WAYPOINT_DISTANCE_M,
     MAX_IK_WAYPOINT_JOINT_DELTA_RAD,
+    MAX_IK_CARTESIAN_OFFSET_M,
     MAX_MANUAL_TOTAL_DELTA_RAD,
     _arming_failure,
     _arming_status_summary,
@@ -67,6 +70,7 @@ def test_move_defaults_to_guarded_right_shoulder_cycle() -> None:
     assert args.delta == 0.05
     assert args.duration == 2.0
     assert args.no_return is False
+    assert args.stay is False
     assert MAX_IK_WAYPOINT_DISTANCE_M == pytest.approx(0.01)
     assert MAX_IK_WAYPOINT_JOINT_DELTA_RAD > MAX_MANUAL_TOTAL_DELTA_RAD
 
@@ -107,11 +111,18 @@ def test_ik_accepts_small_pelvis_frame_offset() -> None:
     assert args.trace_output.as_posix() == "runs/arm/trace.json"
 
 
+def test_ik_accepts_visible_full_arm_offset() -> None:
+    args = build_parser().parse_args(["ik", "--dy", "-0.075", "--dz", "0.1"])
+    _validate_args(args)
+    assert math.hypot(args.dy, args.dz) == pytest.approx(0.125)
+    assert MAX_IK_CARTESIAN_OFFSET_M == pytest.approx(0.5)
+
+
 def test_ik_rejects_zero_or_large_offset() -> None:
     with pytest.raises(RemoteArmError, match="offset norm"):
         _validate_args(build_parser().parse_args(["ik"]))
     with pytest.raises(RemoteArmError, match="offset norm"):
-        _validate_args(build_parser().parse_args(["ik", "--dx", "0.051"]))
+        _validate_args(build_parser().parse_args(["ik", "--dx", "0.501"]))
 
 
 def test_move_allows_visible_delta_split_into_guarded_steps() -> None:

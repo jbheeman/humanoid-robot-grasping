@@ -29,6 +29,7 @@ MAX_ROBOT_STEP_RAD = 0.05
 MAX_MANUAL_TOTAL_DELTA_RAD = 0.20
 MAX_IK_WAYPOINT_DISTANCE_M = 0.01
 MAX_IK_WAYPOINT_JOINT_DELTA_RAD = 0.35
+MAX_IK_CARTESIAN_OFFSET_M = 0.50
 
 
 class RemoteArmError(RuntimeError):
@@ -302,6 +303,7 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--duration", type=float, default=2.0)
     move.add_argument("--hold", type=float, default=0.5)
     move.add_argument("--no-return", action="store_true")
+    move.add_argument("--stay", action="store_true", help="hold until Ctrl-C")
     move.add_argument("--trace-output", type=Path)
     ik = commands.add_parser(
         "ik",
@@ -313,6 +315,7 @@ def build_parser() -> argparse.ArgumentParser:
     ik.add_argument("--duration", type=float, default=2.0)
     ik.add_argument("--hold", type=float, default=2.0)
     ik.add_argument("--no-return", action="store_true")
+    ik.add_argument("--stay", action="store_true", help="hold until Ctrl-C")
     ik.add_argument("--trace-output", type=Path)
     commands.add_parser("stop", help="stop/release and clear a latched fault")
     return parser
@@ -328,6 +331,8 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise RemoteArmError("--duration must be between 0.1 and 10 seconds")
         if not math.isfinite(args.hold) or args.hold < 0.0:
             raise RemoteArmError("--hold must be finite and >= 0")
+        if args.stay and args.no_return:
+            raise RemoteArmError("use either --stay or --no-return, not both")
     if args.command == "move":
         if args.joint_delta and args.joint:
             raise RemoteArmError("use either --joint or --joint-delta, not both")
@@ -349,8 +354,12 @@ def _validate_args(args: argparse.Namespace) -> None:
         offset = (args.dx, args.dy, args.dz)
         if any(not math.isfinite(value) for value in offset):
             raise RemoteArmError("IK offsets must be finite")
-        if not 0.0 < math.sqrt(sum(value * value for value in offset)) <= 0.05:
-            raise RemoteArmError("IK offset norm must be > 0 and <= 0.05 m")
+        distance = math.sqrt(sum(value * value for value in offset))
+        if not 0.0 < distance <= MAX_IK_CARTESIAN_OFFSET_M:
+            raise RemoteArmError(
+                "IK offset norm must be > 0 and <= "
+                f"{MAX_IK_CARTESIAN_OFFSET_M:.2f} m"
+            )
 
 
 def _print(report: object) -> None:
@@ -659,7 +668,23 @@ def run(args: argparse.Namespace) -> int:
                     "measured hand pose did not reach the IK target: "
                     f"position error {ik_position_error_m:.4f} m"
                 )
-        if not args.no_return and not stop.is_set():
+        if args.stay and not stop.is_set():
+            while not stop.is_set():
+                client.pump_heartbeat(
+                    session_id,
+                    0.25,
+                    stop,
+                    trace=motion_trace,
+                    phase="stay",
+                )
+                status = client.status or {}
+                if status.get("state") != "ARMED":
+                    raise RemoteArmError(
+                        "bridge left ARMED while holding target: "
+                        f"state={status.get('state')}, "
+                        f"fault={status.get('fault_reason')}"
+                    )
+        if not args.no_return and not args.stay and not stop.is_set():
             return_targets = list(
                 reversed([tuple(baseline), *guarded_targets[:-1]])
             )
@@ -703,7 +728,7 @@ def run(args: argparse.Namespace) -> int:
                 "ik_measured_xyz_m": ik_measured_xyz_m,
                 "ik_achieved_delta_xyz_m": ik_achieved_delta_xyz_m,
                 "ik_position_error_m": ik_position_error_m,
-                "returned": not args.no_return,
+                "returned": not args.no_return and not args.stay,
                 "bridge": final,
         }
         if args.trace_output is not None:
