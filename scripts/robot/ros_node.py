@@ -232,7 +232,29 @@ class DepthOnlyRosNode:
             self.runner.close()
             raise
         self._last_depth_sequence = -1
+        self._last_depth_diagnostic = ""
+        self._last_publish_error: str | None = None
         self.node.create_timer(1.0 / args.depth_publish_fps, self._publish_depth)
+        # Depth capture runs in a background thread, so surface failures here
+        # rather than silently leaving a discovered-but-empty ROS topic.
+        self.node.create_timer(1.0, self._report_depth_health)
+
+    def _report_depth_health(self) -> None:
+        health = self.depth_service.health()
+        status = {
+            "event": "depth_status",
+            "source": "g1_robot_depth",
+            "sequence": health["sequence"],
+            "frames_captured": health["frames_captured"],
+            "fresh": health["sensor_fresh"],
+            "frame_age_ms": health["frame_age_ms"],
+            "capture_error": health["last_error"],
+            "publish_error": self._last_publish_error,
+        }
+        encoded = _safe_json(status)
+        if encoded != self._last_depth_diagnostic:
+            print(encoded, flush=True)
+            self._last_depth_diagnostic = encoded
 
     def _publish_depth(self) -> None:
         with self.depth_service.lock:
@@ -261,7 +283,8 @@ class DepthOnlyRosNode:
             message.payload = list(payload)
             self.depth_publisher.publish(message)
             self._last_depth_sequence = sequence
-        except Exception:
+        except Exception as exc:
+            self._last_publish_error = f"{type(exc).__name__}: {exc}"
             return
 
     def close(self) -> None:

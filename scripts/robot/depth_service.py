@@ -450,6 +450,11 @@ class DepthService:
     def _capture_loop(self) -> None:
         sequence = 0
         consecutive_timeouts = 0
+        # Capturing at the camera rate is useful for freshness, but serialising
+        # every 60 Hz Z16 image when the ROS transport is configured for 15 Hz
+        # starves the ROS executor on the robot.  Keep the newest camera frame
+        # and only encode frames at the requested transport rate.
+        next_transmit_at = 0.0
         while not self.stop_event.is_set():
             try:
                 frame = self.source.read(timeout_s=0.5)
@@ -463,6 +468,10 @@ class DepthService:
                         consecutive_timeouts = 0
                     continue
                 consecutive_timeouts = 0
+                now = time.monotonic()
+                if now < next_transmit_at:
+                    continue
+                next_transmit_at = now + (1.0 / self.transmit_fps)
                 if self.rgb_relay is not None and frame.color_bgr is not None:
                     self.rgb_relay.write(frame.color_bgr)
                 calibration = self.source.calibration
