@@ -32,7 +32,7 @@ class ManualArmConfig:
     heartbeat_ttl_s: float = 0.500
     stable_standing_s: float = 2.0
     weight_ramp_s: float = 0.500
-    max_target_delta_rad: float = 0.12
+    max_target_delta_rad: float = 0.10
     max_velocity_rad_s: float = 0.25
     max_measured_velocity_rad_s: float = 1.0
     max_acceleration_rad_s2: float = 1.0
@@ -78,8 +78,9 @@ class _Trajectory:
 
 
 def _smoothstep(value: float) -> float:
+    """Quintic time scaling: zero velocity and acceleration at both ends."""
     bounded = min(max(value, 0.0), 1.0)
-    return bounded * bounded * (3.0 - 2.0 * bounded)
+    return bounded**3 * (10.0 + bounded * (-15.0 + 6.0 * bounded))
 
 
 class ManualArmController:
@@ -349,7 +350,8 @@ class ManualArmController:
                     )
             maximum_delta = max(deltas, default=0.0)
             minimum_duration = max(
-                1.5 * maximum_delta / self.config.max_velocity_rad_s,
+                # The maximum derivative of quintic time scaling is 1.875.
+                1.875 * maximum_delta / self.config.max_velocity_rad_s,
                 math.sqrt(6.0 * maximum_delta / self.config.max_acceleration_rad_s2),
             )
             # Retiming preserves the requested position while ensuring a

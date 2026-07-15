@@ -144,7 +144,7 @@ class RosTrackingTransport:
                 history=types["HistoryPolicy"].KEEP_LAST,
                 depth=1,
                 reliability=types["ReliabilityPolicy"].BEST_EFFORT,
-                durability=types["DurabilityPolicy"].VOLATILE,
+                durability=types["DurabilityPolicy"].TRANSIENT_LOCAL,
             )
             try:
                 depth_subscription = node.create_subscription(

@@ -209,7 +209,10 @@ class DepthOnlyRosNode:
             history=self.types["HistoryPolicy"].KEEP_LAST,
             depth=1,
             reliability=self.types["ReliabilityPolicy"].BEST_EFFORT,
-            durability=self.types["DurabilityPolicy"].VOLATILE,
+            # Retain exactly one compressed depth frame so a restarted GB10
+            # subscriber receives a usable frame immediately after DDS
+            # discovery instead of waiting for its next camera period.
+            durability=self.types["DurabilityPolicy"].TRANSIENT_LOCAL,
         )
         self.depth_publisher = self.node.create_publisher(
             self.types["CompressedDepth"], DEPTH_TOPIC, depth_qos
@@ -328,13 +331,13 @@ class RobotRosNode:
                     # increase so visual tracking is not dominated by the
                     # transport waypoint cadence.
                     max_velocity_rad_s=(
-                        0.25 if args.manual_control_profile == "sdk2" else 0.50
+                        0.25 if args.manual_control_profile == "sdk2" else 0.40
                     ),
                     max_target_delta_rad=(
-                        0.05 if args.manual_control_profile == "sdk2" else 0.12
+                        0.05 if args.manual_control_profile == "sdk2" else 0.10
                     ),
                     max_acceleration_rad_s2=(
-                        1.0 if args.manual_control_profile == "sdk2" else 2.00
+                        1.0 if args.manual_control_profile == "sdk2" else 1.20
                     ),
                 ),
                 event_sink=lambda event: print(

@@ -139,6 +139,7 @@ class Policy:
     RELIABLE = 2
     BEST_EFFORT = 3
     VOLATILE = 4
+    TRANSIENT_LOCAL = 5
 
 
 def _types() -> dict[str, object]:

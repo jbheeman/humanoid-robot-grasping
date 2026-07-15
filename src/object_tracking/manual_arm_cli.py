@@ -27,10 +27,10 @@ HEARTBEAT_TOPIC = f"{BASE}/heartbeat"
 REQUEST_TOPIC = f"{BASE}/request"
 RESPONSE_TOPIC = f"{BASE}/response"
 STATUS_TOPIC = f"{BASE}/status"
-MAX_ROBOT_STEP_RAD = 0.12
+MAX_ROBOT_STEP_RAD = 0.10
 # Keep a small numerical margin only for generated IK routes. Manual jogs
 # retain their documented 0.050-rad increments.
-SAFE_IK_PUBLISHED_STEP_RAD = 0.11
+SAFE_IK_PUBLISHED_STEP_RAD = 0.09
 MAX_MANUAL_TOTAL_DELTA_RAD = 0.20
 MAX_IK_WAYPOINT_DISTANCE_M = 0.01
 MAX_IK_WAYPOINT_JOINT_DELTA_RAD = 0.35
