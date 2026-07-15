@@ -390,6 +390,32 @@ def _guarded_offsets(delta: float) -> list[float]:
     return [delta * index / steps for index in range(1, steps + 1)]
 
 
+def _guarded_joint_path(
+    knots: Sequence[Sequence[float]],
+) -> list[tuple[float, ...]]:
+    """Interpolate every solved path segment within the robot step contract."""
+
+    if len(knots) < 2:
+        return []
+    path: list[tuple[float, ...]] = []
+    for start_values, target_values in zip(knots, knots[1:]):
+        start = tuple(float(value) for value in start_values)
+        target = tuple(float(value) for value in target_values)
+        if len(start) != len(target) or not start:
+            raise ValueError("joint path knots must have equal nonzero dimensions")
+        maximum_delta = max(abs(end - begin) for begin, end in zip(start, target))
+        steps = max(1, math.ceil(maximum_delta / MAX_ROBOT_STEP_RAD - 1e-9))
+        for step in range(1, steps + 1):
+            ratio = step / steps
+            path.append(
+                tuple(
+                    (1.0 - ratio) * begin + ratio * end
+                    for begin, end in zip(start, target)
+                )
+            )
+    return path
+
+
 def _parse_joint_delta(value: str) -> tuple[str, float]:
     try:
         name, raw_delta = str(value).rsplit("=", 1)
@@ -506,6 +532,7 @@ def run(args: argparse.Namespace) -> int:
             raise RemoteArmError("Bridge has no fresh measured pose before movement")
         offset = 0 if side == "left" else 7
         baseline = [float(value) for value in latched[offset : offset + 7]]
+        path_knots: list[tuple[float, ...]] = [tuple(baseline)]
         ik_start_transform = None
         ik_target_transform = None
         manual_deltas = None
@@ -515,6 +542,10 @@ def run(args: argparse.Namespace) -> int:
             # from Unitree's canonical SDK joint coordinates. Keep this conversion
             # at the manual boundary so URDF/IK joint angles remain canonical.
             sdk_deltas = {name: -delta for name, delta in manual_deltas.items()}
+            manual_target = list(baseline)
+            for joint_name, delta in sdk_deltas.items():
+                manual_target[names.index(joint_name)] += delta
+            path_knots.append(tuple(manual_target))
         else:
             assert ik_solver is not None
             ik_start_transform = ik_solver.forward_kinematics(baseline)
@@ -543,6 +574,7 @@ def run(args: argparse.Namespace) -> int:
                         f"position_error={result.position_error_m:.4f} m"
                     )
                 solution_q = result.q_rad
+                path_knots.append(solution_q)
             sdk_deltas = {
                 name: float(target - start)
                 for name, target, start in zip(names, solution_q, baseline)
@@ -550,15 +582,11 @@ def run(args: argparse.Namespace) -> int:
             }
             if not sdk_deltas:
                 raise RemoteArmError("IK returned the measured pose without a movement")
-        step_count = max(
-            len(_guarded_offsets(delta)) for delta in sdk_deltas.values()
-        )
+        guarded_targets = _guarded_joint_path(path_knots)
+        step_count = len(guarded_targets)
         sequence = -1
-        for step in range(1, step_count + 1):
+        for step, target in enumerate(guarded_targets, start=1):
             sequence += 1
-            target = list(baseline)
-            for joint_name, delta in sdk_deltas.items():
-                target[names.index(joint_name)] += delta * step / step_count
             client.publish_target(
                 side=side,
                 session_id=session_id,
@@ -632,11 +660,11 @@ def run(args: argparse.Namespace) -> int:
                     f"position error {ik_position_error_m:.4f} m"
                 )
         if not args.no_return and not stop.is_set():
-            for step in reversed(range(step_count)):
+            return_targets = list(
+                reversed([tuple(baseline), *guarded_targets[:-1]])
+            )
+            for step, return_target in enumerate(return_targets, start=1):
                 sequence += 1
-                return_target = list(baseline)
-                for joint_name, delta in sdk_deltas.items():
-                    return_target[names.index(joint_name)] += delta * step / step_count
                 client.publish_target(
                     side=side,
                     session_id=session_id,

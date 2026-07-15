@@ -8,6 +8,7 @@ from object_tracking.manual_arm_cli import (
     _arming_failure,
     _arming_status_summary,
     _guarded_offsets,
+    _guarded_joint_path,
     _manual_deltas,
     _signed_progress,
     _validate_args,
@@ -129,6 +130,23 @@ def test_guarded_offsets_keep_each_target_step_bounded() -> None:
     offsets = [0.0, *_guarded_offsets(-0.16)]
     assert offsets[-1] == pytest.approx(-0.16)
     assert max(abs(end - start) for start, end in zip(offsets, offsets[1:])) <= 0.05
+
+
+def test_guarded_joint_path_preserves_waypoint_route() -> None:
+    path = _guarded_joint_path(
+        [
+            (0.0, 0.0),
+            (0.08, -0.02),
+            (0.03, 0.04),
+        ]
+    )
+    assert path[1] == pytest.approx((0.08, -0.02))
+    assert path[-1] == pytest.approx((0.03, 0.04))
+    complete = [(0.0, 0.0), *path]
+    assert max(
+        max(abs(end - start) for start, end in zip(before, after))
+        for before, after in zip(complete, complete[1:])
+    ) <= 0.05
 
 
 def test_signed_progress_rejects_motion_opposite_the_requested_direction() -> None:
