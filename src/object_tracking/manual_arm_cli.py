@@ -1197,7 +1197,25 @@ def run(args: argparse.Namespace) -> int:
                 measured_tracking = (client.status or {}).get("measured_arm_q")
                 if not isinstance(measured_tracking, list) or len(measured_tracking) != 14:
                     raise RemoteArmError("Bridge has no measured pose after a tracking update")
-                solution_q = tuple(float(value) for value in measured_tracking[-7:])
+                measured_q = tuple(float(value) for value in measured_tracking[-7:])
+                commanded_q = tuple(float(value) for value in tracking_targets[-1])
+                tracking_lag = max(
+                    abs(measured - commanded)
+                    for measured, commanded in zip(measured_q, commanded_q)
+                )
+                motion_trace.append(
+                    {
+                        "phase": f"tracking_{tracking_updates}",
+                        "event": "tracking_segment_complete",
+                        "max_command_tracking_lag_rad": tracking_lag,
+                    }
+                )
+                # Plan the *next command* from the last desired waypoint,
+                # not the delayed encoder sample.  The arm bridge enforces
+                # its step contract against desired_arm_q, and using the
+                # encoder here could create a >0.050-rad discontinuity even
+                # though both individual IK routes were guarded.
+                solution_q = commanded_q
                 tracking_updates += 1
         elif args.stay and not stop.is_set():
             while not stop.is_set():
