@@ -32,6 +32,41 @@ class RemoteArmError(RuntimeError):
     pass
 
 
+def _arming_status_summary(status: dict[str, Any]) -> str:
+    """Keep arming failures useful without dumping the full 14-joint report."""
+
+    fields = (
+        ("state", status.get("state")),
+        ("weight", status.get("weight")),
+        ("fault", status.get("fault_reason")),
+        ("hold", status.get("hold_reason")),
+        ("standing", status.get("standing")),
+        ("motion_mode", status.get("motion_mode_name")),
+        ("motion_mode_verified", status.get("motion_mode_verified")),
+        ("ownership_verified", status.get("controller_ownership_verified")),
+        ("motor_status_verified", status.get("motor_status_verified")),
+        ("motor_state_healthy", status.get("motor_state_healthy")),
+        ("robot_state_age_ms", status.get("robot_state_age_ms")),
+        ("heartbeat_age_ms", status.get("heartbeat_age_ms")),
+    )
+    return ", ".join(f"{name}={value!r}" for name, value in fields)
+
+
+def _arming_failure(
+    status: dict[str, Any], session_id: str, *, session_seen: bool
+) -> Optional[str]:
+    """Describe a terminal arming transition, including after session cleanup."""
+
+    state = str(status.get("state") or "")
+    status_session = str(status.get("session_id") or "")
+    belongs_to_session = status_session == session_id
+    if belongs_to_session and state == "HOLDING":
+        return "Robot aborted the arm weight ramp: " + _arming_status_summary(status)
+    if session_seen and state in ("FAULT", "DISARMED") and not status_session:
+        return "Robot left ARMING before reaching ARMED: " + _arming_status_summary(status)
+    return None
+
+
 class ManualArmClient:
     def __init__(self) -> None:
         try:
@@ -173,15 +208,23 @@ class ManualArmClient:
 
     def wait_armed(self, session_id: str, timeout_s: float) -> dict[str, Any]:
         deadline = time.monotonic() + timeout_s
+        session_seen = False
+        last_status: Optional[dict[str, Any]] = None
         while time.monotonic() < deadline:
             self.heartbeat(session_id)
             self.rclpy.spin_once(self.node, timeout_sec=0.05)
-            if self.status and self.status.get("session_id") == session_id:
-                if self.status.get("state") == "ARMED":
-                    return self.status
-                if self.status.get("state") == "FAULT":
-                    raise RemoteArmError(f"Robot entered FAULT: {self.status.get('fault_reason')}")
-        raise RemoteArmError("Timed out waiting for robot arm weight ramp")
+            if not self.status:
+                continue
+            last_status = self.status
+            if str(last_status.get("session_id") or "") == session_id:
+                session_seen = True
+                if last_status.get("state") == "ARMED":
+                    return last_status
+            failure = _arming_failure(last_status, session_id, session_seen=session_seen)
+            if failure:
+                raise RemoteArmError(failure)
+        detail = "no arm status received" if last_status is None else _arming_status_summary(last_status)
+        raise RemoteArmError(f"Timed out waiting for robot arm weight ramp; last status: {detail}")
 
     def stop_and_wait(self, session_id: str, reason: str, timeout_s: float) -> dict[str, Any]:
         self.request("stop", session_id=session_id, reason=reason, timeout_s=timeout_s)

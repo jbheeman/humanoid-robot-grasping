@@ -2,12 +2,57 @@ import pytest
 
 from object_tracking.manual_arm_cli import (
     RemoteArmError,
+    _arming_failure,
+    _arming_status_summary,
     _guarded_offsets,
     _manual_deltas,
     _signed_progress,
     _validate_args,
     build_parser,
 )
+
+
+def test_arming_status_reports_the_safety_reason_without_joint_dump() -> None:
+    status = {
+        "state": "HOLDING",
+        "session_id": "session-a",
+        "weight": 0.42,
+        "fault_reason": "runtime_gate:lowstate_stale",
+        "hold_reason": "runtime_gate:lowstate_stale",
+        "measured_arm_q": [0.0] * 14,
+    }
+    failure = _arming_failure(status, "session-a", session_seen=True)
+    assert failure is not None
+    assert "runtime_gate:lowstate_stale" in failure
+    assert "state='HOLDING'" in failure
+    assert "measured_arm_q" not in failure
+
+
+def test_arming_failure_survives_robot_session_cleanup() -> None:
+    status = {
+        "state": "FAULT",
+        "session_id": None,
+        "weight": 0.0,
+        "fault_reason": "following_error:0.0312",
+        "hold_reason": "following_error:0.0312",
+    }
+    failure = _arming_failure(status, "session-a", session_seen=True)
+    assert failure is not None
+    assert "following_error:0.0312" in failure
+    assert _arming_failure(status, "session-a", session_seen=False) is None
+
+
+def test_arming_timeout_summary_includes_gate_values() -> None:
+    summary = _arming_status_summary(
+        {
+            "state": "ARMING",
+            "weight": 0.2,
+            "motion_mode_verified": False,
+            "robot_state_age_ms": 300.0,
+        }
+    )
+    assert "motion_mode_verified=False" in summary
+    assert "robot_state_age_ms=300.0" in summary
 
 
 def test_move_defaults_to_guarded_right_shoulder_cycle() -> None:
