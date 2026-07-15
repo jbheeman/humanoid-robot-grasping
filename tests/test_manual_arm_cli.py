@@ -179,17 +179,24 @@ def test_ik_rejects_zero_or_large_offset() -> None:
         _validate_args(build_parser().parse_args(["ik", "--dx", "0.501"]))
 
 
-def test_point_defaults_to_bounded_one_shot_vision_approach() -> None:
+def test_point_defaults_to_continuous_vision_tracking_without_return() -> None:
     args = build_parser().parse_args(["point"])
     _validate_args(args)
     assert args.server == "http://127.0.0.1:8000"
     assert args.standoff == pytest.approx(0.25)
     assert args.max_approach == pytest.approx(0.05)
-    assert args.duration == pytest.approx(0.6)
+    assert args.duration == pytest.approx(0.45)
     assert args.no_return is False
-    assert args.tracking_step == pytest.approx(0.03)
-    assert args.tracking_poll == pytest.approx(0.25)
+    assert args.stay is True
+    assert args.tracking_step == pytest.approx(0.05)
+    assert args.tracking_poll == pytest.approx(0.10)
     assert args.reacquire_samples == 3
+
+
+def test_point_once_disables_continuous_tracking() -> None:
+    args = build_parser().parse_args(["point", "--once"])
+    _validate_args(args)
+    assert args.stay is False
 
 
 def test_point_hand_target_lies_on_shoulder_object_ray() -> None:

@@ -367,23 +367,28 @@ def build_parser() -> argparse.ArgumentParser:
     ik.add_argument("--trace-output", type=Path)
     point = commands.add_parser(
         "point",
-        help="move toward the latest vision-localized plushie with standoff",
+        help="continuously point at the vision-localized plushie until Ctrl-C",
     )
     point.add_argument("--server", default="http://127.0.0.1:8000")
     point.add_argument("--standoff", type=float, default=0.25)
     point.add_argument("--max-approach", type=float, default=0.05)
-    point.add_argument("--duration", type=float, default=0.6)
+    point.add_argument(
+        "--duration",
+        type=float,
+        default=0.45,
+        help="seconds per guarded joint target (default: 0.45)",
+    )
     point.add_argument("--hold", type=float, default=3.0)
     point.add_argument(
         "--tracking-step",
         type=float,
-        default=0.03,
+        default=0.05,
         help="maximum Cartesian correction per update while --stay is active",
     )
     point.add_argument(
         "--tracking-poll",
         type=float,
-        default=0.25,
+        default=0.10,
         help="seconds between target checks while --stay is active",
     )
     point.add_argument(
@@ -393,7 +398,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="fresh consistent detections required after target loss",
     )
     point.add_argument("--no-return", action="store_true")
-    point.add_argument("--stay", action="store_true", help="hold until Ctrl-C")
+    point.add_argument("--stay", action="store_true", help=argparse.SUPPRESS)
+    point.add_argument(
+        "--once",
+        action="store_false",
+        dest="stay",
+        help="perform one approach, hold briefly, then release",
+    )
+    point.set_defaults(stay=True)
     point.add_argument("--trace-output", type=Path)
     commands.add_parser("stop", help="stop/release and clear a latched fault")
     return parser
@@ -409,7 +421,7 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise RemoteArmError("--duration must be between 0.1 and 10 seconds")
         if not math.isfinite(args.hold) or args.hold < 0.0:
             raise RemoteArmError("--hold must be finite and >= 0")
-        if args.stay and args.no_return:
+        if args.command != "point" and args.stay and args.no_return:
             raise RemoteArmError("use either --stay or --no-return, not both")
     if args.command == "move":
         selectors = sum(
@@ -761,27 +773,26 @@ def run(args: argparse.Namespace) -> int:
             ik_target_transform = ik_start_transform.copy()
             if args.command == "ik":
                 cartesian_offset = np.array([args.dx, args.dy, args.dz])
-            else:
-                # Refresh after arming so the solved route uses the newest
-                # localization rather than the preflight sample.
-                vision_target = _fetch_vision_target(args.server)
-                pointing_xyz = (
-                    vision_target["predicted_xyz_m"]
-                    if vision_target["predicted_xyz_m"] is not None
-                    else vision_target["object_xyz_m"]
-                )
-                desired_hand_xyz = _point_hand_target(pointing_xyz, args.standoff)
-                point_desired_hand_xyz_m = desired_hand_xyz.tolist()
-                cartesian_offset = desired_hand_xyz - ik_start_transform[:3, 3]
-            if args.command == "point":
-                ik_target_transform[:3, 3] = desired_hand_xyz
-            else:
+            if args.command == "ik":
                 ik_target_transform[:3, 3] += cartesian_offset
             solution_q = tuple(baseline)
             if args.command == "point":
                 used_detour = False
                 total_route_knots = 1
                 while True:
+                    # Re-read vision before every guarded approach stage.  The
+                    # first route is therefore not committed to an old plush
+                    # location; a moving target shifts the next collision-free
+                    # segment immediately.
+                    vision_target = _fetch_vision_target(args.server)
+                    pointing_xyz = (
+                        vision_target["predicted_xyz_m"]
+                        if vision_target["predicted_xyz_m"] is not None
+                        else vision_target["object_xyz_m"]
+                    )
+                    desired_hand_xyz = _point_hand_target(pointing_xyz, args.standoff)
+                    point_desired_hand_xyz_m = desired_hand_xyz.tolist()
+                    ik_target_transform[:3, 3] = desired_hand_xyz
                     current_transform = ik_solver.forward_kinematics(solution_q)
                     stage_offset = desired_hand_xyz - current_transform[:3, 3]
                     remaining_distance = float(np.linalg.norm(stage_offset))
@@ -1102,7 +1113,11 @@ def run(args: argparse.Namespace) -> int:
                         f"state={status.get('state')}, "
                         f"fault={status.get('fault_reason')}"
                     )
-        if not args.no_return and not args.stay and not stop.is_set():
+        # Pointing is intentionally a terminal pose, not an out-and-back demo.
+        # A SIGINT (or the explicit stop command) remains the single release
+        # path.  Manual joint and Cartesian test motions retain their optional
+        # return behavior.
+        if args.command != "point" and not args.no_return and not args.stay and not stop.is_set():
             return_targets = list(reversed([tuple(baseline), *guarded_targets[:-1]]))
             for step, return_target in enumerate(return_targets, start=1):
                 sequence += 1
@@ -1166,7 +1181,7 @@ def run(args: argparse.Namespace) -> int:
             "vision_detector_confidence": (
                 None if vision_target is None else vision_target["detector_confidence"]
             ),
-            "returned": not args.no_return and not args.stay,
+            "returned": args.command != "point" and not args.no_return and not args.stay,
             "bridge": final,
         }
         if args.trace_output is not None:

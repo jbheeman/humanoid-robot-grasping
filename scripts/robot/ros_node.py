@@ -295,6 +295,16 @@ class RobotRosNode:
                     allow_movement=args.allow_movement,
                     gain_profile=args.manual_control_profile,
                     control_hz=50.0 if args.manual_control_profile == "sdk2" else 250.0,
+                    # XR remains under the same target, measured-velocity,
+                    # following-error, and collision gates.  This is a modest
+                    # increase so visual tracking is not dominated by the
+                    # transport waypoint cadence.
+                    max_velocity_rad_s=(
+                        0.25 if args.manual_control_profile == "sdk2" else 0.30
+                    ),
+                    max_acceleration_rad_s2=(
+                        1.0 if args.manual_control_profile == "sdk2" else 1.20
+                    ),
                 ),
                 event_sink=lambda event: print(
                     _safe_json({"source": "manual_arm_controller", **event}),
