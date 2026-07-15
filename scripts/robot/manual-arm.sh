@@ -34,11 +34,12 @@ export LD_LIBRARY_PATH="/usr/local/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 args=(
   --control-mode manual
   --disable-depth
+  --expected-motion-mode "${EXPECTED_MOTION_MODE:-ai}"
   --hardware-interface "${HARDWARE_INTERFACE}"
   --hardware-domain-id "${HARDWARE_DOMAIN_ID}"
 )
 if [[ "${ALLOW_MOVEMENT}" == "1" ]]; then
-  args+=(--allow-movement --expected-motion-mode "${EXPECTED_MOTION_MODE:-ai}")
+  args+=(--allow-movement)
 fi
 
 echo "G1 manual arm bridge: mode=${MODE}, ROS domain=${ROS_DOMAIN_ID}, project NIC=${ROBOT_INTERFACE}."
