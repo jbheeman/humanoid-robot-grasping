@@ -1,6 +1,7 @@
 import json
 import math
 
+import numpy as np
 import pytest
 
 from object_tracking.arm_tracking.joints import RIGHT_ARM_JOINT_NAMES
@@ -16,6 +17,7 @@ from object_tracking.manual_arm_cli import (
     _guarded_offsets,
     _guarded_joint_path,
     _manual_deltas,
+    _point_hand_target,
     _signed_progress,
     _validate_args,
     _write_motion_trace,
@@ -184,6 +186,24 @@ def test_point_defaults_to_bounded_one_shot_vision_approach() -> None:
     assert args.max_approach == pytest.approx(0.05)
     assert args.duration == pytest.approx(0.6)
     assert args.no_return is False
+    assert args.tracking_step == pytest.approx(0.03)
+    assert args.tracking_poll == pytest.approx(0.25)
+    assert args.reacquire_samples == 3
+
+
+def test_point_hand_target_lies_on_shoulder_object_ray() -> None:
+    target = _point_hand_target((0.60, 0.02, 0.10), 0.25)
+    shoulder = np.asarray((0.0, -0.18, 0.35))
+    object_xyz = np.asarray((0.60, 0.02, 0.10))
+    assert np.linalg.norm(object_xyz - target) == pytest.approx(0.25)
+    assert np.linalg.norm(np.cross(target - shoulder, object_xyz - shoulder)) < 1e-9
+
+
+def test_point_tracking_options_are_guarded() -> None:
+    with pytest.raises(RemoteArmError, match="tracking-step"):
+        _validate_args(build_parser().parse_args(["point", "--tracking-step", "0.10"]))
+    with pytest.raises(RemoteArmError, match="reacquire-samples"):
+        _validate_args(build_parser().parse_args(["point", "--reacquire-samples", "1"]))
 
 
 def test_fetch_vision_target_requires_fresh_registered_xyz(monkeypatch) -> None:
@@ -215,6 +235,37 @@ def test_fetch_vision_target_requires_fresh_registered_xyz(monkeypatch) -> None:
     assert target["object_xyz_m"] == pytest.approx((0.55, -0.1, 0.02))
     assert target["predicted_xyz_m"] == pytest.approx((0.57, -0.1, 0.02))
     assert target["target_age_ms"] == pytest.approx(42.0)
+
+
+def test_fetch_vision_target_selects_better_evaluated_fallback(monkeypatch) -> None:
+    payload = {
+        "depth_valid": True,
+        "target_age_ms": 20.0,
+        "track_id": 7,
+        "object_xyz_m": [0.55, -0.1, 0.02],
+        "predicted_xyz_m": [0.59, -0.1, 0.02],
+        "alpha_beta_predicted_xyz_m": [0.56, -0.1, 0.02],
+        "prediction_source": "learned_trajectory",
+        "prediction_evaluation": {"verdict": "fallback_better_or_equal"},
+    }
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setattr(
+        "object_tracking.manual_arm_cli.urllib.request.urlopen",
+        lambda url, timeout: Response(),
+    )
+    target = _fetch_vision_target("http://127.0.0.1:8000")
+    assert target["predicted_xyz_m"] == pytest.approx((0.56, -0.1, 0.02))
+    assert target["prediction_source"] == "alpha_beta_fallback_selected"
 
 
 def test_fetch_vision_target_rejects_stale_sample(monkeypatch) -> None:

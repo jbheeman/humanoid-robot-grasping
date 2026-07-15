@@ -185,12 +185,34 @@ scripts/gb10/arm-remote.sh point \
   --trace-output runs/arm/vision-point-xr.json
 ```
 
-This first phase uses the measured object position, puts the hand toward the
-shoulder-to-object ray with a 25 cm standoff, limits the approach to 5 cm,
-checks the swept IK route in 1 cm Cartesian waypoints, then returns and
-disarms. It rejects missing or older-than-500 ms registered depth before
-movement. Continuous updates and the learned future-position prediction are
-intentionally enabled only after this one-shot geometry test succeeds.
+This first phase uses the currently better validated predictor, puts the hand
+on the shoulder-to-object pointing ray with a 25 cm standoff, and limits the
+approach to 5 cm. From a hanging rest pose it plans a deterministic
+collision-aware joint-space clearance route around the hip, checks every swept
+segment at 0.04 rad or finer, subdivides commands under the robot's 0.05-rad
+step contract, then returns over the same route and disarms. It rejects missing
+or older-than-500 ms registered depth before movement.
+
+After that one-shot route succeeds, continuous slow pointing uses the same
+command with `--stay`:
+
+```bash
+scripts/gb10/arm-remote.sh point \
+  --max-approach 0.10 \
+  --standoff 0.25 \
+  --duration 1 \
+  --tracking-step 0.03 \
+  --tracking-poll 0.25 \
+  --reacquire-samples 3 \
+  --stay
+```
+
+Tracking keeps the manual session heartbeat alive but publishes no new target
+while vision is stale or absent, leaving the arm frozen at its last commanded
+pose. Three fresh, spatially consistent detections are required before motion
+resumes. `Ctrl-C` stops the session and releases arm ownership. If the online
+prediction evaluator reports `fallback_better_or_equal`, pointing uses its
+alpha-beta prediction instead of the learned GRU until the evaluation changes.
 
 ## Compare the two Unitree controller profiles
 

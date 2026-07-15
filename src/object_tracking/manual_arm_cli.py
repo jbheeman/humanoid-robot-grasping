@@ -369,6 +369,24 @@ def build_parser() -> argparse.ArgumentParser:
     point.add_argument("--max-approach", type=float, default=0.05)
     point.add_argument("--duration", type=float, default=0.6)
     point.add_argument("--hold", type=float, default=3.0)
+    point.add_argument(
+        "--tracking-step",
+        type=float,
+        default=0.03,
+        help="maximum Cartesian correction per update while --stay is active",
+    )
+    point.add_argument(
+        "--tracking-poll",
+        type=float,
+        default=0.25,
+        help="seconds between target checks while --stay is active",
+    )
+    point.add_argument(
+        "--reacquire-samples",
+        type=int,
+        default=3,
+        help="fresh consistent detections required after target loss",
+    )
     point.add_argument("--no-return", action="store_true")
     point.add_argument("--stay", action="store_true", help="hold until Ctrl-C")
     point.add_argument("--trace-output", type=Path)
@@ -429,6 +447,12 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise RemoteArmError("--standoff must be between 0.10 and 0.50 m")
         if not math.isfinite(args.max_approach) or not 0.01 <= args.max_approach <= 0.30:
             raise RemoteArmError("--max-approach must be between 0.01 and 0.30 m")
+        if not math.isfinite(args.tracking_step) or not 0.005 <= args.tracking_step <= 0.05:
+            raise RemoteArmError("--tracking-step must be between 0.005 and 0.05 m")
+        if not math.isfinite(args.tracking_poll) or not 0.10 <= args.tracking_poll <= 2.0:
+            raise RemoteArmError("--tracking-poll must be between 0.10 and 2.0 seconds")
+        if not 2 <= args.reacquire_samples <= 10:
+            raise RemoteArmError("--reacquire-samples must be between 2 and 10")
 
 
 def _print(report: object) -> None:
@@ -498,12 +522,40 @@ def _fetch_vision_target(server: str, timeout_s: float = 1.0) -> dict[str, Any]:
         if not all(math.isfinite(component) for component in point):
             raise RemoteArmError(f"vision target {field} contains non-finite values")
         normalized[field] = point
+    evaluation = payload.get("prediction_evaluation")
+    verdict = evaluation.get("verdict") if isinstance(evaluation, dict) else None
+    fallback = payload.get("alpha_beta_predicted_xyz_m")
+    if verdict == "fallback_better_or_equal" and isinstance(fallback, list) and len(fallback) == 3:
+        try:
+            fallback_point = tuple(float(component) for component in fallback)
+        except (TypeError, ValueError):
+            fallback_point = ()
+        if len(fallback_point) == 3 and all(math.isfinite(value) for value in fallback_point):
+            normalized["predicted_xyz_m"] = fallback_point
+            normalized["prediction_source"] = "alpha_beta_fallback_selected"
     return normalized
 
 
 def _signed_progress(start: float, actual: float, requested_delta: float) -> float:
     direction = 1.0 if requested_delta > 0.0 else -1.0
     return direction * (actual - start)
+
+
+def _point_hand_target(
+    object_xyz: Sequence[float], standoff_m: float
+) -> Any:
+    import numpy as np
+
+    object_point = np.asarray(object_xyz, dtype=float)
+    shoulder = np.asarray(RIGHT_SHOULDER_POSITION_M, dtype=float)
+    ray = object_point - shoulder
+    distance = float(np.linalg.norm(ray))
+    if distance <= standoff_m + 0.02:
+        raise RemoteArmError(
+            "vision object is too close to form the requested "
+            f"{standoff_m:.2f} m pointing standoff"
+        )
+    return object_point - ray / distance * standoff_m
 
 
 def _guarded_offsets(delta: float) -> list[float]:
@@ -671,6 +723,10 @@ def run(args: argparse.Namespace) -> int:
         ik_start_transform = None
         ik_target_transform = None
         point_desired_hand_xyz_m = None
+        point_route_kind = None
+        point_route_knots = None
+        tracking_updates = 0
+        target_loss_events = 0
         manual_deltas = None
         if args.command == "move":
             manual_deltas = _manual_deltas(args, names)
@@ -692,43 +748,57 @@ def run(args: argparse.Namespace) -> int:
                 # Refresh after arming so the solved route uses the newest
                 # localization rather than the preflight sample.
                 vision_target = _fetch_vision_target(args.server)
-                object_xyz = np.asarray(vision_target["object_xyz_m"], dtype=float)
-                shoulder_xyz = np.asarray(RIGHT_SHOULDER_POSITION_M, dtype=float)
-                shoulder_to_object = object_xyz - shoulder_xyz
-                shoulder_distance = float(np.linalg.norm(shoulder_to_object))
-                if shoulder_distance <= args.standoff + 0.02:
-                    raise RemoteArmError(
-                        "vision object is too close to form the requested "
-                        f"{args.standoff:.2f} m pointing standoff"
-                    )
-                desired_hand_xyz = (
-                    object_xyz - shoulder_to_object / shoulder_distance * args.standoff
+                pointing_xyz = (
+                    vision_target["predicted_xyz_m"]
+                    if vision_target["predicted_xyz_m"] is not None
+                    else vision_target["object_xyz_m"]
                 )
+                desired_hand_xyz = _point_hand_target(pointing_xyz, args.standoff)
                 point_desired_hand_xyz_m = desired_hand_xyz.tolist()
                 cartesian_offset = desired_hand_xyz - ik_start_transform[:3, 3]
                 approach_distance = float(np.linalg.norm(cartesian_offset))
                 if approach_distance > args.max_approach:
                     cartesian_offset *= args.max_approach / approach_distance
             ik_target_transform[:3, 3] += cartesian_offset
-            waypoint_count = max(
-                1,
-                math.ceil(
-                    float(np.linalg.norm(cartesian_offset)) / MAX_IK_WAYPOINT_DISTANCE_M - 1e-9
-                ),
-            )
             solution_q = tuple(baseline)
-            for waypoint_index in range(1, waypoint_count + 1):
-                waypoint = ik_start_transform.copy()
-                waypoint[:3, 3] += cartesian_offset * waypoint_index / waypoint_count
-                result = ik_solver.solve(waypoint, solution_q)
-                if not result.ok or result.q_rad is None:
+            if args.command == "point":
+                route = ik_solver.solve_with_collision_detour(
+                    ik_target_transform,
+                    solution_q,
+                    enforce_orientation=False,
+                )
+                if not route.ok or route.q_path is None:
                     raise RemoteArmError(
-                        "IK rejected Cartesian waypoint "
-                        f"{waypoint_index}/{waypoint_count}: {result.reason}, "
-                        f"position_error={result.position_error_m:.4f} m"
+                        "IK could not build a collision-free pointing route: "
+                        f"{route.reason}, position_error={route.position_error_m:.4f} m"
                     )
-                solution_q = result.q_rad
-                path_knots.append(solution_q)
+                point_route_kind = (
+                    "direct" if len(route.q_path) == 2 else "collision_aware_detour"
+                )
+                point_route_knots = len(route.q_path)
+                path_knots.extend(route.q_path[1:])
+                solution_q = route.q_path[-1]
+            else:
+                waypoint_count = max(
+                    1,
+                    math.ceil(
+                        float(np.linalg.norm(cartesian_offset))
+                        / MAX_IK_WAYPOINT_DISTANCE_M
+                        - 1e-9
+                    ),
+                )
+                for waypoint_index in range(1, waypoint_count + 1):
+                    waypoint = ik_start_transform.copy()
+                    waypoint[:3, 3] += cartesian_offset * waypoint_index / waypoint_count
+                    result = ik_solver.solve(waypoint, solution_q)
+                    if not result.ok or result.q_rad is None:
+                        raise RemoteArmError(
+                            "IK rejected Cartesian waypoint "
+                            f"{waypoint_index}/{waypoint_count}: {result.reason}, "
+                            f"position_error={result.position_error_m:.4f} m"
+                        )
+                    solution_q = result.q_rad
+                    path_knots.append(solution_q)
             sdk_deltas = {
                 name: float(target - start)
                 for name, target, start in zip(names, solution_q, baseline)
@@ -837,7 +907,145 @@ def run(args: argparse.Namespace) -> int:
                 # pointing gate is deliberately looser than relative IK tests.
                 if ik_position_error_m <= 0.025:
                     validation_error = None
-        if args.stay and not stop.is_set():
+        if args.stay and args.command == "point" and not stop.is_set():
+            assert ik_solver is not None
+            stable_samples = 0
+            previous_track_id: object = None
+            previous_object_xyz = None
+            target_was_lost = False
+            while not stop.is_set():
+                try:
+                    candidate = _fetch_vision_target(args.server)
+                except RemoteArmError as exc:
+                    if not target_was_lost:
+                        target_loss_events += 1
+                    target_was_lost = True
+                    stable_samples = 0
+                    previous_track_id = None
+                    previous_object_xyz = None
+                    motion_trace.append(
+                        {
+                            "phase": "vision_hold",
+                            "event": "target_lost",
+                            "error": str(exc),
+                            "state": (client.status or {}).get("state"),
+                            "measured_arm_q": (client.status or {}).get("measured_arm_q"),
+                            "commanded_arm_q": (client.status or {}).get("commanded_arm_q"),
+                        }
+                    )
+                    client.pump_heartbeat(
+                        session_id,
+                        args.tracking_poll,
+                        stop,
+                        trace=motion_trace,
+                        phase="vision_hold",
+                    )
+                    continue
+
+                candidate_object = np.asarray(candidate["object_xyz_m"], dtype=float)
+                same_track = candidate.get("track_id") == previous_track_id
+                stable_position = (
+                    previous_object_xyz is not None
+                    and float(np.linalg.norm(candidate_object - previous_object_xyz)) <= 0.08
+                )
+                stable_samples = stable_samples + 1 if same_track and stable_position else 1
+                previous_track_id = candidate.get("track_id")
+                previous_object_xyz = candidate_object
+                vision_target = candidate
+                if stable_samples < args.reacquire_samples:
+                    client.pump_heartbeat(
+                        session_id,
+                        args.tracking_poll,
+                        stop,
+                        trace=motion_trace,
+                        phase="vision_reacquiring",
+                    )
+                    continue
+                if target_was_lost:
+                    motion_trace.append(
+                        {
+                            "phase": "vision_reacquired",
+                            "event": "target_reacquired",
+                            "track_id": candidate.get("track_id"),
+                            "stable_samples": stable_samples,
+                        }
+                    )
+                target_was_lost = False
+
+                pointing_xyz = (
+                    candidate["predicted_xyz_m"]
+                    if candidate["predicted_xyz_m"] is not None
+                    else candidate["object_xyz_m"]
+                )
+                desired_xyz = _point_hand_target(pointing_xyz, args.standoff)
+                current_transform = ik_solver.forward_kinematics(solution_q)
+                correction = desired_xyz - current_transform[:3, 3]
+                correction_distance = float(np.linalg.norm(correction))
+                if correction_distance < 0.005:
+                    client.pump_heartbeat(
+                        session_id,
+                        args.tracking_poll,
+                        stop,
+                        trace=motion_trace,
+                        phase="tracking_deadband_hold",
+                    )
+                    continue
+                if correction_distance > args.tracking_step:
+                    correction *= args.tracking_step / correction_distance
+                tracking_target = current_transform.copy()
+                tracking_target[:3, 3] += correction
+                route = ik_solver.solve_with_collision_detour(
+                    tracking_target,
+                    solution_q,
+                    enforce_orientation=False,
+                )
+                if not route.ok or route.q_path is None:
+                    motion_trace.append(
+                        {
+                            "phase": "tracking_hold",
+                            "event": "tracking_route_rejected",
+                            "reason": route.reason,
+                            "position_error_m": route.position_error_m,
+                        }
+                    )
+                    client.pump_heartbeat(
+                        session_id,
+                        args.tracking_poll,
+                        stop,
+                        trace=motion_trace,
+                        phase="tracking_hold",
+                    )
+                    continue
+                tracking_targets = _guarded_joint_path(route.q_path)
+                for target in tracking_targets:
+                    if stop.is_set():
+                        break
+                    sequence += 1
+                    client.publish_target(
+                        side=side,
+                        session_id=session_id,
+                        sequence=sequence,
+                        positions=target,
+                        duration_s=args.duration,
+                    )
+                    client.wait_sequence(side, sequence, session_id, args.timeout)
+                    client.pump_heartbeat(
+                        session_id,
+                        args.duration,
+                        stop,
+                        trace=motion_trace,
+                        phase=f"tracking_{tracking_updates}",
+                    )
+                    status = client.status or {}
+                    if status.get("state") != "ARMED":
+                        raise RemoteArmError(
+                            "bridge left ARMED during tracking: "
+                            f"state={status.get('state')}, "
+                            f"fault={status.get('fault_reason')}"
+                        )
+                solution_q = route.q_path[-1]
+                tracking_updates += 1
+        elif args.stay and not stop.is_set():
             while not stop.is_set():
                 client.pump_heartbeat(
                     session_id,
@@ -908,6 +1116,10 @@ def run(args: argparse.Namespace) -> int:
             "point_angular_error_deg": point_angular_error_deg,
             "point_standoff_m": (args.standoff if args.command == "point" else None),
             "point_desired_hand_xyz_m": point_desired_hand_xyz_m,
+            "point_route_kind": point_route_kind,
+            "point_route_knots": point_route_knots,
+            "tracking_updates": tracking_updates,
+            "target_loss_events": target_loss_events,
             "vision_track_id": (None if vision_target is None else vision_target["track_id"]),
             "vision_detector_confidence": (
                 None if vision_target is None else vision_target["detector_confidence"]

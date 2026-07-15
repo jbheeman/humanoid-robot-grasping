@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Callable, Sequence
 
 import numpy as np
 
@@ -25,6 +25,128 @@ class IKResult:
     position_error_m: float
     orientation_error_rad: float
     reason: str | None = None
+
+
+@dataclass(frozen=True)
+class IKPathResult:
+    ok: bool
+    q_path: tuple[tuple[float, ...], ...] | None
+    position_error_m: float
+    orientation_error_rad: float
+    reason: str | None = None
+
+
+def collision_aware_joint_path(
+    start_q: Sequence[float],
+    goal_q: Sequence[float],
+    lower: Sequence[float],
+    upper: Sequence[float],
+    state_is_valid: Callable[[np.ndarray], bool],
+    *,
+    edge_step_rad: float = 0.04,
+    extension_step_rad: float = 0.18,
+    max_iterations: int = 2500,
+    seed: int = 7,
+) -> tuple[tuple[float, ...], ...] | None:
+    """Plan a deterministic bidirectional RRT path and shortcut it.
+
+    This operates entirely on a model. Callers provide the collision predicate;
+    it never communicates with hardware.
+    """
+
+    start = np.asarray(start_q, dtype=float)
+    goal = np.asarray(goal_q, dtype=float)
+    low = np.asarray(lower, dtype=float)
+    high = np.asarray(upper, dtype=float)
+    if (
+        start.shape != goal.shape
+        or start.shape != low.shape
+        or start.shape != high.shape
+        or start.ndim != 1
+        or not np.all(np.isfinite(np.concatenate((start, goal, low, high))))
+        or np.any(low > high)
+        or edge_step_rad <= 0.0
+        or extension_step_rad <= 0.0
+        or max_iterations <= 0
+    ):
+        raise ValueError("invalid collision-aware joint path inputs")
+
+    def edge_is_valid(begin: np.ndarray, end: np.ndarray) -> bool:
+        steps = max(1, int(np.ceil(np.max(np.abs(end - begin)) / edge_step_rad)))
+        return all(
+            state_is_valid((1.0 - alpha) * begin + alpha * end)
+            for alpha in np.linspace(0.0, 1.0, steps + 1)[1:]
+        )
+
+    if not state_is_valid(start) or not state_is_valid(goal):
+        return None
+    if edge_is_valid(start, goal):
+        return (tuple(start.tolist()), tuple(goal.tolist()))
+
+    rng = np.random.default_rng(seed)
+    nodes_a = [start]
+    parents_a = [-1]
+    nodes_b = [goal]
+    parents_b = [-1]
+    swapped = False
+
+    def nearest(nodes: list[np.ndarray], target: np.ndarray) -> int:
+        return int(np.argmin([np.linalg.norm(node - target) for node in nodes]))
+
+    def extend(
+        nodes: list[np.ndarray], parents: list[int], target: np.ndarray
+    ) -> int | None:
+        parent = nearest(nodes, target)
+        begin = nodes[parent]
+        delta = target - begin
+        distance = float(np.linalg.norm(delta))
+        end = target if distance <= extension_step_rad else begin + delta / distance * extension_step_rad
+        if not edge_is_valid(begin, end):
+            return None
+        nodes.append(end)
+        parents.append(parent)
+        return len(nodes) - 1
+
+    def chain(nodes: list[np.ndarray], parents: list[int], index: int) -> list[np.ndarray]:
+        result: list[np.ndarray] = []
+        while index >= 0:
+            result.append(nodes[index])
+            index = parents[index]
+        return list(reversed(result))
+
+    path: list[np.ndarray] | None = None
+    for _ in range(max_iterations):
+        sample = goal if rng.random() < 0.15 else rng.uniform(low, high)
+        index_a = extend(nodes_a, parents_a, sample)
+        if index_a is not None:
+            while True:
+                index_b = extend(nodes_b, parents_b, nodes_a[index_a])
+                if index_b is None:
+                    break
+                if np.linalg.norm(nodes_b[index_b] - nodes_a[index_a]) < 1e-9:
+                    from_a = chain(nodes_a, parents_a, index_a)
+                    from_b = chain(nodes_b, parents_b, index_b)
+                    path = from_a + list(reversed(from_b[:-1]))
+                    if swapped:
+                        path.reverse()
+                    break
+            if path is not None:
+                break
+        nodes_a, nodes_b = nodes_b, nodes_a
+        parents_a, parents_b = parents_b, parents_a
+        swapped = not swapped
+    if path is None:
+        return None
+
+    shortened = [path[0]]
+    index = 0
+    while index < len(path) - 1:
+        candidate = len(path) - 1
+        while candidate > index + 1 and not edge_is_valid(path[index], path[candidate]):
+            candidate -= 1
+        shortened.append(path[candidate])
+        index = candidate
+    return tuple(tuple(node.tolist()) for node in shortened)
 
 
 def default_urdf_path(repo_root: Path) -> Path:
@@ -258,6 +380,128 @@ class G1RightArmIK:
         second = self.collision_model.geometryObjects[pair.second].name
         return f"{first}<->{second}"
 
+    def _candidate_q(self, target: np.ndarray, last_q: np.ndarray) -> np.ndarray:
+        if self.casadi is not None and self.cpin is not None:
+            self.opti.set_initial(self.var_q, np.clip(last_q, self.lower, self.upper))
+            self.opti.set_value(self.param_last_q, last_q)
+            self.opti.set_value(self.param_target, target)
+            solution = self.opti.solve()
+            return np.asarray(solution.value(self.var_q), dtype=float).reshape(7)
+        return self._solve_numerical(target, last_q)
+
+    def _pose_errors(self, target: np.ndarray, q: np.ndarray) -> tuple[float, float]:
+        self.pin.framesForwardKinematics(self.model, self.data, q)
+        pose = self.data.oMf[self.ee_frame]
+        position_error = float(np.linalg.norm(pose.translation - target[:3, 3]))
+        orientation_error = float(
+            np.linalg.norm(self.pin.log3(pose.rotation @ target[:3, :3].T))
+        )
+        return position_error, orientation_error
+
+    def solve_with_collision_detour(
+        self,
+        target_transform: np.ndarray,
+        start_q_rad: Sequence[float],
+        *,
+        enforce_orientation: bool = True,
+    ) -> IKPathResult:
+        """Solve a goal pose, then route around transient self-collisions.
+
+        The start pose's existing mesh overlaps are the only collision pairs
+        tolerated. Every edge returned by the planner is swept at 0.04 rad or
+        finer before it can be sent through the separate 0.05-rad ROS guard.
+        """
+
+        target = np.asarray(target_transform, dtype=float)
+        start_q = np.asarray(start_q_rad, dtype=float)
+        if target.shape != (4, 4) or start_q.shape != (7,):
+            return IKPathResult(False, None, float("inf"), float("inf"), "invalid_shape")
+        if not np.all(np.isfinite(target)) or not np.all(np.isfinite(start_q)):
+            return IKPathResult(False, None, float("inf"), float("inf"), "non_finite")
+        if self.collision_model is None or self.collision_data is None:
+            return IKPathResult(
+                False,
+                None,
+                float("inf"),
+                float("inf"),
+                "collision_model_unavailable",
+            )
+        try:
+            goal_q = self._candidate_q(target, start_q)
+        except Exception:
+            return IKPathResult(False, None, float("inf"), float("inf"), "solver_failed")
+        if float(np.max(np.abs(goal_q - start_q))) > 1.20:
+            return IKPathResult(
+                False,
+                None,
+                float("inf"),
+                float("inf"),
+                "goal_joint_delta_too_large",
+            )
+
+        position_error, orientation_error = self._pose_errors(target, goal_q)
+        if position_error > self.position_tolerance_m:
+            return IKPathResult(
+                False, None, position_error, orientation_error, "position_error"
+            )
+        if (
+            enforce_orientation
+            and self.orientation_weight > 0.0
+            and orientation_error > self.orientation_tolerance_rad
+        ):
+            return IKPathResult(
+                False, None, position_error, orientation_error, "orientation_error"
+            )
+
+        allowed_collisions = self._collision_pairs(start_q)
+        introduced_at_goal = self._collision_pairs(goal_q) - allowed_collisions
+        if introduced_at_goal:
+            labels = ",".join(
+                self._collision_pair_label(index) for index in sorted(introduced_at_goal)
+            )
+            return IKPathResult(
+                False,
+                None,
+                position_error,
+                orientation_error,
+                f"goal_self_collision:{labels}",
+            )
+
+        start_xyz = self.forward_kinematics(start_q)[:3, 3]
+        goal_xyz = self.forward_kinematics(goal_q)[:3, 3]
+        corridor_margin = np.array([0.50, 0.40, 0.50, 0.70, 0.50, 0.50, 0.60])
+        lower = np.maximum(self.lower, np.minimum(start_q, goal_q) - corridor_margin)
+        upper = np.minimum(self.upper, np.maximum(start_q, goal_q) + corridor_margin)
+
+        def state_is_valid(q: np.ndarray) -> bool:
+            if self._collision_pairs(q) - allowed_collisions:
+                return False
+            xyz = self.forward_kinematics(q)[:3, 3]
+            # Do not let a detour dive toward the table or swing materially
+            # behind the hanging start pose while escaping the hip.
+            if xyz[0] < min(start_xyz[0], goal_xyz[0]) - 0.04:
+                return False
+            if xyz[2] < min(start_xyz[2], goal_xyz[2]) - 0.03:
+                return False
+            return bool(-0.48 <= xyz[1] <= 0.15)
+
+        path = collision_aware_joint_path(
+            start_q,
+            goal_q,
+            lower,
+            upper,
+            state_is_valid,
+        )
+        if path is None:
+            return IKPathResult(
+                False,
+                None,
+                position_error,
+                orientation_error,
+                "collision_detour_unavailable",
+            )
+        return IKPathResult(True, path, position_error, orientation_error)
+
     def solve(
         self,
         target_transform: np.ndarray,
@@ -272,14 +516,7 @@ class G1RightArmIK:
         if not np.all(np.isfinite(target)) or not np.all(np.isfinite(last_q)):
             return IKResult(False, None, float("inf"), float("inf"), "non_finite")
         try:
-            if self.casadi is not None and self.cpin is not None:
-                self.opti.set_initial(self.var_q, np.clip(last_q, self.lower, self.upper))
-                self.opti.set_value(self.param_last_q, last_q)
-                self.opti.set_value(self.param_target, target)
-                solution = self.opti.solve()
-                q = np.asarray(solution.value(self.var_q), dtype=float).reshape(7)
-            else:
-                q = self._solve_numerical(target, last_q)
+            q = self._candidate_q(target, last_q)
         except Exception:
             return IKResult(False, None, float("inf"), float("inf"), "solver_failed")
 
@@ -315,16 +552,14 @@ class G1RightArmIK:
                     float("inf"),
                     f"self_collision:{labels}:path_fraction={alpha:.3f}",
                 )
-        self.pin.framesForwardKinematics(self.model, self.data, q)
         if support_plane is not None:
+            self.pin.framesForwardKinematics(self.model, self.data, q)
             for joint_name in RIGHT_ARM_JOINTS:
                 joint_id = self.model.getJointId(joint_name)
                 point = self.data.oMi[joint_id].translation
                 if float(support_plane.signed_distance(point)) < 0.05:
                     return IKResult(False, None, float("inf"), float("inf"), "link_plane_clearance")
-        pose = self.data.oMf[self.ee_frame]
-        position_error = float(np.linalg.norm(pose.translation - target[:3, 3]))
-        orientation_error = float(np.linalg.norm(self.pin.log3(pose.rotation @ target[:3, :3].T)))
+        position_error, orientation_error = self._pose_errors(target, q)
         if position_error > self.position_tolerance_m:
             return IKResult(False, None, position_error, orientation_error, "position_error")
         if (
