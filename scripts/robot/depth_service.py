@@ -474,7 +474,7 @@ class DepthService:
                     # RealSense queue is backed up.  Yield here so this
                     # capture thread cannot monopolise the Python runtime and
                     # starve the ROS timer that publishes the envelope.
-                    self.stop_event.wait(min(next_transmit_at - now, 0.02))
+                    self.stop_event.wait(next_transmit_at - now)
                     continue
                 next_transmit_at = now + (1.0 / self.transmit_fps)
                 if self.rgb_relay is not None and frame.color_bgr is not None:

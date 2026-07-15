@@ -56,7 +56,7 @@ critical_pids+=("$!")
     --depth-width "${DEPTH_WIDTH:-848}"
     --depth-height "${DEPTH_HEIGHT:-480}"
     --depth-capture-fps "${DEPTH_CAPTURE_FPS:-60}"
-    --depth-publish-fps "${DEPTH_PUBLISH_FPS:-15}"
+    --depth-publish-fps "${DEPTH_PUBLISH_FPS:-30}"
   )
   if [[ -n "${DEPTH_SERIAL:-}" ]]; then
     depth_args+=(--depth-serial "${DEPTH_SERIAL}")

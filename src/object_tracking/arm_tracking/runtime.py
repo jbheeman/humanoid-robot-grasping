@@ -65,14 +65,14 @@ class RuntimeConfig:
     arm_home_path: Path | None = None
     robot_id: str | None = None
     execute: bool = False
-    target_hz: float = 15.0
+    target_hz: float = 20.0
     max_pair_skew_s: float = 0.100
     prediction_horizon_s: float = 0.150
     trajectory_model_path: Path | None = None
 
     def __post_init__(self) -> None:
-        if not 10.0 <= self.target_hz <= 15.0:
-            raise ValueError("target_hz must be between 10 and 15 Hz")
+        if not 10.0 <= self.target_hz <= 30.0:
+            raise ValueError("target_hz must be between 10 and 30 Hz")
 
 
 def register_depth_in_rgb(
@@ -229,7 +229,10 @@ class ArmTrackingRuntime:
         retry_s = 0.25
         while not self.stop_event.is_set():
             try:
-                frame = self.transport.receive_depth(timeout_s=1.0)
+                # A missed ROS depth frame should be detected promptly.  The
+                # caller preserves the last safe arm target while the next
+                # 30 Hz frame is awaited.
+                frame = self.transport.receive_depth(timeout_s=0.20)
                 if frame is None:
                     self.last_sequence = -1
                     self._stop_arm("depth_transport_lost")
