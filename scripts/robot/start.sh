@@ -57,7 +57,10 @@ if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
   EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-ai}"
 fi
 if [[ "${VISION_POINTING}" == "1" ]]; then
-  RGB_MODE="realsense"
+  # Preserve the proven zero-copy V4L2 -> NVENC camera service. The project
+  # node captures depth only, while the existing multicast stream supplies
+  # RGB at the sensor's native 960x540@60 profile.
+  RGB_MODE="highfps-service"
   DEPTH_SOURCE="librealsense"
 fi
 
@@ -74,9 +77,9 @@ if [[ "${ALLOW_MOVEMENT}" == "1" && -z "${EXPECTED_MOTION_MODE}" ]]; then
   exit 1
 fi
 if [[ "${VISION_POINTING}" == "1" ]] && \
-   pgrep -f '[g]st-launch-1.0.*v4l2src.*device=/dev/video4' >/dev/null 2>&1; then
-  echo "The legacy high-FPS camera publisher still owns /dev/video4." >&2
-  echo "Run: sudo systemctl disable --now g1-highfps-camera.service" >&2
+   ! systemctl is-active --quiet g1-highfps-camera.service; then
+  echo "The native 60 FPS camera publisher is not running." >&2
+  echo "Run: sudo systemctl enable --now g1-highfps-camera.service" >&2
   exit 1
 fi
 
@@ -177,7 +180,7 @@ if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
   echo "Arm commissioning enabled: manual ROS commands are allowed but remain disarmed until a client enables a session."
 fi
 if [[ "${VISION_POINTING}" == "1" ]]; then
-  echo "Vision pointing transport enabled: RealSense RGB/aligned depth plus XR manual arm ROS bridge."
+  echo "Vision pointing transport enabled: native 60 FPS RGB relay, RealSense depth, and XR manual arm ROS bridge."
 fi
 echo "ROS domain ${ROS_DOMAIN_ID}; interface ${ROBOT_INTERFACE}; static peers ${CLIENT_IP}, ${UNITREE_CONTROL_PEER}."
 echo "RGB remains RTP/UDP ${CLIENT_IP}:${CLIENT_PORT:-5600}; the robot exposes no HTTP server."

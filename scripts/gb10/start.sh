@@ -67,6 +67,14 @@ done
 if [[ "${VISION_POINTING}" == "1" && -z "${CALIBRATION}" ]]; then
   CALIBRATION="${ROOT_DIR}/runs/localization/g1-tabletop-calibration.json"
 fi
+if [[ "${VISION_POINTING}" == "1" ]]; then
+  # Match the existing D435I NVENC service without an unnecessary 720p
+  # upscale or a 30 Hz capture cap. YOLO FPS remains a separate metric.
+  VISION_WIDTH=960
+  VISION_HEIGHT=540
+  VISION_FPS=60
+  STREAM_FPS=60
+fi
 
 if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
   # The stock robot's Foxy participant is stable with Jazzy only when both

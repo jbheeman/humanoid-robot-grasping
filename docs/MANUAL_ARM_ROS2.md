@@ -133,14 +133,15 @@ interpolation, heartbeat release, state gates, and `rt/arm_sdk` output.
 
 ## First vision-derived pointing test
 
-The combined vision mode uses one D435I session for RGB and RGB-aligned depth,
-the fine-tuned plush detector on the GB10, the calibrated optical-to-torso
-transform, and the same manual ROS arm bridge tested above. The legacy camera
-service must be stopped because it otherwise owns `/dev/video4`:
+The combined vision mode preserves the native D435I `/dev/video4` to NVENC
+camera service for 960x540 RGB at 60 FPS. The robot project node captures
+depth separately, while the GB10 uses the calibrated depth-to-RGB geometry,
+optical-to-torso transform, fine-tuned plush detector, and the same manual ROS
+arm bridge tested above:
 
 ```bash
 # Robot
-sudo systemctl disable --now g1-highfps-camera.service
+sudo systemctl enable --now g1-highfps-camera.service
 cd ~/humanoid-robot-grasping
 CLIENT_IP=192.168.0.66 scripts/robot/start.sh --vision-pointing
 
