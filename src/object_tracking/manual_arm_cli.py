@@ -333,6 +333,16 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="JOINT=RAD",
         help="move several joints together; may be repeated",
     )
+    move.add_argument(
+        "--arm-deltas",
+        nargs=7,
+        type=float,
+        metavar="RAD",
+        help=(
+            "seven relative deltas in shoulder-pitch, shoulder-roll, "
+            "shoulder-yaw, elbow, wrist-roll, wrist-pitch, wrist-yaw order"
+        ),
+    )
     move.add_argument("--duration", type=float, default=2.0)
     move.add_argument("--hold", type=float, default=0.5)
     move.add_argument("--no-return", action="store_true")
@@ -379,13 +389,25 @@ def _validate_args(args: argparse.Namespace) -> None:
         if args.stay and args.no_return:
             raise RemoteArmError("use either --stay or --no-return, not both")
     if args.command == "move":
-        if args.joint_delta and args.joint:
-            raise RemoteArmError("use either --joint or --joint-delta, not both")
-        deltas = (
-            [_parse_joint_delta(value)[1] for value in args.joint_delta]
-            if args.joint_delta
-            else [args.delta]
+        selectors = sum(
+            (
+                bool(args.joint),
+                bool(args.joint_delta),
+                args.arm_deltas is not None,
+            )
         )
+        if selectors > 1:
+            raise RemoteArmError("use only one of --joint, --joint-delta, or --arm-deltas")
+        if args.arm_deltas is not None:
+            deltas = [delta for delta in args.arm_deltas if abs(delta) > 1e-9]
+            if not deltas:
+                raise RemoteArmError("--arm-deltas must request at least one movement")
+        else:
+            deltas = (
+                [_parse_joint_delta(value)[1] for value in args.joint_delta]
+                if args.joint_delta
+                else [args.delta]
+            )
         if any(
             not math.isfinite(delta) or not 0.0 < abs(delta) <= MAX_MANUAL_TOTAL_DELTA_RAD
             for delta in deltas
@@ -526,6 +548,12 @@ def _parse_joint_delta(value: str) -> tuple[str, float]:
 
 
 def _manual_deltas(args: argparse.Namespace, names: Sequence[str]) -> dict[str, float]:
+    if args.arm_deltas is not None:
+        return {
+            name: float(delta)
+            for name, delta in zip(names, args.arm_deltas)
+            if abs(float(delta)) > 1e-9
+        }
     if not args.joint_delta:
         joint_name = args.joint or f"{args.side}_shoulder_pitch_joint"
         if joint_name not in names:

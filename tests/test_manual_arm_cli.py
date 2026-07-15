@@ -3,6 +3,7 @@ import math
 
 import pytest
 
+from object_tracking.arm_tracking.joints import RIGHT_ARM_JOINT_NAMES
 from object_tracking.manual_arm_cli import (
     RemoteArmError,
     MAX_IK_WAYPOINT_DISTANCE_M,
@@ -100,6 +101,54 @@ def test_manual_multi_joint_deltas_parse_together() -> None:
         "right_shoulder_pitch_joint": 0.15,
         "right_elbow_joint": -0.10,
     }
+
+
+def test_manual_seven_joint_vector_uses_canonical_arm_order() -> None:
+    args = build_parser().parse_args(
+        [
+            "move",
+            "--side",
+            "right",
+            "--arm-deltas",
+            "0.10",
+            "-0.05",
+            "0",
+            "0.08",
+            "0",
+            "0.02",
+            "0",
+        ]
+    )
+    _validate_args(args)
+    assert _manual_deltas(args, RIGHT_ARM_JOINT_NAMES) == {
+        "right_shoulder_pitch_joint": 0.10,
+        "right_shoulder_roll_joint": -0.05,
+        "right_elbow_joint": 0.08,
+        "right_wrist_pitch_joint": 0.02,
+    }
+
+
+def test_manual_seven_joint_vector_rejects_empty_or_mixed_selection() -> None:
+    with pytest.raises(RemoteArmError, match="at least one"):
+        _validate_args(build_parser().parse_args(["move", "--arm-deltas", *(["0"] * 7)]))
+    with pytest.raises(RemoteArmError, match="only one"):
+        _validate_args(
+            build_parser().parse_args(
+                [
+                    "move",
+                    "--joint",
+                    "right_elbow_joint",
+                    "--arm-deltas",
+                    "0.1",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                    "0",
+                ]
+            )
+        )
 
 
 def test_ik_accepts_small_pelvis_frame_offset() -> None:
