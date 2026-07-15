@@ -409,6 +409,16 @@ class G1RightArmIK:
         # an otherwise valid shoulder pose.
         if first == "logo_link_0" or second == "logo_link_0":
             return True
+        # This is a right-arm-only reduced model.  The left hand is locked at
+        # URDF neutral rather than measured, so hand-to-hand contacts are not
+        # meaningful constraints for a right-arm pointing trajectory.  Keep
+        # every torso/hip/right-arm pair active.
+        if (
+            first.startswith("left_hand_") and second.startswith("right_hand_")
+        ) or (
+            first.startswith("right_hand_") and second.startswith("left_hand_")
+        ):
+            return True
         return frozenset((first, second)) in _ADJACENT_G1_COLLISION_PAIRS
 
     def _collision_pair_label(self, pair_index: int) -> str:

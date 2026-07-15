@@ -35,7 +35,11 @@ MAX_MANUAL_TOTAL_DELTA_RAD = 0.20
 MAX_IK_WAYPOINT_DISTANCE_M = 0.01
 MAX_IK_WAYPOINT_JOINT_DELTA_RAD = 0.35
 MAX_IK_CARTESIAN_OFFSET_M = 0.50
-MAX_VISION_TARGET_AGE_MS = 500.0
+# The 60 FPS TensorRT stream can briefly publish a valid 3-D target just over
+# half a second old while its next inference batch completes.  Treat 0.75 s as
+# the acquisition grace window; once active, the 20 Hz tracking loop replaces
+# it immediately with newer observations and freezes on genuine target loss.
+MAX_VISION_TARGET_AGE_MS = 750.0
 # The D435 tabletop geometry can place a nominal 25 cm standoff beyond the
 # G1's practical right-arm reach. Keep the hand on the pointing ray but cap
 # its distance from the shoulder, increasing standoff when necessary.

@@ -287,7 +287,7 @@ def test_fetch_vision_target_selects_better_evaluated_fallback(monkeypatch) -> N
 def test_fetch_vision_target_rejects_stale_sample(monkeypatch) -> None:
     payload = {
         "depth_valid": True,
-        "target_age_ms": 501.0,
+        "target_age_ms": 751.0,
         "object_xyz_m": [0.55, -0.1, 0.02],
     }
 
