@@ -48,6 +48,7 @@ g1_configure_cyclonedds() {
   local interface
   local peer
   local peers_xml=""
+  local legacy_peers_xml=""
   local -a peers=()
   local -a interfaces=()
 
@@ -142,6 +143,7 @@ EOF
       return 2
     fi
     peers_xml+="<Peer Address=\"${peer}\" />"
+    legacy_peers_xml+="<Peer address=\"${peer}\" />"
   done
   if [[ -z "${peers_xml}" ]]; then
     echo "At least one CycloneDDS static peer is required." >&2
@@ -150,21 +152,39 @@ EOF
 
   mkdir -p "${runtime_root}"
   umask 077
-  printf '%s\n' \
-    '<?xml version="1.0" encoding="UTF-8"?>' \
-    '<CycloneDDS>' \
-    '  <Domain Id="any">' \
-    '    <General>' \
-    "      <Interfaces>${interface_xml}</Interfaces>" \
-    '      <AllowMulticast>false</AllowMulticast>' \
-    '    </General>' \
-    '    <Discovery>' \
-    '      <ParticipantIndex>auto</ParticipantIndex>' \
-    '      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>' \
-    "      <Peers>${peers_xml}</Peers>" \
-    '    </Discovery>' \
-    '  </Domain>' \
-    '</CycloneDDS>' > "${config_file}"
+  if [[ "${ROS_DISTRO:-}" == "foxy" ]]; then
+    local legacy_interface="${interface_name%%,*}"
+    legacy_interface="${legacy_interface//[[:space:]]/}"
+    printf '%s\n' \
+      '<?xml version="1.0" encoding="UTF-8"?>' \
+      '<CycloneDDS>' \
+      '  <Domain id="any">' \
+      '    <General>' \
+      "      <NetworkInterfaceAddress>${legacy_interface}</NetworkInterfaceAddress>" \
+      '      <AllowMulticast>true</AllowMulticast>' \
+      '    </General>' \
+      '    <Discovery>' \
+      "      <Peers>${legacy_peers_xml}</Peers>" \
+      '    </Discovery>' \
+      '  </Domain>' \
+      '</CycloneDDS>' > "${config_file}"
+  else
+    printf '%s\n' \
+      '<?xml version="1.0" encoding="UTF-8"?>' \
+      '<CycloneDDS>' \
+      '  <Domain Id="any">' \
+      '    <General>' \
+      "      <Interfaces>${interface_xml}</Interfaces>" \
+      '      <AllowMulticast>false</AllowMulticast>' \
+      '    </General>' \
+      '    <Discovery>' \
+      '      <ParticipantIndex>auto</ParticipantIndex>' \
+      '      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>' \
+      "      <Peers>${peers_xml}</Peers>" \
+      '    </Discovery>' \
+      '  </Domain>' \
+      '</CycloneDDS>' > "${config_file}"
+  fi
 
   export CYCLONEDDS_URI="${config_file}"
   export G1_CYCLONEDDS_CONFIG="${config_file}"
