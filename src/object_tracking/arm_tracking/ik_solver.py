@@ -18,6 +18,8 @@ RIGHT_ARM_JOINTS = RIGHT_ARM_JOINT_NAMES
 # remaining mesh pairs (hand/hip, forearm/torso, table clearance, joint limits)
 # stay active in every planning query.
 _ADJACENT_G1_COLLISION_PAIRS = {
+    frozenset(("torso_link_0", "right_shoulder_pitch_link_0")),
+    frozenset(("torso_link_0", "right_shoulder_roll_link_0")),
     frozenset(("torso_link_0", "right_shoulder_yaw_link_0")),
     frozenset(("torso_link_0", "right_elbow_link_0")),
 }
