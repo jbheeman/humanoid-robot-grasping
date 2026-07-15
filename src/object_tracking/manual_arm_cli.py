@@ -365,6 +365,30 @@ def run(args: argparse.Namespace) -> int:
             _print(client.request("stop", reason="gb10_operator_stop", timeout_s=args.timeout))
             return 0
 
+        ik_solver = None
+        if args.command == "ik":
+            from pathlib import Path
+
+            import numpy as np
+
+            from object_tracking.arm_tracking.ik_solver import (
+                G1RightArmIK,
+                IKUnavailable,
+                default_urdf_path,
+            )
+
+            repo_root = Path(__file__).resolve().parents[2]
+            try:
+                # Model/mesh construction can take longer than the arm
+                # heartbeat TTL, so complete it while the bridge is disarmed.
+                ik_solver = G1RightArmIK(
+                    default_urdf_path(repo_root),
+                    position_tolerance_m=0.005,
+                    discontinuity_limit_rad=MAX_MANUAL_TOTAL_DELTA_RAD,
+                )
+            except IKUnavailable as exc:
+                raise RemoteArmError(str(exc)) from exc
+
         enabled = client.request("enable", timeout_s=args.timeout)
         session_id = str(enabled.get("session_id") or "")
         if not session_id:
@@ -390,7 +414,6 @@ def run(args: argparse.Namespace) -> int:
             raise RemoteArmError("Bridge has no fresh measured pose before movement")
         offset = 0 if side == "left" else 7
         baseline = [float(value) for value in latched[offset : offset + 7]]
-        ik_solver = None
         ik_start_transform = None
         ik_target_transform = None
         manual_deltas = None
@@ -401,25 +424,7 @@ def run(args: argparse.Namespace) -> int:
             # at the manual boundary so URDF/IK joint angles remain canonical.
             sdk_deltas = {name: -delta for name, delta in manual_deltas.items()}
         else:
-            from pathlib import Path
-
-            import numpy as np
-
-            from object_tracking.arm_tracking.ik_solver import (
-                G1RightArmIK,
-                IKUnavailable,
-                default_urdf_path,
-            )
-
-            repo_root = Path(__file__).resolve().parents[2]
-            try:
-                ik_solver = G1RightArmIK(
-                    default_urdf_path(repo_root),
-                    position_tolerance_m=0.005,
-                    discontinuity_limit_rad=MAX_MANUAL_TOTAL_DELTA_RAD,
-                )
-            except IKUnavailable as exc:
-                raise RemoteArmError(str(exc)) from exc
+            assert ik_solver is not None
             ik_start_transform = ik_solver.forward_kinematics(baseline)
             ik_target_transform = ik_start_transform.copy()
             ik_target_transform[:3, 3] += np.array([args.dx, args.dy, args.dz])
