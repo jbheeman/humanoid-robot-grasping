@@ -825,6 +825,7 @@ def run(args: argparse.Namespace) -> int:
             if args.command == "point":
                 used_detour = False
                 total_route_knots = 1
+                print("Planning collision-aware pointing route…", flush=True)
                 # Freeze one fresh predicted target for the initial approach.
                 # No arm target is published until every stage below has a
                 # collision-free joint-space route.

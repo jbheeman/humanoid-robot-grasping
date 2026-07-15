@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from pathlib import Path
+import time
 from typing import Any, Callable, Sequence
 
 import numpy as np
@@ -56,7 +57,8 @@ def collision_aware_joint_path(
     *,
     edge_step_rad: float = 0.04,
     extension_step_rad: float = 0.18,
-    max_iterations: int = 2500,
+    max_iterations: int = 500,
+    planning_timeout_s: float = 1.5,
     seed: int = 7,
 ) -> tuple[tuple[float, ...], ...] | None:
     """Plan a deterministic bidirectional RRT path and shortcut it.
@@ -79,6 +81,8 @@ def collision_aware_joint_path(
         or edge_step_rad <= 0.0
         or extension_step_rad <= 0.0
         or max_iterations <= 0
+        or not np.isfinite(planning_timeout_s)
+        or planning_timeout_s <= 0.0
     ):
         raise ValueError("invalid collision-aware joint path inputs")
 
@@ -126,7 +130,10 @@ def collision_aware_joint_path(
         return list(reversed(result))
 
     path: list[np.ndarray] | None = None
+    deadline = time.monotonic() + planning_timeout_s
     for _ in range(max_iterations):
+        if time.monotonic() >= deadline:
+            break
         sample = goal if rng.random() < 0.15 else rng.uniform(low, high)
         index_a = extend(nodes_a, parents_a, sample)
         if index_a is not None:
