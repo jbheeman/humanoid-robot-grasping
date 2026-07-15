@@ -47,13 +47,13 @@ class G1BunnyStop(tfds.core.GeneratorBasedBuilder):
                                 "image_right_top": image("Right head RGB observation."),
                                 "image_left_wrist": image("Left wrist RGB observation."),
                                 "image_right_wrist": image("Right wrist RGB observation."),
-                                "state": tfds.features.Tensor((19,), np.float32),
-                                "ee_state": tfds.features.Tensor((17,), np.float32),
-                                "ee_state_6d": tfds.features.Tensor((23,), np.float32),
+                                "state": tfds.features.Tensor(shape=(19,), dtype=np.float32),
+                                "ee_state": tfds.features.Tensor(shape=(17,), dtype=np.float32),
+                                "ee_state_6d": tfds.features.Tensor(shape=(23,), dtype=np.float32),
                             },
-                            "action": tfds.features.Tensor((19,), np.float32),
-                            "ee_action": tfds.features.Tensor((17,), np.float32),
-                            "ee_action_6d": tfds.features.Tensor((23,), np.float32),
+                            "action": tfds.features.Tensor(shape=(19,), dtype=np.float32),
+                            "ee_action": tfds.features.Tensor(shape=(17,), dtype=np.float32),
+                            "ee_action_6d": tfds.features.Tensor(shape=(23,), dtype=np.float32),
                             "discount": np.float32,
                             "is_first": np.bool_,
                             "is_last": np.bool_,
@@ -115,4 +115,3 @@ class G1BunnyStop(tfds.core.GeneratorBasedBuilder):
                         }
                     )
             yield path, {"steps": steps, "episode_metadata": {"file_path": path}}
-

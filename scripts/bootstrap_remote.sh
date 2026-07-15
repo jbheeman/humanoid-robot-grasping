@@ -26,6 +26,11 @@ if ! "$conda_bin" env list | awk '{print $1}' | grep -qx g1-bunny-data; then
   "$conda_bin" create -y -n g1-bunny-data python=3.10
 fi
 
-"$conda_bin" run -n g1-bunny-data python -m pip install numpy h5py tensorflow-datasets
+"$conda_bin" run -n g1-bunny-data python -m pip install \
+  numpy h5py \
+  'tensorflow-cpu==2.17.1' \
+  'tensorflow-datasets==4.9.6' \
+  'tensorflow-metadata==1.16.1' \
+  'protobuf==3.20.3'
 echo "remote project initialized at $project_root"
 echo "Isaac-specific packages must be run with Isaac Sim's bundled Python, not this conversion environment."

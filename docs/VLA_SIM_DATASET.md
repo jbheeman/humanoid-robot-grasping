@@ -32,12 +32,13 @@ dataset and the official UniFoLM conversion code:
    python -m g1_bunny_vla.validate_dataset /path/to/hdf5
    ```
 
-5. Copy the official `prepare_data/hdf5_to_rlds/rlds_dataset` builder, replace
-   its builder module with `rlds/g1_bunny_stop.py`, and build:
+5. Build RLDS directly with the project builder. This avoids the optional
+   Apache Beam dependency pulled in by the `tfds` command-line wrapper:
 
    ```bash
-   G1_BUNNY_HDF5_GLOB='/data/g1_bunny_stop/*.hdf5' \
-     tfds build --data_dir /data/rlds/g1_bunny_stop
+   python scripts/build_rlds.py \
+     --input '/data/g1_bunny_stop/episode_*.hdf5' \
+     --output /data/rlds
    ```
 
 6. Register `g1_bunny_stop` in a UniFoLM checkout:
@@ -59,4 +60,3 @@ by trajectory seed, not by frame, to avoid near-duplicate leakage.
 
 Synthetic smoke episodes are useful only to verify plumbing and are marked
 `smoke_test=true`; they must never be included in model training.
-
