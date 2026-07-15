@@ -1034,7 +1034,7 @@ def run(args: argparse.Namespace) -> int:
             if args.command == "point":
                 assert vision_target is not None
                 object_xyz = np.asarray(vision_target["object_xyz_m"], dtype=float)
-                shoulder_xyz = np.asarray(RIGHT_SHOULDER_POSITION_M, dtype=float)
+                shoulder_xyz = ik_solver.shoulder_position(measured_right)
                 expected_ray = object_xyz - shoulder_xyz
                 measured_ray = measured_transform[:3, 3] - shoulder_xyz
                 cosine = float(
@@ -1326,6 +1326,14 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
         _record_result({"ok": False, "error": str(exc)})
         print(f"manual arm command failed: {exc}")
         return 2
+    except Exception as exc:
+        # A client-side bug must still leave a concise result record for the
+        # launcher. `run()` has already executed its finally block, including
+        # the best-effort session stop.
+        message = f"internal client error: {type(exc).__name__}: {exc}"
+        _record_result({"ok": False, "error": message})
+        print(f"manual arm command failed: {message}")
+        return 1
 
 
 if __name__ == "__main__":
