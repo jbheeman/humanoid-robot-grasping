@@ -59,8 +59,23 @@ g1_configure_cyclonedds() {
     # discover the bridge.
     local fastdds_interface="${interface_name%%,*}"
     fastdds_interface="${fastdds_interface//[[:space:]]/}"
+    if [[ "${fastdds_interface}" == "auto" ]]; then
+      local route_peer="${peers_csv%%,*}"
+      route_peer="${route_peer//[[:space:]]/}"
+      fastdds_interface="$(
+        ip -4 route get "${route_peer}" 2>/dev/null |
+          awk 'NR==1 {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}' || true
+      )"
+    fi
+    if [[ -z "${fastdds_interface}" ]]; then
+      echo "Could not determine the Fast DDS interface used to reach ${peers_csv}." >&2
+      return 1
+    fi
     local fastdds_ip
-    fastdds_ip="$(ip -4 -o addr show dev "${fastdds_interface}" 2>/dev/null | awk 'NR==1 {split($4, a, "/"); print a[1]}')"
+    fastdds_ip="$(
+      ip -4 -o addr show dev "${fastdds_interface}" 2>/dev/null |
+        awk 'NR==1 {split($4, a, "/"); print a[1]}' || true
+    )"
     if [[ -z "${fastdds_ip}" ]]; then
       echo "Could not determine an IPv4 address for Fast DDS interface ${fastdds_interface}." >&2
       return 1
