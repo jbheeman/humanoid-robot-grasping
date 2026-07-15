@@ -404,6 +404,11 @@ class G1RightArmIK:
         pair = self.collision_model.collisionPairs[pair_index]
         first = self.collision_model.geometryObjects[pair.first].name
         second = self.collision_model.geometryObjects[pair.second].name
+        # The branded chest/logo mesh has no collision volume on the physical
+        # robot.  It sits inside the torso collision mesh and must not reject
+        # an otherwise valid shoulder pose.
+        if first == "logo_link_0" or second == "logo_link_0":
+            return True
         return frozenset((first, second)) in _ADJACENT_G1_COLLISION_PAIRS
 
     def _collision_pair_label(self, pair_index: int) -> str:
