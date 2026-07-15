@@ -28,6 +28,7 @@ if pgrep -f "${ROOT_DIR}/scripts/robot/ros_node.py" >/dev/null 2>&1; then
 fi
 
 pids=()
+critical_pids=()
 cleanup() {
   local pid
   for pid in "${pids[@]:-}"; do
@@ -40,6 +41,7 @@ trap cleanup EXIT INT TERM
 ROBOT_INTERFACE="${HARDWARE_INTERFACE}" CLIENT_IP="${CLIENT_IP}" \
   "${ROOT_DIR}/scripts/robot/rgb-relay.sh" &
 pids+=("$!")
+critical_pids+=("$!")
 
 (
   export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
@@ -62,6 +64,7 @@ pids+=("$!")
   exec "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${depth_args[@]}"
 ) &
 pids+=("$!")
+critical_pids+=("$!")
 
 MANUAL_ARM_PROFILE="${MANUAL_ARM_PROFILE:-xr}" \
 CLIENT_IP="${CLIENT_IP}" \
@@ -75,15 +78,18 @@ pids+=("$!")
 echo "Vision pointing stack started initially DISARMED."
 echo "  RGB: native 960x540@60 relay to ${CLIENT_IP}:5600"
 echo "  Depth: isolated CycloneDDS /g1/depth on domain ${DEPTH_ROS_DOMAIN_ID}"
-echo "  Arm: isolated Fast DDS XR manual bridge on domain ${ROS_DOMAIN_ID}"
+echo "  Arm: isolated Fast DDS XR manual bridge on domain ${ROS_DOMAIN_ID} (non-critical)"
 echo "  Combined log: ${G1_ACTIVE_LOG_FILE}"
 g1_console "Vision pointing stack starting DISARMED: RGB 60 FPS, depth domain ${DEPTH_ROS_DOMAIN_ID}, arm domain ${ROS_DOMAIN_ID}."
 
 set +e
-wait -n "${pids[@]}"
+# The arm bridge is deliberately non-critical: an SDK2/DDS abort must never
+# take down the independent RGB relay or depth publisher.  It has its own
+# detailed log and GB10 commands will report an unavailable bridge instead.
+wait -n "${critical_pids[@]}"
 status=$?
 set -e
-echo "A vision-pointing process exited; stopping the stack." >&2
+echo "A critical vision-pointing process exited; stopping the stack." >&2
 if [[ "${status}" == "0" || "${status}" == "130" ]]; then
   g1_console "Vision pointing stack stopped."
 else
