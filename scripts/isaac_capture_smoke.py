@@ -30,7 +30,11 @@ args.enable_cameras = True
 project_root = os.environ.get("G1_BUNNY_PROJECT_ROOT")
 if not project_root:
     raise SystemExit("Set G1_BUNNY_PROJECT_ROOT to the humanoid-robot-grasping checkout")
+unitree_sim_root = Path(os.environ.get("UNITREE_SIM_ROOT", Path.cwd()))
+if not (unitree_sim_root / "tasks").is_dir():
+    raise SystemExit(f"UNITREE_SIM_ROOT does not contain a tasks package: {unitree_sim_root}")
 sys.path.insert(0, str(Path(project_root) / "src"))
+sys.path.insert(0, str(unitree_sim_root))
 
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
