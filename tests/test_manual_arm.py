@@ -159,7 +159,6 @@ def test_arming_rebases_commands_to_the_measured_settled_pose() -> None:
     [
         (RIGHT_ARM_JOINT_NAMES[::-1], (0.0,) * 7, "canonical"),
         (RIGHT_ARM_JOINT_NAMES, (math.nan,) + (0.0,) * 6, "finite"),
-        (RIGHT_ARM_JOINT_NAMES, (0.051,) + (0.0,) * 6, "exceeds"),
     ],
 )
 def test_target_contract_rejections(names, positions, match) -> None:
@@ -175,6 +174,27 @@ def test_target_contract_rejections(names, positions, match) -> None:
             duration_s=1.0,
             sent_time_ns=clock.wall_ns,
         )
+
+
+def test_oversized_target_is_clamped_instead_of_rejected() -> None:
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    report = controller.set_side_target(
+        side="right",
+        session_id="session-a",
+        sequence=0,
+        joint_names=RIGHT_ARM_JOINT_NAMES,
+        position_rad=(0.20,) + (0.0,) * 6,
+        duration_s=1.0,
+        sent_time_ns=clock.wall_ns,
+    )
+    assert report["last_rejection"] is None
+    assert report["last_clamp"] == {
+        "side": "right",
+        "maximum_requested_delta_rad": pytest.approx(0.20),
+        "maximum_applied_delta_rad": pytest.approx(0.05),
+    }
+    assert report["desired_arm_q"][7] == pytest.approx(0.05)
 
 
 def test_heartbeat_timeout_ramps_to_zero_and_stop_resets_fault() -> None:

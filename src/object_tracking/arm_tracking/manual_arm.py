@@ -120,6 +120,7 @@ class ManualArmController:
         self._release_terminal = ArmState.DISARMED
         self._fault_reason: Optional[str] = None
         self._last_rejection: Optional[dict[str, str]] = None
+        self._last_clamp: Optional[dict[str, object]] = None
         self._baseline_q: Optional[tuple[float, ...]] = None
         self._maximum_measured_displacement = [0.0] * 14
         self._started = False
@@ -241,6 +242,7 @@ class ManualArmController:
             self._release_reason = None
             self._fault_reason = None
             self._last_rejection = None
+            self._last_clamp = None
             self._state = ArmState.ARMING
             self._emit_event("enable_accepted")
             return self.state_report()
@@ -313,12 +315,31 @@ class ManualArmController:
             assert self._desired_q is not None
             offset = 0 if side == "left" else 7
             current = self._desired_q[offset : offset + 7]
-            deltas = tuple(abs(target - start) for target, start in zip(positions, current))
-            if max(deltas, default=0.0) > self.config.max_target_delta_rad + 1e-9:
-                raise ArmBridgeError(
-                    f"Target step exceeds {self.config.max_target_delta_rad:.3f} rad",
-                    code="target_step_too_large",
+            requested_positions = positions
+            raw_deltas = tuple(target - start for target, start in zip(positions, current))
+            if max((abs(delta) for delta in raw_deltas), default=0.0) > (
+                self.config.max_target_delta_rad + 1e-9
+            ):
+                # Keep the hard physical step bound, but treat an excessive
+                # incoming target as a rate-limited continuation instead of
+                # rejecting it and terminating a vision-tracking session.
+                positions = tuple(
+                    start
+                    + max(
+                        -self.config.max_target_delta_rad,
+                        min(self.config.max_target_delta_rad, delta),
+                    )
+                    for start, delta in zip(current, raw_deltas)
                 )
+                self._last_clamp = {
+                    "side": side,
+                    "maximum_requested_delta_rad": max(abs(delta) for delta in raw_deltas),
+                    "maximum_applied_delta_rad": self.config.max_target_delta_rad,
+                }
+                self._emit_event("target_clamped", **self._last_clamp)
+            else:
+                self._last_clamp = None
+            deltas = tuple(abs(target - start) for target, start in zip(positions, current))
             for name, value, (lower, upper) in zip(names, positions, limits):
                 margin = self.config.joint_limit_margin_rad
                 if not lower + margin <= value <= upper - margin:
@@ -356,6 +377,7 @@ class ManualArmController:
                 sequence=int(sequence),
                 duration_s=round(float(duration_s), 6),
                 target_q=[round(value, 6) for value in positions],
+                requested_target_q=[round(value, 6) for value in requested_positions],
             )
             return self.state_report()
 
@@ -563,5 +585,6 @@ class ManualArmController:
                 "fault_reason": self._fault_reason,
                 "hold_reason": self._release_reason,
                 "last_rejection": self._last_rejection,
+                "last_clamp": self._last_clamp,
                 "allow_movement": self.config.allow_movement,
             }

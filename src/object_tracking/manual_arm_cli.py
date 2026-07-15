@@ -1174,6 +1174,7 @@ def run(args: argparse.Namespace) -> int:
                     (solution_q, *route.q_path[1:]),
                     maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD,
                 )
+                accepted_target = solution_q
                 for target in tracking_targets:
                     if stop.is_set():
                         break
@@ -1200,11 +1201,14 @@ def run(args: argparse.Namespace) -> int:
                             f"state={status.get('state')}, "
                             f"fault={status.get('fault_reason')}"
                         )
+                    desired_arm_q = status.get("desired_arm_q")
+                    if isinstance(desired_arm_q, list) and len(desired_arm_q) == 14:
+                        accepted_target = tuple(float(value) for value in desired_arm_q[-7:])
                 measured_tracking = (client.status or {}).get("measured_arm_q")
                 if not isinstance(measured_tracking, list) or len(measured_tracking) != 14:
                     raise RemoteArmError("Bridge has no measured pose after a tracking update")
                 measured_q = tuple(float(value) for value in measured_tracking[-7:])
-                commanded_q = tuple(float(value) for value in tracking_targets[-1])
+                commanded_q = accepted_target
                 tracking_lag = max(
                     abs(measured - commanded)
                     for measured, commanded in zip(measured_q, commanded_q)
