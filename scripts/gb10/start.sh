@@ -113,6 +113,19 @@ if [[ -z "${ROBOT_HOST}" ]]; then
   echo "ROBOT_HOST (the robot address) is required." >&2
   exit 1
 fi
+if [[ "${ROS_INTERFACE}" == "auto" ]]; then
+  # The GB10 has several live NICs.  CycloneDDS autodetection can choose a
+  # management or private-network interface, leaving the depth subscriber
+  # unable to discover the G1 even though RGB UDP still works.
+  ROS_INTERFACE="$(
+    ip -4 route get "${ROBOT_HOST}" 2>/dev/null |
+      awk 'NR==1 {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}'
+  )"
+fi
+if [[ -z "${ROS_INTERFACE}" ]]; then
+  echo "Could not determine the GB10 interface used to reach ${ROBOT_HOST}." >&2
+  exit 1
+fi
 if [[ ! -f "${MODEL}" ]]; then
   echo "Fine-tuned plushie model not found: ${MODEL}" >&2
   echo "Set MODEL to an existing checkpoint on the GB10." >&2
