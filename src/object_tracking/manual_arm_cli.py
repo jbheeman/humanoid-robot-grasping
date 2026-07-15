@@ -592,6 +592,7 @@ def run(args: argparse.Namespace) -> int:
         ik_position_error_m = None
         ik_measured_xyz_m = None
         ik_achieved_delta_xyz_m = None
+        validation_error = None
         if args.command == "ik":
             assert ik_solver is not None and ik_target_transform is not None
             measured_right = [float(value) for value in measured_after[-7:]]
@@ -605,7 +606,7 @@ def run(args: argparse.Namespace) -> int:
                 np.linalg.norm(measured_transform[:3, 3] - ik_target_transform[:3, 3])
             )
             if ik_position_error_m > 0.0075:
-                raise RemoteArmError(
+                validation_error = (
                     "measured hand pose did not reach the IK target: "
                     f"position error {ik_position_error_m:.4f} m"
                 )
@@ -633,7 +634,8 @@ def run(args: argparse.Namespace) -> int:
         final = client.stop_and_wait(session_id, "manual_move_complete", args.timeout)
         session_id = ""
         report = {
-                "ok": True,
+                "ok": validation_error is None,
+                "error": validation_error,
                 "mode": args.command,
                 "manual_deltas_rad": manual_deltas,
                 "sdk_deltas_rad": sdk_deltas,
@@ -660,7 +662,7 @@ def run(args: argparse.Namespace) -> int:
             report["trace_output"] = str(trace_path)
             report["trace_samples"] = len(motion_trace)
         _print(report)
-        return 0
+        return 0 if validation_error is None else 2
     except Exception as exc:
         trace_output = getattr(args, "trace_output", None)
         if trace_output is not None:
