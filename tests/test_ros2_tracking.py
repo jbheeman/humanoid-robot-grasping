@@ -217,6 +217,22 @@ def test_depth_message_is_bounded_and_decoded() -> None:
     np.testing.assert_array_equal(frame.z16, z16)
 
 
+def test_depth_only_observer_creates_no_arm_or_commissioning_entities() -> None:
+    runner = FakeRunner()
+    transport = RosTrackingTransport(
+        runner=runner,
+        types=_types(),
+        observe_depth_only=True,
+    )
+
+    transport.start()
+
+    assert set(runner.node.callbacks) == {"/g1/depth"}
+    assert runner.node.publishers == []
+    assert runner.node.clients == []
+    assert transport.arm_state()["state"] == "unreachable"
+
+
 def as_message_fields(header: object, envelope: bytes) -> dict[str, object]:
     header_size = int.from_bytes(envelope[:4], "big")
     payload = envelope[4 + header_size :]
@@ -263,9 +279,7 @@ def test_commissioning_uses_topic_request_response() -> None:
     transport.start()
     runner.node.commissioning_response.report_json = json.dumps({"phase": "CREATED"})
 
-    assert transport.commissioning("create", {"operator": "operator"}) == {
-        "phase": "CREATED"
-    }
+    assert transport.commissioning("create", {"operator": "operator"}) == {"phase": "CREATED"}
     request = runner.node.publishers[1].messages[0]
     assert request.operation == "create"
     assert json.loads(request.request_json) == {"operator": "operator"}

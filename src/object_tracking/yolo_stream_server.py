@@ -19,14 +19,22 @@ from typing import Optional
 import cv2
 import numpy as np
 from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse, Response, StreamingResponse
+from fastapi.responses import (
+    FileResponse,
+    HTMLResponse,
+    RedirectResponse,
+    Response,
+    StreamingResponse,
+)
 from fastapi.staticfiles import StaticFiles
 
 from object_tracking.research_session import ResearchSession
 from object_tracking.simple_tracker import SimpleTracker
 
 
-def unitree_g1_videohub_pipeline(device: str, width: int = 1280, height: int = 720, out_width: int = 640, out_height: int = 360) -> str:
+def unitree_g1_videohub_pipeline(
+    device: str, width: int = 1280, height: int = 720, out_width: int = 640, out_height: int = 360
+) -> str:
     device_path = device if device.startswith("/") else f"/dev/{device}"
     return (
         f"v4l2src device={device_path} io-mode=2 do-timestamp=true ! "
@@ -50,7 +58,9 @@ UNITREE_UDP_PIPELINE = (
 
 DEFAULT_CAMERA_NAME = os.environ.get("G1_CAMERA_NAME", "main")
 DEFAULT_CAMERA_DEVICE = os.environ.get("G1_CAMERA_DEVICE", "videohub_pc4")
-DEFAULT_PIPELINE = os.environ.get("G1_CAMERA_PIPELINE") or unitree_g1_videohub_pipeline(DEFAULT_CAMERA_DEVICE)
+DEFAULT_PIPELINE = os.environ.get("G1_CAMERA_PIPELINE") or unitree_g1_videohub_pipeline(
+    DEFAULT_CAMERA_DEVICE
+)
 REPO_ROOT = Path(__file__).resolve().parents[2]
 GB10_WEB_DIR = REPO_ROOT / "scripts" / "gb10" / "web"
 COMMISSIONING_TEMPLATE = REPO_ROOT / "scripts" / "robot" / "web" / "arm_commissioning.html"
@@ -225,7 +235,9 @@ def open_capture(pipeline: str, capture_backend: str = "auto") -> tuple[Any, str
 
     if capture_backend == "opencv":
         if not opencv_gstreamer_enabled():
-            raise RuntimeError("OpenCV GStreamer backend requested, but cv2 was built without GStreamer.")
+            raise RuntimeError(
+                "OpenCV GStreamer backend requested, but cv2 was built without GStreamer."
+            )
         cap = cv2.VideoCapture(pipeline, cv2.CAP_GSTREAMER)
         if not cap.isOpened():
             cap.release()
@@ -454,8 +466,10 @@ def _inference_loop(
     while True:
         with frame_ready:
             frame_ready.wait_for(
-                lambda: state.raw_frame is not None
-                and state.frame_count - last_processed_frame_id >= max(infer_every, 1),
+                lambda: (
+                    state.raw_frame is not None
+                    and state.frame_count - last_processed_frame_id >= max(infer_every, 1)
+                ),
                 timeout=0.2,
             )
             if state.raw_frame is None or state.frame_count == last_processed_frame_id:
@@ -523,7 +537,9 @@ def _tabletop_homography(value: dict[str, Any]) -> np.ndarray | None:
     rows: list[list[float]] = []
     rhs: list[float] = []
     for (u, v), (x, y) in zip(src, dst):
-        rows.extend([[u, v, 1.0, 0.0, 0.0, 0.0, -u * x, -v * x], [0.0, 0.0, 0.0, u, v, 1.0, -u * y, -v * y]])
+        rows.extend(
+            [[u, v, 1.0, 0.0, 0.0, 0.0, -u * x, -v * x], [0.0, 0.0, 0.0, u, v, 1.0, -u * y, -v * y]]
+        )
         rhs.extend([x, y])
     try:
         h = np.linalg.solve(np.asarray(rows, dtype=float), np.asarray(rhs, dtype=float))
@@ -555,7 +571,11 @@ def tabletop_localization(tracks: list[dict[str, Any]]) -> dict[str, Any]:
     u, v = (float(target["center_xy"][0]), float(target["center_xy"][1]))
     projected = homography @ np.array([u, v, 1.0], dtype=float)
     if abs(projected[2]) < 1e-9:
-        return {"configured": True, "status": "projection_failed", "track_id": target.get("track_id")}
+        return {
+            "configured": True,
+            "status": "projection_failed",
+            "track_id": target.get("track_id"),
+        }
     x, y = (float(projected[0] / projected[2]), float(projected[1] / projected[2]))
     tabletop = value["tabletop"]
     inside = 0.0 <= x <= float(tabletop["width_m"]) and 0.0 <= y <= float(tabletop["depth_m"])
@@ -665,8 +685,8 @@ def _commissioning_html() -> str:
         'const headers = () => ({"Content-Type": "application/json"});',
     )
     html = html.replace(
-        'Enter the token and connect. No movement occurs on connection.',
-        'Connect to inspect state. No movement occurs on connection.',
+        "Enter the token and connect. No movement occurs on connection.",
+        "Connect to inspect state. No movement occurs on connection.",
     )
     html = html.replace(
         'authToken=$("token").value; await refresh(); if (state) $("token").value="";',
@@ -841,7 +861,9 @@ def _validate_tabletop_calibration(payload: dict[str, Any]) -> dict[str, Any]:
     except (KeyError, TypeError, ValueError) as exc:
         raise HTTPException(status_code=422, detail="invalid tabletop calibration payload") from exc
     if not (0.05 <= width_m <= 5.0 and 0.05 <= depth_m <= 5.0):
-        raise HTTPException(status_code=422, detail="tabletop dimensions must be between 5 cm and 5 m")
+        raise HTTPException(
+            status_code=422, detail="tabletop dimensions must be between 5 cm and 5 m"
+        )
     if image_width <= 0 or image_height <= 0:
         raise HTTPException(status_code=422, detail="camera frame dimensions must be positive")
     if not isinstance(corners, list) or len(corners) != len(_TABLETOP_CORNER_ORDER):
@@ -849,7 +871,9 @@ def _validate_tabletop_calibration(payload: dict[str, Any]) -> dict[str, Any]:
     validated: list[dict[str, Any]] = []
     for expected, item in zip(_TABLETOP_CORNER_ORDER, corners):
         if not isinstance(item, dict) or item.get("name") != expected:
-            raise HTTPException(status_code=422, detail="corners must be near-left, near-right, far-right, far-left")
+            raise HTTPException(
+                status_code=422, detail="corners must be near-left, near-right, far-right, far-left"
+            )
         try:
             x = float(item["x"])
             y = float(item["y"])
@@ -874,7 +898,9 @@ def tabletop_calibration_get() -> dict[str, Any]:
     try:
         value = json.loads(TABLETOP_CALIBRATION_PATH.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as exc:
-        raise HTTPException(status_code=500, detail=f"could not read tabletop calibration: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"could not read tabletop calibration: {exc}"
+        ) from exc
     return {"configured": True, "calibration": value}
 
 
@@ -888,7 +914,9 @@ def tabletop_calibration_save(payload: dict[str, Any]) -> dict[str, Any]:
         temporary.write_text(json.dumps(value, indent=2, sort_keys=True) + "\n", encoding="utf-8")
         temporary.replace(TABLETOP_CALIBRATION_PATH)
     except OSError as exc:
-        raise HTTPException(status_code=500, detail=f"could not save tabletop calibration: {exc}") from exc
+        raise HTTPException(
+            status_code=500, detail=f"could not save tabletop calibration: {exc}"
+        ) from exc
     return {"ok": True, "path": str(TABLETOP_CALIBRATION_PATH), "calibration": value}
 
 
@@ -1073,9 +1101,7 @@ def mjpeg_generator():
         yield (
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n"
-            b"Cache-Control: no-cache\r\n\r\n"
-            + data
-            + b"\r\n"
+            b"Cache-Control: no-cache\r\n\r\n" + data + b"\r\n"
         )
 
         if stream_fps_limit > 0:
@@ -1091,10 +1117,16 @@ def stream() -> StreamingResponse:
 
 
 def build_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(description="Serve a low-latency MJPEG stream from a GStreamer camera source.")
+    parser = argparse.ArgumentParser(
+        description="Serve a low-latency MJPEG stream from a GStreamer camera source."
+    )
     parser.add_argument("--pipeline", default=DEFAULT_PIPELINE)
     parser.add_argument("--camera-name", default=DEFAULT_CAMERA_NAME)
-    parser.add_argument("--model", default="none", help="YOLO model path/name. Use none to disable detector dependencies.")
+    parser.add_argument(
+        "--model",
+        default="none",
+        help="YOLO model path/name. Use none to disable detector dependencies.",
+    )
     parser.add_argument("--imgsz", type=int, default=320)
     parser.add_argument("--conf", type=float, default=0.35)
     parser.add_argument("--infer-every", type=int, default=1)
@@ -1134,6 +1166,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--arm-home", help="Validated commissioned right-arm home profile")
     parser.add_argument("--robot-id", help="Robot identity bound to the commissioned arm home")
     parser.add_argument("--target-hz", type=float, default=15.0)
+    parser.add_argument(
+        "--ros-depth-only",
+        action="store_true",
+        help="Subscribe only to /g1/depth; manual arm control uses its separate ROS client",
+    )
     parser.add_argument(
         "--trajectory-model",
         help="Optional trained 3D trajectory checkpoint; invalid/insufficient history falls back to alpha-beta",
@@ -1411,7 +1448,7 @@ def main() -> None:
     try:
         from object_tracking.ros2_tracking import create_ros_tracking_transport
 
-        tracking_transport = create_ros_tracking_transport()
+        tracking_transport = create_ros_tracking_transport(observe_depth_only=args.ros_depth_only)
         if args.calibration:
             from object_tracking.arm_tracking.runtime import ArmTrackingRuntime, RuntimeConfig
 

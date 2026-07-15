@@ -85,6 +85,7 @@ class RosTrackingTransport:
         monotonic: Callable[[], float] = time.monotonic,
         service_timeout_s: float = 2.0,
         state_topic_timeout_s: float = 0.5,
+        observe_depth_only: bool = False,
     ) -> None:
         if service_timeout_s <= 0.0:
             raise ValueError("service_timeout_s must be positive")
@@ -97,6 +98,7 @@ class RosTrackingTransport:
         self._monotonic = monotonic
         self._service_timeout_s = service_timeout_s
         self._state_topic_timeout_s = state_topic_timeout_s
+        self._observe_depth_only = bool(observe_depth_only)
         self._node: Optional[object] = None
         self._target_publisher: Optional[object] = None
         self._arm_client: Optional[object] = None
@@ -145,31 +147,39 @@ class RosTrackingTransport:
                 durability=types["DurabilityPolicy"].VOLATILE,
             )
             try:
-                target_publisher = node.create_publisher(
-                    types["ArmTarget"], ARM_TARGET_TOPIC, qos
-                )
-                arm_subscription = node.create_subscription(
-                    types["ArmState"], ARM_STATE_TOPIC, self._on_arm_state, qos
-                )
                 depth_subscription = node.create_subscription(
                     types["CompressedDepth"], DEPTH_TOPIC, self._on_depth, depth_qos
                 )
-                commissioning_subscription = node.create_subscription(
-                    types["CommissioningState"],
-                    COMMISSIONING_STATE_TOPIC,
-                    self._on_commissioning_state,
-                    qos,
-                )
-                commissioning_request_publisher = node.create_publisher(
-                    types["CommissioningRequest"], COMMISSIONING_REQUEST_TOPIC, qos
-                )
-                commissioning_response_subscription = node.create_subscription(
-                    types["CommissioningResponse"],
-                    COMMISSIONING_RESPONSE_TOPIC,
-                    self._on_commissioning_response,
-                    qos,
-                )
-                arm_client = node.create_client(types["ArmControl"], ARM_CONTROL_SERVICE)
+                if self._observe_depth_only:
+                    target_publisher = None
+                    arm_subscription = None
+                    commissioning_subscription = None
+                    commissioning_request_publisher = None
+                    commissioning_response_subscription = None
+                    arm_client = None
+                else:
+                    target_publisher = node.create_publisher(
+                        types["ArmTarget"], ARM_TARGET_TOPIC, qos
+                    )
+                    arm_subscription = node.create_subscription(
+                        types["ArmState"], ARM_STATE_TOPIC, self._on_arm_state, qos
+                    )
+                    commissioning_subscription = node.create_subscription(
+                        types["CommissioningState"],
+                        COMMISSIONING_STATE_TOPIC,
+                        self._on_commissioning_state,
+                        qos,
+                    )
+                    commissioning_request_publisher = node.create_publisher(
+                        types["CommissioningRequest"], COMMISSIONING_REQUEST_TOPIC, qos
+                    )
+                    commissioning_response_subscription = node.create_subscription(
+                        types["CommissioningResponse"],
+                        COMMISSIONING_RESPONSE_TOPIC,
+                        self._on_commissioning_response,
+                        qos,
+                    )
+                    arm_client = node.create_client(types["ArmControl"], ARM_CONTROL_SERVICE)
             except Exception:
                 if self._owns_runner:
                     runner.close()
@@ -180,15 +190,21 @@ class RosTrackingTransport:
             self._target_publisher = target_publisher
             self._arm_client = arm_client
             self._commissioning_request_publisher = commissioning_request_publisher
-            self._entities = [
-                ("destroy_subscription", arm_subscription),
-                ("destroy_subscription", depth_subscription),
-                ("destroy_subscription", commissioning_subscription),
-                ("destroy_subscription", commissioning_response_subscription),
-                ("destroy_client", arm_client),
-                ("destroy_publisher", commissioning_request_publisher),
-                ("destroy_publisher", target_publisher),
-            ]
+            self._entities = [("destroy_subscription", depth_subscription)]
+            if not self._observe_depth_only:
+                self._entities.extend(
+                    [
+                        ("destroy_subscription", arm_subscription),
+                        ("destroy_subscription", commissioning_subscription),
+                        (
+                            "destroy_subscription",
+                            commissioning_response_subscription,
+                        ),
+                        ("destroy_client", arm_client),
+                        ("destroy_publisher", commissioning_request_publisher),
+                        ("destroy_publisher", target_publisher),
+                    ]
+                )
             self._started = True
 
     def close(self) -> None:
@@ -270,9 +286,7 @@ class RosTrackingTransport:
     def enable_arm(self, session_id: str, calibration_id: str) -> dict[str, Any]:
         if not session_id or not calibration_id:
             raise ValueError("session_id and calibration_id are required")
-        return self._arm_call(
-            "enable", session_id=session_id, calibration_id=calibration_id
-        )
+        return self._arm_call("enable", session_id=session_id, calibration_id=calibration_id)
 
     def heartbeat_arm(self, session_id: str) -> dict[str, Any]:
         if not session_id:
@@ -475,9 +489,9 @@ class RosTrackingTransport:
             byte_order="little",
             registered_to_rgb=bool(message.registered_to_rgb),
         )
-        encoded_header = json.dumps(
-            asdict(header), separators=(",", ":"), sort_keys=True
-        ).encode("utf-8")
+        encoded_header = json.dumps(asdict(header), separators=(",", ":"), sort_keys=True).encode(
+            "utf-8"
+        )
         return _HEADER_LENGTH.pack(len(encoded_header)) + encoded_header + payload
 
     def _require_started(self) -> None:
@@ -485,7 +499,7 @@ class RosTrackingTransport:
             raise RuntimeError("ROS tracking transport is not running")
 
 
-def create_ros_tracking_transport() -> RosTrackingTransport:
+def create_ros_tracking_transport(*, observe_depth_only: bool = False) -> RosTrackingTransport:
     """Create the production GB10 transport without importing ROS eagerly."""
 
-    return RosTrackingTransport()
+    return RosTrackingTransport(observe_depth_only=observe_depth_only)
