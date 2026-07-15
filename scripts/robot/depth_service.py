@@ -470,6 +470,11 @@ class DepthService:
                 consecutive_timeouts = 0
                 now = time.monotonic()
                 if now < next_transmit_at:
+                    # ``wait_for_frames`` can return immediately while the
+                    # RealSense queue is backed up.  Yield here so this
+                    # capture thread cannot monopolise the Python runtime and
+                    # starve the ROS timer that publishes the envelope.
+                    self.stop_event.wait(min(next_transmit_at - now, 0.02))
                     continue
                 next_transmit_at = now + (1.0 / self.transmit_fps)
                 if self.rgb_relay is not None and frame.color_bgr is not None:
