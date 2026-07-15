@@ -775,6 +775,8 @@ def run(args: argparse.Namespace) -> int:
         if not isinstance(measured_after, list) or len(measured_after) != 14:
             raise RemoteArmError("Bridge has no fresh measured pose after movement")
         measured_progress: dict[str, float] = {}
+        joint_verification: dict[str, dict[str, float | bool]] = {}
+        manual_verification_failures: list[str] = []
         for joint_name, sdk_delta in sdk_deltas.items():
             joint_offset = offset + names.index(joint_name)
             progress = _signed_progress(
@@ -784,16 +786,24 @@ def run(args: argparse.Namespace) -> int:
             )
             measured_progress[joint_name] = progress
             required_displacement = max(0.005, abs(sdk_delta) * 0.5)
-            if args.command == "move" and progress < required_displacement:
-                raise RemoteArmError(
-                    f"{joint_name} did not follow command: "
-                    f"measured {progress:.4f} rad, "
-                    f"required at least {required_displacement:.4f} rad"
-                )
+            passed = progress >= required_displacement
+            joint_verification[joint_name] = {
+                "requested_sdk_delta_rad": sdk_delta,
+                "measured_progress_rad": progress,
+                "required_progress_rad": required_displacement,
+                "progress_fraction": (progress / abs(sdk_delta) if abs(sdk_delta) > 1e-9 else 0.0),
+                "passed": passed,
+            }
+            if args.command == "move" and not passed:
+                manual_verification_failures.append(joint_name)
         ik_position_error_m = None
         ik_measured_xyz_m = None
         ik_achieved_delta_xyz_m = None
         validation_error = None
+        if manual_verification_failures:
+            validation_error = "manual joint verification failed: " + ", ".join(
+                manual_verification_failures
+            )
         point_angular_error_deg = None
         if args.command in ("ik", "point"):
             assert ik_solver is not None and ik_target_transform is not None
@@ -874,6 +884,7 @@ def run(args: argparse.Namespace) -> int:
             "sdk_deltas_rad": sdk_deltas,
             "guarded_steps": step_count,
             "measured_outward_progress_rad": measured_progress,
+            "joint_verification": joint_verification,
             "ik_start_xyz_m": (
                 None if ik_start_transform is None else ik_start_transform[:3, 3].tolist()
             ),

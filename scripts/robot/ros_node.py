@@ -90,10 +90,10 @@ def build_parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path.home() / ".config/g1-grasping/right-arm-home.json",
     )
+    parser.add_argument("--depth-source", choices=("auto", "ros", "librealsense"), default="auto")
     parser.add_argument(
-        "--depth-source", choices=("auto", "ros", "librealsense"), default="auto"
+        "--ros-image-topic", default="/camera/camera/aligned_depth_to_color/image_raw"
     )
-    parser.add_argument("--ros-image-topic", default="/camera/camera/aligned_depth_to_color/image_raw")
     parser.add_argument(
         "--ros-camera-info-topic",
         default="/camera/camera/aligned_depth_to_color/camera_info",
@@ -111,6 +111,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--disable-depth",
         action="store_true",
         help="Run without opening or publishing depth; intended for arm-only commissioning.",
+    )
+    parser.add_argument(
+        "--depth-only",
+        action="store_true",
+        help="Publish RealSense depth without constructing any Unitree arm controller.",
     )
     return parser
 
@@ -171,9 +176,7 @@ def _safe_json(value: object) -> str:
             return [finite_json(nested) for nested in item]
         return item
 
-    return json.dumps(
-        finite_json(value), separators=(",", ":"), sort_keys=True, allow_nan=False
-    )
+    return json.dumps(finite_json(value), separators=(",", ":"), sort_keys=True, allow_nan=False)
 
 
 def _optional_string(value: object) -> str:
@@ -184,6 +187,86 @@ def _age_ms(value: object) -> int:
     if value is None:
         return (1 << 32) - 1
     return max(0, min((1 << 32) - 1, int(round(float(value)))))
+
+
+class DepthOnlyRosNode:
+    """Isolated depth publisher with no native Unitree DDS or arm entities."""
+
+    def __init__(self, args: argparse.Namespace) -> None:
+        if args.disable_depth:
+            raise ValueError("--depth-only cannot be combined with --disable-depth")
+        if args.allow_movement:
+            raise ValueError("--depth-only never permits movement")
+        if args.realsense_rgb_target:
+            raise ValueError("--depth-only does not relay RGB")
+        if args.depth_publish_fps <= 0.0 or not math.isfinite(args.depth_publish_fps):
+            raise ValueError("--depth-publish-fps must be finite and positive")
+        self.args = args
+        self.types = _imports()
+        self.runner = Ros2NodeRunner("g1_robot_depth")
+        self.node = self.runner.start()
+        depth_qos = self.types["QoSProfile"](
+            history=self.types["HistoryPolicy"].KEEP_LAST,
+            depth=1,
+            reliability=self.types["ReliabilityPolicy"].BEST_EFFORT,
+            durability=self.types["DurabilityPolicy"].VOLATILE,
+        )
+        self.depth_publisher = self.node.create_publisher(
+            self.types["CompressedDepth"], DEPTH_TOPIC, depth_qos
+        )
+        direct = RealSenseDepthSource(
+            width=args.depth_width,
+            height=args.depth_height,
+            fps=args.depth_capture_fps,
+            serial=args.depth_serial,
+            enable_color=False,
+            registered_to_output_rgb=False,
+        )
+        if args.depth_source != "librealsense":
+            self.runner.close()
+            raise ValueError("--depth-only currently requires --depth-source librealsense")
+        self.depth_service = DepthService(direct, transmit_fps=args.depth_publish_fps)
+        try:
+            self.depth_service.start(args.calibration)
+        except Exception:
+            self.runner.close()
+            raise
+        self._last_depth_sequence = -1
+        self.node.create_timer(1.0 / args.depth_publish_fps, self._publish_depth)
+
+    def _publish_depth(self) -> None:
+        with self.depth_service.lock:
+            sequence = self.depth_service.latest_sequence
+            envelope = self.depth_service.latest_envelope
+        if envelope is None or sequence <= self._last_depth_sequence:
+            return
+        try:
+            (header_size,) = _HEADER_LENGTH.unpack(envelope[: _HEADER_LENGTH.size])
+            payload_offset = _HEADER_LENGTH.size + header_size
+            header = json.loads(envelope[_HEADER_LENGTH.size : payload_offset])
+            payload = envelope[payload_offset:]
+            message = self.types["CompressedDepth"]()
+            message.version = int(header["version"])
+            message.sequence = int(header["sequence"])
+            message.width = int(header["width"])
+            message.height = int(header["height"])
+            message.depth_scale = float(header["depth_scale"])
+            message.sensor_timestamp_ms = float(header["sensor_timestamp_ms"])
+            message.timestamp_domain = str(header["timestamp_domain"])
+            message.calibration_id = str(header["calibration_id"])
+            message.registered_to_rgb = bool(header.get("registered_to_rgb", False))
+            message.encoding = str(header["encoding"])
+            message.uncompressed_size = int(header["uncompressed_size"])
+            message.checksum_sha256 = str(header["checksum_sha256"])
+            message.payload = list(payload)
+            self.depth_publisher.publish(message)
+            self._last_depth_sequence = sequence
+        except Exception:
+            return
+
+    def close(self) -> None:
+        self.depth_service.stop()
+        self.runner.close()
 
 
 class RobotRosNode:
@@ -226,9 +309,7 @@ class RobotRosNode:
                 waist_reference_rad=(
                     None if calibration is None else calibration.waist_reference_rad
                 ),
-                max_velocity_rad_s=(
-                    0.10 if control_mode is ArmControlMode.COMMISSIONING else 0.50
-                ),
+                max_velocity_rad_s=(0.10 if control_mode is ArmControlMode.COMMISSIONING else 0.50),
                 max_acceleration_rad_s2=(
                     0.50 if control_mode is ArmControlMode.COMMISSIONING else 2.0
                 ),
@@ -400,18 +481,16 @@ class RobotRosNode:
 
     @staticmethod
     def _stamp_ns(stamp: object) -> int:
-        return int(getattr(stamp, "sec", 0)) * 1_000_000_000 + int(
-            getattr(stamp, "nanosec", 0)
-        )
+        return int(getattr(stamp, "sec", 0)) * 1_000_000_000 + int(getattr(stamp, "nanosec", 0))
 
     def _on_manual_target(self, side: str, message: object) -> None:
         if self.args.control_mode != "manual":
             return
         try:
             duration = getattr(message, "move_duration")
-            duration_s = float(getattr(duration, "sec", 0)) + float(
-                getattr(duration, "nanosec", 0)
-            ) / 1e9
+            duration_s = (
+                float(getattr(duration, "sec", 0)) + float(getattr(duration, "nanosec", 0)) / 1e9
+            )
             self.controller.set_side_target(
                 side=side,
                 session_id=str(message.session_id),
@@ -552,9 +631,7 @@ class RobotRosNode:
         try:
             return handlers[operation]()
         except KeyError as exc:
-            raise ArmBridgeError(
-                "Unknown commissioning operation", code="invalid_request"
-            ) from exc
+            raise ArmBridgeError("Unknown commissioning operation", code="invalid_request") from exc
 
     def _on_commissioning_request(self, request: object) -> None:
         """Serve GB10 commissioning commands over correlated ROS topics.
@@ -647,9 +724,7 @@ class RobotRosNode:
         pending = report.get("pending")
         message.has_pending_motion = pending is not None
         message.pending_motion_json = _safe_json(pending) if pending is not None else "{}"
-        message.checkpoints_json = [
-            _safe_json(value) for value in report.get("checkpoints", [])
-        ]
+        message.checkpoints_json = [_safe_json(value) for value in report.get("checkpoints", [])]
         message.fault_reason = _optional_string(report.get("fault_reason"))
         message.report_json = _safe_json(report)
         self.commissioning_state_publisher.publish(message)
@@ -696,7 +771,7 @@ class RobotRosNode:
 def main() -> int:
     args = build_parser().parse_args()
     try:
-        runtime = RobotRosNode(args)
+        runtime = DepthOnlyRosNode(args) if args.depth_only else RobotRosNode(args)
     except Exception as exc:
         print(f"robot ROS node startup failed: {exc}")
         return 2
@@ -712,9 +787,9 @@ def main() -> int:
         _safe_json(
             {
                 "ok": True,
-                "node": "g1_robot_bridge",
+                "node": "g1_robot_depth" if args.depth_only else "g1_robot_bridge",
                 "allow_movement": args.allow_movement,
-                "control_mode": args.control_mode,
+                "control_mode": "depth-only" if args.depth_only else args.control_mode,
                 "arm_target": ARM_TARGET_TOPIC,
                 "arm_state": ARM_STATE_TOPIC,
                 "depth": DEPTH_TOPIC,

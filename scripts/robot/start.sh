@@ -82,6 +82,9 @@ if [[ "${VISION_POINTING}" == "1" ]] && \
   echo "Run: sudo systemctl enable --now g1-highfps-camera.service" >&2
   exit 1
 fi
+if [[ "${VISION_POINTING}" == "1" ]]; then
+  exec "${ROOT_DIR}/scripts/robot/vision-pointing.sh"
+fi
 
 source "${ROOT_DIR}/scripts/shared/ros-env.sh"
 g1_source_ros "${ROOT_DIR}" foxy

@@ -54,7 +54,7 @@ server_args=()
 while (($#)); do
   case "$1" in
     --arm-commissioning) ARM_COMMISSIONING=1 ;;
-    --vision-pointing) ARM_COMMISSIONING=1; VISION_POINTING=1 ;;
+    --vision-pointing) VISION_POINTING=1 ;;
     -h|--help)
       echo "Usage: scripts/gb10/start.sh [--arm-commissioning|--vision-pointing] [server options]"
       exit 0
@@ -74,6 +74,7 @@ if [[ "${VISION_POINTING}" == "1" ]]; then
   VISION_HEIGHT=540
   VISION_FPS=60
   STREAM_FPS=60
+  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
 fi
 
 if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
