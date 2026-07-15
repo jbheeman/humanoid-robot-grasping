@@ -95,7 +95,9 @@ if [[ "${VISION_POINTING}" == "1" ]]; then
   VISION_HEIGHT=540
   VISION_FPS=60
   STREAM_FPS=60
-  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+  # Depth is a large custom ROS message.  Match the G1 depth process with
+  # Fast DDS; this is the same cross-distro transport used by arm-remote.
+  export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
   ROS_DOMAIN_ID="${G1_DEPTH_ROS_DOMAIN_ID:-43}"
 fi
 

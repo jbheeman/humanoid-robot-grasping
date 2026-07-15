@@ -44,7 +44,10 @@ pids+=("$!")
 critical_pids+=("$!")
 
 (
-  export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+  # Use the same Fast DDS transport proven by the remote manual-arm bridge.
+  # Foxy CycloneDDS intermittently fails to deserialize the large Jazzy depth
+  # envelope after discovery, even while its local publisher is healthy.
+  export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
   source "${ROOT_DIR}/scripts/shared/ros-env.sh"
   g1_source_ros "${ROOT_DIR}" foxy
   g1_configure_cyclonedds depth-robot \
