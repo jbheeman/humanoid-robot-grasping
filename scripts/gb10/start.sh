@@ -13,8 +13,8 @@ MODEL="${MODEL:-${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quality_12h_
 #ROBOT_HOST="${ROBOT_HOST:-}"
 ROBOT_HOST="192.168.0.213"
 ROS_INTERFACE="${ROS_INTERFACE:-auto}"
-# The robot project bridge runs in domain 42. Keep it separate from Unitree's
-# native motor DDS domain 0 and match it by default for ROS discovery.
+# Manual arm control runs in domain 42. Vision-pointing overrides this process
+# to depth domain 43 so Foxy CycloneDDS never discovers the Fast DDS arm graph.
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 UDP_PORT="${UDP_PORT:-5600}"
 HOST="${HOST:-0.0.0.0}"
@@ -75,6 +75,7 @@ if [[ "${VISION_POINTING}" == "1" ]]; then
   VISION_FPS=60
   STREAM_FPS=60
   export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
+  ROS_DOMAIN_ID="${G1_DEPTH_ROS_DOMAIN_ID:-43}"
 fi
 
 if [[ "${ARM_COMMISSIONING}" == "1" ]]; then

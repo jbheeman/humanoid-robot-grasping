@@ -8,6 +8,7 @@ PROJECT_INTERFACE="${ROBOT_INTERFACE:-wlan0}"
 HARDWARE_INTERFACE="${HARDWARE_INTERFACE:-eth0}"
 UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
 ROS_DOMAIN_ID="${G1_PROJECT_ROS_DOMAIN_ID:-42}"
+DEPTH_ROS_DOMAIN_ID="${G1_DEPTH_ROS_DOMAIN_ID:-43}"
 
 if ! systemctl is-active --quiet g1-highfps-camera.service; then
   echo "The native 60 FPS camera publisher is not running." >&2
@@ -38,7 +39,8 @@ pids+=("$!")
   export RMW_IMPLEMENTATION=rmw_cyclonedds_cpp
   source "${ROOT_DIR}/scripts/shared/ros-env.sh"
   g1_source_ros "${ROOT_DIR}" foxy
-  g1_configure_cyclonedds depth-robot "${PROJECT_INTERFACE}" "${CLIENT_IP}" "${ROS_DOMAIN_ID}"
+  g1_configure_cyclonedds depth-robot \
+    "${PROJECT_INTERFACE}" "${CLIENT_IP}" "${DEPTH_ROS_DOMAIN_ID}"
   export PYTHONPATH="${ROOT_DIR}:${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
   depth_args=(
     --depth-only
@@ -66,7 +68,7 @@ pids+=("$!")
 
 echo "Vision pointing stack started initially DISARMED."
 echo "  RGB: native 960x540@60 relay to ${CLIENT_IP}:5600"
-echo "  Depth: isolated CycloneDDS /g1/depth on domain ${ROS_DOMAIN_ID}"
+echo "  Depth: isolated CycloneDDS /g1/depth on domain ${DEPTH_ROS_DOMAIN_ID}"
 echo "  Arm: isolated Fast DDS XR manual bridge on domain ${ROS_DOMAIN_ID}"
 
 wait -n "${pids[@]}"
