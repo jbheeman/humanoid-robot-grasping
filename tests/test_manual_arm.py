@@ -257,6 +257,16 @@ def test_following_error_fault_names_the_diverging_joint() -> None:
     )
 
 
+def test_release_does_not_latch_a_following_error() -> None:
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    controller._commanded_q = (0.20,) + (0.0,) * 13
+    controller.stop("operator_stop")
+    controller.tick()
+    assert controller.state_report()["state"] == ArmState.HOLDING.value
+    assert controller.state_report()["fault_reason"] is None
+
+
 def test_manual_command_gains_follow_configuration() -> None:
     clock, hardware, _controller = setup()
     controller = ManualArmController(

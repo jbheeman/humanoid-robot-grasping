@@ -477,21 +477,26 @@ class ManualArmController:
                     )
             if self._state in (ArmState.ARMING, ArmState.ARMED, ArmState.HOLDING):
                 if self._commanded_q is not None:
-                    following_index, following = max(
-                        enumerate(
-                            abs(actual - commanded)
-                            for actual, commanded in zip(
-                                robot.arm_q, self._commanded_q
-                            )
-                        ),
-                        key=lambda item: item[1],
-                    )
-                    if following > self.config.max_following_error_rad:
-                        joint_names = LEFT_ARM_JOINT_NAMES + RIGHT_ARM_JOINT_NAMES
-                        self._fault(
-                            "following_error:"
-                            f"{joint_names[following_index]}:{following:.4f}"
+                    # A release deliberately removes weight while the physical
+                    # arm converges to its final target.  It is not an active
+                    # tracking command, so a transient lag here must not turn
+                    # an operator/client stop into a latched FAULT.
+                    if self._state is not ArmState.HOLDING:
+                        following_index, following = max(
+                            enumerate(
+                                abs(actual - commanded)
+                                for actual, commanded in zip(
+                                    robot.arm_q, self._commanded_q
+                                )
+                            ),
+                            key=lambda item: item[1],
                         )
+                        if following > self.config.max_following_error_rad:
+                            joint_names = LEFT_ARM_JOINT_NAMES + RIGHT_ARM_JOINT_NAMES
+                            self._fault(
+                                "following_error:"
+                                f"{joint_names[following_index]}:{following:.4f}"
+                            )
                 self.hardware.publish(self._command(robot, now))
 
     def _run_loop(self) -> None:
