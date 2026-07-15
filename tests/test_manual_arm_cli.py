@@ -8,6 +8,7 @@ from object_tracking.manual_arm_cli import (
     _manual_deltas,
     _signed_progress,
     _validate_args,
+    _write_motion_trace,
     build_parser,
 )
 
@@ -129,3 +130,14 @@ def test_signed_progress_rejects_motion_opposite_the_requested_direction() -> No
     assert _signed_progress(0.1, 0.14, 0.05) == pytest.approx(0.04)
     assert _signed_progress(0.1, 0.06, -0.05) == pytest.approx(0.04)
     assert _signed_progress(0.1, 0.14, -0.05) == pytest.approx(-0.04)
+
+
+def test_motion_trace_records_failed_trials(tmp_path) -> None:
+    path = _write_motion_trace(
+        tmp_path / "failed.json",
+        {"ok": False, "error": "following_error"},
+        [{"phase": "outward_1", "measured_arm_q": [0.0] * 14}],
+    )
+    payload = path.read_text(encoding="utf-8")
+    assert '"ok": false' in payload
+    assert '"outward_1"' in payload

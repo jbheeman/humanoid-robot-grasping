@@ -217,6 +217,29 @@ def test_manual_commands_use_installed_sdk2_example_gains() -> None:
     assert command.kd == (1.5,) * 14
 
 
+def test_velocity_gate_allows_guarded_motion_and_names_excessive_joint() -> None:
+    clock, hardware, controller = setup()
+    hardware.state = hardware.make_state(arm_dq=(0.30,) + (0.0,) * 13)
+    assert controller._gate_failures(hardware.state, clock.monotonic) == []
+
+    hardware.state = hardware.make_state(
+        arm_dq=(0.0,) * 12 + (1.01, 0.0),
+    )
+    assert controller._gate_failures(hardware.state, clock.monotonic) == [
+        "arm_velocity_too_high:right_wrist_pitch_joint:1.0100"
+    ]
+
+
+def test_following_error_fault_names_the_diverging_joint() -> None:
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    controller._commanded_q = (0.151,) + (0.0,) * 13
+    controller.tick()
+    assert controller.state_report()["fault_reason"] == (
+        "following_error:left_shoulder_pitch_joint:0.1510"
+    )
+
+
 def test_manual_command_gains_follow_configuration() -> None:
     clock, hardware, _controller = setup()
     controller = ManualArmController(

@@ -220,7 +220,10 @@ class ManualArmClient:
                         "phase": phase,
                         "state": self.status.get("state"),
                         "weight": self.status.get("weight"),
+                        "fault_reason": self.status.get("fault_reason"),
+                        "hold_reason": self.status.get("hold_reason"),
                         "measured_arm_q": self.status.get("measured_arm_q"),
+                        "measured_arm_dq": self.status.get("measured_arm_dq"),
                         "commanded_arm_q": self.status.get("commanded_arm_q"),
                     }
                 )
@@ -350,6 +353,27 @@ def _validate_args(args: argparse.Namespace) -> None:
 
 def _print(report: object) -> None:
     print(json.dumps(report, indent=2, sort_keys=True))
+
+
+def _write_motion_trace(
+    path: Path, result: dict[str, Any], samples: list[dict[str, Any]]
+) -> Path:
+    trace_path = path.expanduser()
+    trace_path.parent.mkdir(parents=True, exist_ok=True)
+    trace_path.write_text(
+        json.dumps(
+            {
+                "schema": "g1-manual-arm-trace-v1",
+                "result": result,
+                "samples": samples,
+            },
+            indent=2,
+            sort_keys=True,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    return trace_path
 
 
 def _signed_progress(start: float, actual: float, requested_delta: float) -> float:
@@ -630,27 +654,27 @@ def run(args: argparse.Namespace) -> int:
                 "ik_position_error_m": ik_position_error_m,
                 "returned": not args.no_return,
                 "bridge": final,
-            }
+        }
         if args.trace_output is not None:
-            trace_path = args.trace_output.expanduser()
-            trace_path.parent.mkdir(parents=True, exist_ok=True)
-            trace_path.write_text(
-                json.dumps(
-                    {
-                        "schema": "g1-manual-arm-trace-v1",
-                        "result": report,
-                        "samples": motion_trace,
-                    },
-                    indent=2,
-                    sort_keys=True,
-                )
-                + "\n",
-                encoding="utf-8",
-            )
+            trace_path = _write_motion_trace(args.trace_output, report, motion_trace)
             report["trace_output"] = str(trace_path)
             report["trace_samples"] = len(motion_trace)
         _print(report)
         return 0
+    except Exception as exc:
+        trace_output = getattr(args, "trace_output", None)
+        if trace_output is not None:
+            _write_motion_trace(
+                trace_output,
+                {
+                    "ok": False,
+                    "mode": args.command,
+                    "error": f"{type(exc).__name__}: {exc}",
+                    "bridge": client.status,
+                },
+                motion_trace,
+            )
+        raise
     finally:
         if session_id:
             try:

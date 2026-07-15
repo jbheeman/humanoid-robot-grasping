@@ -34,8 +34,9 @@ class ManualArmConfig:
     weight_ramp_s: float = 0.500
     max_target_delta_rad: float = 0.05
     max_velocity_rad_s: float = 0.25
+    max_measured_velocity_rad_s: float = 1.0
     max_acceleration_rad_s2: float = 1.0
-    max_following_error_rad: float = 0.03
+    max_following_error_rad: float = 0.15
     joint_limit_margin_rad: float = 0.05
     kp: float = 60.0
     kd: float = 1.5
@@ -51,6 +52,7 @@ class ManualArmConfig:
             "weight_ramp_s",
             "max_target_delta_rad",
             "max_velocity_rad_s",
+            "max_measured_velocity_rad_s",
             "max_acceleration_rad_s2",
             "max_following_error_rad",
             "kp",
@@ -168,8 +170,16 @@ class ManualArmController:
             failures.extend(robot.motor_faults or ("motor_state_unhealthy",))
         if any(not math.isfinite(value) for value in (*robot.arm_q, *robot.arm_dq)):
             failures.append("arm_state_non_finite")
-        if robot.arm_dq and max(abs(value) for value in robot.arm_dq) > 0.25:
-            failures.append("arm_velocity_too_high")
+        if robot.arm_dq:
+            velocity_index, velocity = max(
+                enumerate(robot.arm_dq), key=lambda item: abs(item[1])
+            )
+            if abs(velocity) > self.config.max_measured_velocity_rad_s:
+                joint_names = LEFT_ARM_JOINT_NAMES + RIGHT_ARM_JOINT_NAMES
+                failures.append(
+                    "arm_velocity_too_high:"
+                    f"{joint_names[velocity_index]}:{velocity:.4f}"
+                )
         return list(dict.fromkeys(failures))
 
     def enable(self, session_id: str = "") -> dict[str, object]:
@@ -411,12 +421,21 @@ class ManualArmController:
                     self._last_heartbeat = None
             if self._state in (ArmState.ARMING, ArmState.ARMED, ArmState.HOLDING):
                 if self._commanded_q is not None:
-                    following = max(
-                        abs(actual - commanded)
-                        for actual, commanded in zip(robot.arm_q, self._commanded_q)
+                    following_index, following = max(
+                        enumerate(
+                            abs(actual - commanded)
+                            for actual, commanded in zip(
+                                robot.arm_q, self._commanded_q
+                            )
+                        ),
+                        key=lambda item: item[1],
                     )
                     if following > self.config.max_following_error_rad:
-                        self._fault(f"following_error:{following:.4f}")
+                        joint_names = LEFT_ARM_JOINT_NAMES + RIGHT_ARM_JOINT_NAMES
+                        self._fault(
+                            "following_error:"
+                            f"{joint_names[following_index]}:{following:.4f}"
+                        )
                 self.hardware.publish(self._command(robot, now))
 
     def _run_loop(self) -> None:
@@ -452,6 +471,8 @@ class ManualArmController:
                 "control_mode": "manual",
                 "gain_profile": self.config.gain_profile,
                 "control_hz": self.config.control_hz,
+                "max_measured_velocity_rad_s": self.config.max_measured_velocity_rad_s,
+                "max_following_error_rad": self.config.max_following_error_rad,
                 "calibration_id": None,
                 "last_sequence": max(self._last_sequences.values()),
                 "last_sequences": dict(self._last_sequences),
