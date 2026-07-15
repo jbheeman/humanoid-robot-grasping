@@ -26,41 +26,31 @@ if not project_root:
     raise SystemExit("Set G1_BUNNY_PROJECT_ROOT to the humanoid-robot-grasping checkout")
 sys.path.insert(0, str(Path(project_root) / "src"))
 
-def _material(stage, path):
-    material = UsdShade.Material.Define(stage, path)
-    shader = UsdShade.Shader.Define(stage, f"{path}/PreviewSurface")
-    shader.CreateIdAttr("UsdPreviewSurface")
-    shader.CreateInput("diffuseColor", UsdShade.Tokens.color3f).Set(Gf.Vec3f(0.82, 0.67, 0.54))
-    shader.CreateInput("roughness", UsdShade.Tokens.float).Set(0.88)
-    material.CreateSurfaceOutput().ConnectToSource(shader.ConnectableAPI(), "surface")
-    return material
-
-
-def _sphere(stage, path, position, scale, material) -> None:
+def _sphere(stage, path, position, scale) -> None:
     shape = UsdGeom.Sphere.Define(stage, path)
     shape.CreateRadiusAttr(1.0)
     shape.AddTranslateOp().Set(Gf.Vec3d(*position))
     shape.AddScaleOp().Set(Gf.Vec3f(*scale))
+    shape.CreateDisplayColorAttr([Gf.Vec3f(0.82, 0.67, 0.54)])
     UsdPhysics.CollisionAPI.Apply(shape.GetPrim())
-    UsdShade.MaterialBindingAPI(shape).Bind(material)
 
 
-def _ear(stage, path, position, material) -> None:
+def _ear(stage, path, position) -> None:
     shape = UsdGeom.Capsule.Define(stage, path)
     shape.CreateRadiusAttr(0.012)
     shape.CreateHeightAttr(0.064)
     shape.CreateAxisAttr(UsdGeom.Tokens.z)
     shape.AddTranslateOp().Set(Gf.Vec3d(*position))
+    shape.CreateDisplayColorAttr([Gf.Vec3f(0.82, 0.67, 0.54)])
     UsdPhysics.CollisionAPI.Apply(shape.GetPrim())
-    UsdShade.MaterialBindingAPI(shape).Bind(material)
 
 
 def main() -> int:
-    global Gf, Usd, UsdGeom, UsdPhysics, UsdShade
+    global Gf, Usd, UsdGeom, UsdPhysics
     simulation_app = AppLauncher(args).app
     try:
         # Isaac Sim registers USD bindings only after its application starts.
-        from pxr import Gf, Usd, UsdGeom, UsdPhysics, UsdShade  # noqa: E402
+        from pxr import Gf, Usd, UsdGeom, UsdPhysics  # noqa: E402
         from g1_bunny_vla.bunny_proxy import DEFAULT_BUNNY_PROXY  # noqa: E402
 
         spec = DEFAULT_BUNNY_PROXY
@@ -76,18 +66,21 @@ def main() -> int:
         mass = UsdPhysics.MassAPI.Apply(root.GetPrim())
         mass.CreateMassAttr().Set(spec.mass_kg)
 
-        material = _material(stage, "/Bunny/Looks/PlushTan")
         # The torso drives the measured 15 cm x 7 cm envelope.  The head and ears
         # make the profile grasp-relevant while keeping the total height at 14 cm.
-        _sphere(stage, "/Bunny/Geometry/Torso", (0.0, 0.0, 0.038), (0.075, 0.035, 0.038), material)
-        _sphere(stage, "/Bunny/Geometry/Head", (0.042, 0.0, 0.081), (0.038, 0.031, 0.031), material)
-        _ear(stage, "/Bunny/Geometry/LeftEar", (0.049, 0.018, 0.116), material)
-        _ear(stage, "/Bunny/Geometry/RightEar", (0.049, -0.018, 0.116), material)
+        _sphere(stage, "/Bunny/Geometry/Torso", (0.0, 0.0, 0.038), (0.075, 0.035, 0.038))
+        _sphere(stage, "/Bunny/Geometry/Head", (0.042, 0.0, 0.081), (0.038, 0.031, 0.031))
+        _ear(stage, "/Bunny/Geometry/LeftEar", (0.049, 0.018, 0.116))
+        _ear(stage, "/Bunny/Geometry/RightEar", (0.049, -0.018, 0.116))
 
         stage.SetDefaultPrim(root.GetPrim())
         stage.GetRootLayer().Save()
-        print(f"Wrote rigid-frame bunny proxy to {args.output}")
-        print(f"mass={spec.mass_kg:.3f} kg, envelope={spec.depth_m:.3f} x {spec.width_m:.3f} x {spec.height_m:.3f} m")
+        print(f"Wrote rigid-frame bunny proxy to {args.output}", flush=True)
+        print(
+            f"mass={spec.mass_kg:.3f} kg, envelope={spec.depth_m:.3f} x "
+            f"{spec.width_m:.3f} x {spec.height_m:.3f} m",
+            flush=True,
+        )
         return 0
     finally:
         simulation_app.close()
