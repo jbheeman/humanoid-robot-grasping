@@ -267,3 +267,8 @@ def test_motion_mode_verification_expires_after_bounded_grace() -> None:
     now[0] = 15.01
     assert hardware.latest_state() is not None
     assert hardware.latest_state().compatible_motion_mode is False
+
+
+def test_default_motion_mode_grace_tolerates_stock_rpc_stalls() -> None:
+    hardware = UnitreeArmHardware()
+    assert hardware.motion_mode_grace_s == 30.0

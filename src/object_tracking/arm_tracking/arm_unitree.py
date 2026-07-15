@@ -48,7 +48,7 @@ class UnitreeArmHardware:
         expected_motion_mode: Optional[str] = None,
         ownership_quiet_s: float = 1.0,
         motion_poll_s: float = 0.25,
-        motion_mode_grace_s: float = 5.0,
+        motion_mode_grace_s: float = 30.0,
     ) -> None:
         if ownership_quiet_s < 0.0:
             raise ValueError("ownership_quiet_s must be non-negative")
