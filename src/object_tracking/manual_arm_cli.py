@@ -1131,7 +1131,10 @@ def run(args: argparse.Namespace) -> int:
                             f"state={status.get('state')}, "
                             f"fault={status.get('fault_reason')}"
                         )
-                solution_q = route.q_path[-1]
+                measured_tracking = (client.status or {}).get("measured_arm_q")
+                if not isinstance(measured_tracking, list) or len(measured_tracking) != 14:
+                    raise RemoteArmError("Bridge has no measured pose after a tracking update")
+                solution_q = tuple(float(value) for value in measured_tracking[-7:])
                 tracking_updates += 1
         elif args.stay and not stop.is_set():
             while not stop.is_set():
