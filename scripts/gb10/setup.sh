@@ -33,6 +33,11 @@ fi
 set +u
 source "${ROS_SETUP}"
 set -u
+if ! ros2 pkg prefix rmw_fastrtps_cpp >/dev/null 2>&1; then
+  echo "Install the Fast DDS RMW used by cross-version manual arm control:"
+  echo "  sudo apt-get install ros-jazzy-rmw-fastrtps-cpp"
+  exit 1
+fi
 bash "${ROOT_DIR}/scripts/shared/build-ros-workspaces.sh"
 set +u
 source "${ROOT_DIR}/.ros/jazzy/unitree/setup.bash"

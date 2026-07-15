@@ -13,7 +13,22 @@ if [[ ! -x "${GB10_PYTHON}" ]]; then
 fi
 
 source "${ROOT_DIR}/scripts/shared/ros-env.sh"
+# Foxy Fast DDS repeatedly crashes while parsing Jazzy/Cyclone discovery data
+# on the stock G1 image. Keep this arm-only path Fast DDS on both hosts.
+export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 g1_source_ros "${ROOT_DIR}" jazzy
+if ! ros2 pkg prefix rmw_fastrtps_cpp >/dev/null 2>&1; then
+  echo "Missing ros-jazzy-rmw-fastrtps-cpp on the GB10." >&2
+  echo "Install it once: sudo apt-get install ros-jazzy-rmw-fastrtps-cpp" >&2
+  exit 1
+fi
+if [[ "${ROS_INTERFACE}" == "auto" ]]; then
+  ROS_INTERFACE="$(ip -4 route get "${ROBOT_HOST}" | awk 'NR==1 {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')"
+fi
+if [[ -z "${ROS_INTERFACE}" ]]; then
+  echo "Could not determine the GB10 interface used to reach ${ROBOT_HOST}." >&2
+  exit 1
+fi
 g1_configure_cyclonedds manual-arm-gb10 "${ROS_INTERFACE}" "${ROBOT_HOST}" "${ROS_DOMAIN_ID}"
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 

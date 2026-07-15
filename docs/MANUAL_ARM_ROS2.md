@@ -35,9 +35,16 @@ scripts/robot/setup.sh
 On the GB10:
 
 ```bash
+sudo apt-get install ros-jazzy-rmw-fastrtps-cpp
 cd ~/Documents/project
 scripts/gb10/setup.sh
 ```
+
+The manual arm channel uses Fast DDS on both hosts. The stock robot's Foxy
+Fast DDS process eventually aborts while parsing repeated discovery/type data
+from a Jazzy/Cyclone participant; using the same RMW on this isolated channel
+avoids that failure. The regular GB10 camera/tracking launcher can continue to
+use CycloneDDS.
 
 ## Start the robot bridge
 

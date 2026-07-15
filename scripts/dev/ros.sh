@@ -68,7 +68,17 @@ if [[ "${ROLE}" == "robot" ]]; then
   g1_configure_cyclonedds inspect-robot "${INTERFACE}" \
     "${PEER},${UNITREE_CONTROL_PEER}" "${DOMAIN_ID}"
 else
+  if [[ "${PROFILE}" == "manual" ]]; then
+    export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+    if [[ "${INTERFACE}" == "auto" ]]; then
+      INTERFACE="$(ip -4 route get "${PEER}" | awk 'NR==1 {for(i=1;i<=NF;i++) if($i=="dev") {print $(i+1); exit}}')"
+    fi
+  fi
   g1_source_ros "${ROOT_DIR}" jazzy
+  if [[ "${PROFILE}" == "manual" ]] && ! ros2 pkg prefix rmw_fastrtps_cpp >/dev/null 2>&1; then
+    echo "Manual profile requires: sudo apt-get install ros-jazzy-rmw-fastrtps-cpp" >&2
+    exit 1
+  fi
   g1_configure_cyclonedds inspect-gb10 "${INTERFACE}" "${PEER}" "${DOMAIN_ID}"
 fi
 
