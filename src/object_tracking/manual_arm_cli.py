@@ -24,6 +24,8 @@ HEARTBEAT_TOPIC = f"{BASE}/heartbeat"
 REQUEST_TOPIC = f"{BASE}/request"
 RESPONSE_TOPIC = f"{BASE}/response"
 STATUS_TOPIC = f"{BASE}/status"
+MAX_ROBOT_STEP_RAD = 0.05
+MAX_MANUAL_TOTAL_DELTA_RAD = 0.20
 
 
 class RemoteArmError(RuntimeError):
@@ -236,8 +238,14 @@ def _validate_args(args: argparse.Namespace) -> None:
     if args.command == "enable" and (not math.isfinite(args.seconds) or args.seconds <= 0.0):
         raise RemoteArmError("--seconds must be finite and > 0")
     if args.command == "move":
-        if not math.isfinite(args.delta) or not 0.0 < abs(args.delta) <= 0.05:
-            raise RemoteArmError("absolute --delta must be > 0 and <= 0.05 rad")
+        if (
+            not math.isfinite(args.delta)
+            or not 0.0 < abs(args.delta) <= MAX_MANUAL_TOTAL_DELTA_RAD
+        ):
+            raise RemoteArmError(
+                "absolute --delta must be > 0 and <= "
+                f"{MAX_MANUAL_TOTAL_DELTA_RAD:.2f} rad"
+            )
         if not math.isfinite(args.duration) or not 0.1 <= args.duration <= 10.0:
             raise RemoteArmError("--duration must be between 0.1 and 10 seconds")
         if not math.isfinite(args.hold) or args.hold < 0.0:
@@ -251,6 +259,13 @@ def _print(report: object) -> None:
 def _signed_progress(start: float, actual: float, requested_delta: float) -> float:
     direction = 1.0 if requested_delta > 0.0 else -1.0
     return direction * (actual - start)
+
+
+def _guarded_offsets(delta: float) -> list[float]:
+    """Split a visible total move into robot-accepted incremental offsets."""
+
+    steps = max(1, math.ceil(abs(delta) / MAX_ROBOT_STEP_RAD - 1e-9))
+    return [delta * index / steps for index in range(1, steps + 1)]
 
 
 def run(args: argparse.Namespace) -> int:
@@ -313,17 +328,30 @@ def run(args: argparse.Namespace) -> int:
             raise RemoteArmError("Bridge has no fresh measured pose before movement")
         offset = 0 if args.side == "left" else 7
         baseline = [float(value) for value in latched[offset : offset + 7]]
-        target = list(baseline)
-        target[names.index(joint_name)] += args.delta
-        client.publish_target(
-            side=args.side,
-            session_id=session_id,
-            sequence=0,
-            positions=target,
-            duration_s=args.duration,
-        )
-        client.wait_sequence(args.side, 0, session_id, args.timeout)
-        client.pump_heartbeat(session_id, args.duration + args.hold, stop)
+        joint_index = names.index(joint_name)
+        offsets = _guarded_offsets(args.delta)
+        sequence = -1
+        for offset_rad in offsets:
+            sequence += 1
+            target = list(baseline)
+            target[joint_index] += offset_rad
+            client.publish_target(
+                side=args.side,
+                session_id=session_id,
+                sequence=sequence,
+                positions=target,
+                duration_s=args.duration,
+            )
+            client.wait_sequence(args.side, sequence, session_id, args.timeout)
+            client.pump_heartbeat(session_id, args.duration, stop)
+            status = client.status or {}
+            if status.get("state") != "ARMED":
+                raise RemoteArmError(
+                    "bridge left ARMED during movement: "
+                    f"state={status.get('state')}, "
+                    f"fault={status.get('fault_reason')}"
+                )
+        client.pump_heartbeat(session_id, args.hold, stop)
         outward_status = client.status or {}
         joint_offset = offset + names.index(joint_name)
         if outward_status.get("state") != "ARMED":
@@ -348,15 +376,19 @@ def run(args: argparse.Namespace) -> int:
                 f"required at least {required_displacement:.4f} rad"
             )
         if not args.no_return and not stop.is_set():
-            client.publish_target(
-                side=args.side,
-                session_id=session_id,
-                sequence=1,
-                positions=baseline,
-                duration_s=args.duration,
-            )
-            client.wait_sequence(args.side, 1, session_id, args.timeout)
-            client.pump_heartbeat(session_id, args.duration, stop)
+            for offset_rad in reversed([0.0, *offsets[:-1]]):
+                sequence += 1
+                return_target = list(baseline)
+                return_target[joint_index] += offset_rad
+                client.publish_target(
+                    side=args.side,
+                    session_id=session_id,
+                    sequence=sequence,
+                    positions=return_target,
+                    duration_s=args.duration,
+                )
+                client.wait_sequence(args.side, sequence, session_id, args.timeout)
+                client.pump_heartbeat(session_id, args.duration, stop)
         final = client.stop_and_wait(session_id, "manual_move_complete", args.timeout)
         session_id = ""
         _print(
@@ -364,6 +396,7 @@ def run(args: argparse.Namespace) -> int:
                 "ok": True,
                 "joint": joint_name,
                 "delta_rad": args.delta,
+                "guarded_steps": len(offsets),
                 "measured_outward_joint_progress_rad": measured_displacement,
                 "returned": not args.no_return,
                 "bridge": final,

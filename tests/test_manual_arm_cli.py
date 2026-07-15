@@ -2,6 +2,7 @@ import pytest
 
 from object_tracking.manual_arm_cli import (
     RemoteArmError,
+    _guarded_offsets,
     _signed_progress,
     _validate_args,
     build_parser,
@@ -17,10 +18,22 @@ def test_move_defaults_to_guarded_right_shoulder_cycle() -> None:
     assert args.no_return is False
 
 
-def test_move_rejects_delta_beyond_robot_side_step_limit() -> None:
-    args = build_parser().parse_args(["move", "--delta", "0.051"])
-    with pytest.raises(RemoteArmError, match="0.05"):
+def test_move_allows_visible_delta_split_into_guarded_steps() -> None:
+    args = build_parser().parse_args(["move", "--delta", "0.15"])
+    _validate_args(args)
+    assert _guarded_offsets(args.delta) == pytest.approx([0.05, 0.10, 0.15])
+
+
+def test_move_rejects_delta_beyond_manual_total_limit() -> None:
+    args = build_parser().parse_args(["move", "--delta", "0.201"])
+    with pytest.raises(RemoteArmError, match="0.20"):
         _validate_args(args)
+
+
+def test_guarded_offsets_keep_each_target_step_bounded() -> None:
+    offsets = [0.0, *_guarded_offsets(-0.16)]
+    assert offsets[-1] == pytest.approx(-0.16)
+    assert max(abs(end - start) for start, end in zip(offsets, offsets[1:])) <= 0.05
 
 
 def test_signed_progress_rejects_motion_opposite_the_requested_direction() -> None:
