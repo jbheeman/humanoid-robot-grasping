@@ -47,6 +47,7 @@ class G1RightArmIK:
         discontinuity_limit_rad: float = 0.25,
         joint_limit_margin_rad: float = 0.05,
         translation_weight: float = 50.0,
+        orientation_weight: float = 1.0,
     ) -> None:
         try:
             import pinocchio as pin
@@ -82,6 +83,9 @@ class G1RightArmIK:
         if not np.isfinite(translation_weight) or translation_weight <= 0.0:
             raise IKUnavailable("translation_weight must be finite and positive")
         self.translation_weight = float(translation_weight)
+        if not np.isfinite(orientation_weight) or orientation_weight < 0.0:
+            raise IKUnavailable("orientation_weight must be finite and non-negative")
+        self.orientation_weight = float(orientation_weight)
 
         full_model = pin.buildModelFromUrdf(str(self.urdf_path))
         unlocked = set(RIGHT_ARM_JOINTS)
@@ -165,7 +169,8 @@ class G1RightArmIK:
         cost = (
             self.translation_weight
             * casadi.sumsqr(self.translation_error(self.var_q, self.param_target))
-            + casadi.sumsqr(self.rotation_error(self.var_q, self.param_target))
+            + self.orientation_weight
+            * casadi.sumsqr(self.rotation_error(self.var_q, self.param_target))
             + 0.1 * casadi.sumsqr(self.var_q - self.param_last_q)
             + 0.02 * casadi.sumsqr(self.var_q)
         )
@@ -196,6 +201,7 @@ class G1RightArmIK:
 
     def _solve_numerical(self, target: np.ndarray, last_q: np.ndarray) -> np.ndarray:
         sqrt_translation = np.sqrt(self.translation_weight)
+        sqrt_orientation = np.sqrt(self.orientation_weight)
         sqrt_smooth = np.sqrt(0.1)
         sqrt_regularization = np.sqrt(0.02)
 
@@ -203,7 +209,9 @@ class G1RightArmIK:
             self.pin.framesForwardKinematics(self.model, self.data, q)
             pose = self.data.oMf[self.ee_frame]
             translation = sqrt_translation * (pose.translation - target[:3, 3])
-            rotation = self.pin.log3(pose.rotation @ target[:3, :3].T)
+            rotation = sqrt_orientation * self.pin.log3(
+                pose.rotation @ target[:3, :3].T
+            )
             return np.concatenate(
                 (
                     translation,
@@ -268,8 +276,17 @@ class G1RightArmIK:
         except Exception:
             return IKResult(False, None, float("inf"), float("inf"), "solver_failed")
 
-        if np.max(np.abs(q - last_q)) > self.discontinuity_limit_rad:
-            return IKResult(False, None, float("inf"), float("inf"), "discontinuous")
+        maximum_delta = float(np.max(np.abs(q - last_q)))
+        if maximum_delta > self.discontinuity_limit_rad:
+            return IKResult(
+                False,
+                None,
+                float("inf"),
+                float("inf"),
+                "discontinuous:"
+                f"max_delta={maximum_delta:.4f}:"
+                f"limit={self.discontinuity_limit_rad:.4f}",
+            )
         if self.collision_model is None or self.collision_data is None:
             return IKResult(False, None, float("inf"), float("inf"), "collision_model_unavailable")
         # Mesh URDFs commonly contain persistent adjacent-link overlaps. Treat
@@ -292,6 +309,9 @@ class G1RightArmIK:
         orientation_error = float(np.linalg.norm(self.pin.log3(pose.rotation @ target[:3, :3].T)))
         if position_error > self.position_tolerance_m:
             return IKResult(False, None, position_error, orientation_error, "position_error")
-        if orientation_error > self.orientation_tolerance_rad:
+        if (
+            self.orientation_weight > 0.0
+            and orientation_error > self.orientation_tolerance_rad
+        ):
             return IKResult(False, None, position_error, orientation_error, "orientation_error")
         return IKResult(True, tuple(float(value) for value in q), position_error, orientation_error)

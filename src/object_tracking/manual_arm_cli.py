@@ -27,6 +27,7 @@ RESPONSE_TOPIC = f"{BASE}/response"
 STATUS_TOPIC = f"{BASE}/status"
 MAX_ROBOT_STEP_RAD = 0.05
 MAX_MANUAL_TOTAL_DELTA_RAD = 0.20
+MAX_IK_TOTAL_DELTA_RAD = 0.35
 
 
 class RemoteArmError(RuntimeError):
@@ -471,8 +472,9 @@ def run(args: argparse.Namespace) -> int:
                 ik_solver = G1RightArmIK(
                     default_urdf_path(repo_root),
                     position_tolerance_m=0.005,
-                    discontinuity_limit_rad=MAX_MANUAL_TOTAL_DELTA_RAD,
+                    discontinuity_limit_rad=MAX_IK_TOTAL_DELTA_RAD,
                     translation_weight=400.0,
+                    orientation_weight=0.0,
                 )
             except IKUnavailable as exc:
                 raise RemoteArmError(str(exc)) from exc
