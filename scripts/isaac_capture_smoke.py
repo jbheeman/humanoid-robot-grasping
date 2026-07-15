@@ -19,11 +19,12 @@ from isaaclab.app import AppLauncher
 
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--task", default="Isaac-Stack-RgyBlock-G129-Dex1-Joint")
-parser.add_argument("--output", type=Path, required=True)
+parser.add_argument("--output", type=Path)
 parser.add_argument("--frames", type=int, default=3)
-parser.add_argument("--device", default="cuda:0")
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+if args.output is None:
+    parser.error("--output is required")
 args.enable_cameras = True
 
 project_root = os.environ.get("G1_BUNNY_PROJECT_ROOT")
