@@ -28,12 +28,14 @@ REQUEST_TOPIC = f"{BASE}/request"
 RESPONSE_TOPIC = f"{BASE}/response"
 STATUS_TOPIC = f"{BASE}/status"
 MAX_ROBOT_STEP_RAD = 0.05
+# Keep a small numerical margin only for generated IK routes. Manual jogs
+# retain their documented 0.050-rad increments.
+SAFE_IK_PUBLISHED_STEP_RAD = 0.045
 MAX_MANUAL_TOTAL_DELTA_RAD = 0.20
 MAX_IK_WAYPOINT_DISTANCE_M = 0.01
 MAX_IK_WAYPOINT_JOINT_DELTA_RAD = 0.35
 MAX_IK_CARTESIAN_OFFSET_M = 0.50
 MAX_VISION_TARGET_AGE_MS = 500.0
-RIGHT_SHOULDER_POSITION_M = (0.0, -0.18, 0.35)
 # The D435 tabletop geometry can place a nominal 25 cm standoff beyond the
 # G1's practical right-arm reach. Keep the hand on the pointing ray but cap
 # its distance from the shoulder, increasing standoff when necessary.
@@ -569,12 +571,12 @@ def _signed_progress(start: float, actual: float, requested_delta: float) -> flo
 
 
 def _point_hand_target(
-    object_xyz: Sequence[float], standoff_m: float
+    object_xyz: Sequence[float], standoff_m: float, shoulder_xyz: Sequence[float]
 ) -> Any:
     import numpy as np
 
     object_point = np.asarray(object_xyz, dtype=float)
-    shoulder = np.asarray(RIGHT_SHOULDER_POSITION_M, dtype=float)
+    shoulder = np.asarray(shoulder_xyz, dtype=float)
     ray = object_point - shoulder
     distance = float(np.linalg.norm(ray))
     if distance <= standoff_m + 0.02:
@@ -595,9 +597,13 @@ def _guarded_offsets(delta: float) -> list[float]:
 
 def _guarded_joint_path(
     knots: Sequence[Sequence[float]],
+    *,
+    maximum_step_rad: float = MAX_ROBOT_STEP_RAD,
 ) -> list[tuple[float, ...]]:
     """Interpolate every solved path segment within the robot step contract."""
 
+    if not 0.0 < maximum_step_rad <= MAX_ROBOT_STEP_RAD:
+        raise ValueError("maximum_step_rad must be within the robot step contract")
     if len(knots) < 2:
         return []
     path: list[tuple[float, ...]] = []
@@ -607,7 +613,7 @@ def _guarded_joint_path(
         if len(start) != len(target) or not start:
             raise ValueError("joint path knots must have equal nonzero dimensions")
         maximum_delta = max(abs(end - begin) for begin, end in zip(start, target))
-        steps = max(1, math.ceil(maximum_delta / MAX_ROBOT_STEP_RAD - 1e-9))
+        steps = max(1, math.ceil(maximum_delta / maximum_step_rad - 1e-9))
         for step in range(1, steps + 1):
             ratio = step / steps
             path.append(
@@ -824,7 +830,10 @@ def run(args: argparse.Namespace) -> int:
                     if vision_target["predicted_xyz_m"] is not None
                     else vision_target["object_xyz_m"]
                 )
-                desired_hand_xyz = _point_hand_target(pointing_xyz, args.standoff)
+                shoulder_xyz = ik_solver.shoulder_position(solution_q)
+                desired_hand_xyz = _point_hand_target(
+                    pointing_xyz, args.standoff, shoulder_xyz
+                )
                 point_desired_hand_xyz_m = desired_hand_xyz.tolist()
                 ik_target_transform[:3, 3] = desired_hand_xyz
                 preplanned_targets: list[tuple[float, ...]] = []
@@ -834,14 +843,17 @@ def run(args: argparse.Namespace) -> int:
                     remaining_distance = float(np.linalg.norm(stage_offset))
                     if remaining_distance <= 0.008:
                         break
-                    if point_stages >= 16:
+                    if point_stages >= 24:
                         raise RemoteArmError(
-                            "pointing route exceeded sixteen guarded approach stages"
+                            "pointing route did not make enough Cartesian progress after "
+                            "twenty-four preplanned stages"
                         )
                     maximum_step = min(args.max_approach, remaining_distance)
                     route = None
+                    selected_progress = 0.0
                     last_route_reason = "no IK candidate"
                     last_route_error = float("inf")
+                    attempts: list[dict[str, Any]] = []
                     # A full clearance stride can choose an IK branch whose
                     # endpoint intersects the torso. Retry shorter planned
                     # strides instead of abandoning the whole route.
@@ -858,8 +870,48 @@ def run(args: argparse.Namespace) -> int:
                         last_route_reason = candidate_route.reason
                         last_route_error = candidate_route.position_error_m
                         if candidate_route.ok and candidate_route.q_path is not None:
+                            planned_xyz = ik_solver.forward_kinematics(
+                                candidate_route.q_path[-1]
+                            )[:3, 3]
+                            progress = remaining_distance - float(
+                                np.linalg.norm(desired_hand_xyz - planned_xyz)
+                            )
+                            attempts.append(
+                                {
+                                    "scale": scale,
+                                    "reason": candidate_route.reason,
+                                    "position_error_m": candidate_route.position_error_m,
+                                    "path_knots": len(candidate_route.q_path),
+                                    "progress_m": progress,
+                                }
+                            )
+                            # A collision-free IK branch that barely reduces
+                            # the Cartesian error would burn through stage
+                            # budget and look like a routing loop.  Reject it
+                            # during GB10 preflight; no robot target is sent.
+                            if progress < min(0.005, maximum_step * scale * 0.25):
+                                last_route_reason = "insufficient_cartesian_progress"
+                                continue
                             route = candidate_route
+                            selected_progress = progress
                             break
+                        attempts.append(
+                            {
+                                "scale": scale,
+                                "reason": candidate_route.reason,
+                                "position_error_m": candidate_route.position_error_m,
+                            }
+                        )
+                    motion_trace.append(
+                        {
+                            "phase": "preplan",
+                            "stage": point_stages + 1,
+                            "remaining_distance_m": remaining_distance,
+                            "requested_stride_m": maximum_step,
+                            "attempts": attempts,
+                            "selected_progress_m": selected_progress,
+                        }
+                    )
                     if route is None or route.q_path is None:
                         raise RemoteArmError(
                             "IK could not build a collision-free pointing route "
@@ -869,7 +921,15 @@ def run(args: argparse.Namespace) -> int:
                     used_detour = used_detour or len(route.q_path) > 2
                     total_route_knots += len(route.q_path) - 1
                     path_knots.extend(route.q_path[1:])
-                    preplanned_targets.extend(_guarded_joint_path(route.q_path))
+                    # Re-split the complete transition from the exact prior
+                    # desired command.  This makes the ROS 0.050-rad contract
+                    # explicit even when an RRT detour has multiple knots.
+                    preplanned_targets.extend(
+                        _guarded_joint_path(
+                            (solution_q, *route.q_path[1:]),
+                            maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD,
+                        )
+                    )
                     solution_q = route.q_path[-1]
                     point_stages += 1
                 point_route_kind = "collision_aware_detour" if used_detour else "direct"
@@ -1062,7 +1122,11 @@ def run(args: argparse.Namespace) -> int:
                     if candidate["predicted_xyz_m"] is not None
                     else candidate["object_xyz_m"]
                 )
-                desired_xyz = _point_hand_target(pointing_xyz, args.standoff)
+                desired_xyz = _point_hand_target(
+                    pointing_xyz,
+                    args.standoff,
+                    ik_solver.shoulder_position(solution_q),
+                )
                 current_transform = ik_solver.forward_kinematics(solution_q)
                 correction = desired_xyz - current_transform[:3, 3]
                 correction_distance = float(np.linalg.norm(correction))
@@ -1101,7 +1165,9 @@ def run(args: argparse.Namespace) -> int:
                         phase="tracking_hold",
                     )
                     continue
-                tracking_targets = _guarded_joint_path(route.q_path)
+                tracking_targets = _guarded_joint_path(
+                    route.q_path, maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD
+                )
                 for target in tracking_targets:
                     if stop.is_set():
                         break

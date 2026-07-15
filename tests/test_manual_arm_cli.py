@@ -200,16 +200,16 @@ def test_point_once_disables_continuous_tracking() -> None:
 
 
 def test_point_hand_target_lies_on_shoulder_object_ray() -> None:
-    target = _point_hand_target((0.45, -0.18, 0.35), 0.25)
     shoulder = np.asarray((0.0, -0.18, 0.35))
+    target = _point_hand_target((0.45, -0.18, 0.35), 0.25, shoulder)
     object_xyz = np.asarray((0.45, -0.18, 0.35))
     assert np.linalg.norm(object_xyz - target) == pytest.approx(0.25)
     assert np.linalg.norm(np.cross(target - shoulder, object_xyz - shoulder)) < 1e-9
 
 
 def test_point_hand_target_increases_standoff_when_nominal_target_is_out_of_reach() -> None:
-    target = _point_hand_target((0.65, 0.02, 0.06), 0.25)
     shoulder = np.asarray((0.0, -0.18, 0.35))
+    target = _point_hand_target((0.65, 0.02, 0.06), 0.25, shoulder)
     object_xyz = np.asarray((0.65, 0.02, 0.06))
     assert np.linalg.norm(target - shoulder) == pytest.approx(0.40)
     assert np.linalg.norm(object_xyz - target) > 0.25
@@ -345,6 +345,17 @@ def test_guarded_joint_path_preserves_waypoint_route() -> None:
         )
         <= 0.05
     )
+
+
+def test_guarded_joint_path_supports_smaller_ik_publish_margin() -> None:
+    path = _guarded_joint_path(
+        [(0.0, 0.0), (0.05, -0.09)], maximum_step_rad=0.045
+    )
+    complete = [(0.0, 0.0), *path]
+    assert max(
+        max(abs(end - start) for start, end in zip(before, after))
+        for before, after in zip(complete, complete[1:])
+    ) <= 0.045
 
 
 def test_signed_progress_rejects_motion_opposite_the_requested_direction() -> None:

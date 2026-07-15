@@ -321,6 +321,21 @@ class G1RightArmIK:
         transform[:3, 3] = pose.translation
         return transform
 
+    def shoulder_position(self, q_rad: Sequence[float]) -> np.ndarray:
+        """Return the actual right shoulder-pitch origin in torso coordinates.
+
+        Pointing must use this URDF frame, rather than a hand-written shoulder
+        estimate.  That keeps the ray consistent with the same model used for
+        IK and avoids a systematic over-aim on the tabletop.
+        """
+
+        q = np.asarray(q_rad, dtype=float)
+        if q.shape != (7,) or not np.all(np.isfinite(q)):
+            raise ValueError("q_rad must contain seven finite joint positions")
+        self.pin.framesForwardKinematics(self.model, self.data, q)
+        frame_id = self.model.getFrameId("right_shoulder_pitch_joint")
+        return np.asarray(self.data.oMf[frame_id].translation, dtype=float).copy()
+
     def _solve_numerical(self, target: np.ndarray, last_q: np.ndarray) -> np.ndarray:
         sqrt_translation = np.sqrt(self.translation_weight)
         sqrt_orientation = np.sqrt(self.orientation_weight)
