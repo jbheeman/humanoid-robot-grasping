@@ -265,55 +265,63 @@ class RobotRosNode:
         self.arm_state_publisher = self.node.create_publisher(
             self.types["ArmState"], ARM_STATE_TOPIC, qos
         )
-        self.manual_status_publisher = self.node.create_publisher(
-            self.types["ArmState"], MANUAL_STATUS_TOPIC, qos
-        )
-        self.manual_joint_state_publisher = self.node.create_publisher(
-            self.types["JointState"], MANUAL_JOINT_STATES_TOPIC, depth_qos
-        )
-        self.manual_response_publisher = self.node.create_publisher(
-            self.types["ArmManualResponse"], MANUAL_RESPONSE_TOPIC, qos
-        )
-        self.commissioning_state_publisher = self.node.create_publisher(
-            self.types["CommissioningState"], COMMISSIONING_STATE_TOPIC, qos
-        )
-        self.commissioning_response_publisher = self.node.create_publisher(
-            self.types["CommissioningResponse"], "/g1/commissioning/response", qos
-        )
+        self.manual_status_publisher = None
+        self.manual_joint_state_publisher = None
+        self.manual_response_publisher = None
+        self.commissioning_state_publisher = None
+        self.commissioning_response_publisher = None
         self.depth_publisher = None
-        self.node.create_subscription(
-            self.types["ArmTarget"], ARM_TARGET_TOPIC, self._on_target, qos
-        )
-        self.node.create_subscription(
-            self.types["ArmSideTarget"],
-            MANUAL_LEFT_TOPIC,
-            lambda message: self._on_manual_target("left", message),
-            qos,
-        )
-        self.node.create_subscription(
-            self.types["ArmSideTarget"],
-            MANUAL_RIGHT_TOPIC,
-            lambda message: self._on_manual_target("right", message),
-            qos,
-        )
-        self.node.create_subscription(
-            self.types["String"], MANUAL_HEARTBEAT_TOPIC, self._on_manual_heartbeat, qos
-        )
-        self.node.create_subscription(
-            self.types["ArmManualRequest"],
-            MANUAL_REQUEST_TOPIC,
-            self._on_manual_request,
-            qos,
-        )
-        self.node.create_subscription(
-            self.types["CommissioningRequest"],
-            "/g1/commissioning/request",
-            self._on_commissioning_request,
-            qos,
-        )
-        self.node.create_service(
-            self.types["ArmControl"], ARM_CONTROL_SERVICE, self._on_arm_control
-        )
+        if args.control_mode == "manual":
+            self.manual_status_publisher = self.node.create_publisher(
+                self.types["ArmState"], MANUAL_STATUS_TOPIC, qos
+            )
+            self.manual_joint_state_publisher = self.node.create_publisher(
+                self.types["JointState"], MANUAL_JOINT_STATES_TOPIC, depth_qos
+            )
+            self.manual_response_publisher = self.node.create_publisher(
+                self.types["ArmManualResponse"], MANUAL_RESPONSE_TOPIC, qos
+            )
+            self.node.create_subscription(
+                self.types["ArmSideTarget"],
+                MANUAL_LEFT_TOPIC,
+                lambda message: self._on_manual_target("left", message),
+                qos,
+            )
+            self.node.create_subscription(
+                self.types["ArmSideTarget"],
+                MANUAL_RIGHT_TOPIC,
+                lambda message: self._on_manual_target("right", message),
+                qos,
+            )
+            self.node.create_subscription(
+                self.types["String"], MANUAL_HEARTBEAT_TOPIC, self._on_manual_heartbeat, qos
+            )
+            self.node.create_subscription(
+                self.types["ArmManualRequest"],
+                MANUAL_REQUEST_TOPIC,
+                self._on_manual_request,
+                qos,
+            )
+        else:
+            self.node.create_subscription(
+                self.types["ArmTarget"], ARM_TARGET_TOPIC, self._on_target, qos
+            )
+            self.node.create_service(
+                self.types["ArmControl"], ARM_CONTROL_SERVICE, self._on_arm_control
+            )
+        if args.control_mode == "commissioning":
+            self.commissioning_state_publisher = self.node.create_publisher(
+                self.types["CommissioningState"], COMMISSIONING_STATE_TOPIC, qos
+            )
+            self.commissioning_response_publisher = self.node.create_publisher(
+                self.types["CommissioningResponse"], "/g1/commissioning/response", qos
+            )
+            self.node.create_subscription(
+                self.types["CommissioningRequest"],
+                "/g1/commissioning/request",
+                self._on_commissioning_request,
+                qos,
+            )
         self.node.create_timer(0.05, self._publish_state)
         self.node.create_timer(0.05, self._publish_manual_joint_states)
         self.node.create_timer(0.1, self._publish_commissioning_state)
