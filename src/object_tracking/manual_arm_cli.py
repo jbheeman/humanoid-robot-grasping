@@ -27,7 +27,8 @@ RESPONSE_TOPIC = f"{BASE}/response"
 STATUS_TOPIC = f"{BASE}/status"
 MAX_ROBOT_STEP_RAD = 0.05
 MAX_MANUAL_TOTAL_DELTA_RAD = 0.20
-MAX_IK_TOTAL_DELTA_RAD = 0.55
+MAX_IK_WAYPOINT_DISTANCE_M = 0.01
+MAX_IK_WAYPOINT_JOINT_DELTA_RAD = 0.35
 
 
 class RemoteArmError(RuntimeError):
@@ -472,9 +473,10 @@ def run(args: argparse.Namespace) -> int:
                 ik_solver = G1RightArmIK(
                     default_urdf_path(repo_root),
                     position_tolerance_m=0.005,
-                    discontinuity_limit_rad=MAX_IK_TOTAL_DELTA_RAD,
+                    orientation_tolerance_rad=0.5,
+                    discontinuity_limit_rad=MAX_IK_WAYPOINT_JOINT_DELTA_RAD,
                     translation_weight=400.0,
-                    orientation_weight=0.0,
+                    orientation_weight=0.03,
                 )
             except IKUnavailable as exc:
                 raise RemoteArmError(str(exc)) from exc
@@ -517,16 +519,33 @@ def run(args: argparse.Namespace) -> int:
             assert ik_solver is not None
             ik_start_transform = ik_solver.forward_kinematics(baseline)
             ik_target_transform = ik_start_transform.copy()
-            ik_target_transform[:3, 3] += np.array([args.dx, args.dy, args.dz])
-            result = ik_solver.solve(ik_target_transform, baseline)
-            if not result.ok or result.q_rad is None:
-                raise RemoteArmError(
-                    "IK rejected Cartesian target: "
-                    f"{result.reason}, position_error={result.position_error_m:.4f} m"
+            cartesian_offset = np.array([args.dx, args.dy, args.dz])
+            ik_target_transform[:3, 3] += cartesian_offset
+            waypoint_count = max(
+                1,
+                math.ceil(
+                    float(np.linalg.norm(cartesian_offset))
+                    / MAX_IK_WAYPOINT_DISTANCE_M
+                    - 1e-9
+                ),
+            )
+            solution_q = tuple(baseline)
+            for waypoint_index in range(1, waypoint_count + 1):
+                waypoint = ik_start_transform.copy()
+                waypoint[:3, 3] += (
+                    cartesian_offset * waypoint_index / waypoint_count
                 )
+                result = ik_solver.solve(waypoint, solution_q)
+                if not result.ok or result.q_rad is None:
+                    raise RemoteArmError(
+                        "IK rejected Cartesian waypoint "
+                        f"{waypoint_index}/{waypoint_count}: {result.reason}, "
+                        f"position_error={result.position_error_m:.4f} m"
+                    )
+                solution_q = result.q_rad
             sdk_deltas = {
                 name: float(target - start)
-                for name, target, start in zip(names, result.q_rad, baseline)
+                for name, target, start in zip(names, solution_q, baseline)
                 if abs(float(target - start)) > 1e-5
             }
             if not sdk_deltas:

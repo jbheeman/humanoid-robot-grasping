@@ -2,7 +2,8 @@ import pytest
 
 from object_tracking.manual_arm_cli import (
     RemoteArmError,
-    MAX_IK_TOTAL_DELTA_RAD,
+    MAX_IK_WAYPOINT_DISTANCE_M,
+    MAX_IK_WAYPOINT_JOINT_DELTA_RAD,
     MAX_MANUAL_TOTAL_DELTA_RAD,
     _arming_failure,
     _arming_status_summary,
@@ -65,7 +66,8 @@ def test_move_defaults_to_guarded_right_shoulder_cycle() -> None:
     assert args.delta == 0.05
     assert args.duration == 2.0
     assert args.no_return is False
-    assert MAX_IK_TOTAL_DELTA_RAD > MAX_MANUAL_TOTAL_DELTA_RAD
+    assert MAX_IK_WAYPOINT_DISTANCE_M == pytest.approx(0.01)
+    assert MAX_IK_WAYPOINT_JOINT_DELTA_RAD > MAX_MANUAL_TOTAL_DELTA_RAD
 
 
 def test_manual_multi_joint_deltas_parse_together() -> None:
