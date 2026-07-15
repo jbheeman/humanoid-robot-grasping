@@ -83,7 +83,11 @@ else
 fi
 
 echo "ROS_DISTRO=${ROS_DISTRO} RMW_IMPLEMENTATION=${RMW_IMPLEMENTATION} ROS_DOMAIN_ID=${ROS_DOMAIN_ID}"
-echo "CYCLONEDDS_URI=${CYCLONEDDS_URI}"
+if [[ "${RMW_IMPLEMENTATION}" == "rmw_cyclonedds_cpp" ]]; then
+  echo "CYCLONEDDS_URI=${CYCLONEDDS_URI:-unset}"
+else
+  echo "FASTDDS_DEFAULT_PROFILES_FILE=${FASTDDS_DEFAULT_PROFILES_FILE:-unset}"
+fi
 echo
 echo "Nodes:"
 timeout 8 ros2 node list || true

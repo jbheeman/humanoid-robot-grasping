@@ -296,11 +296,15 @@ def run(args: argparse.Namespace) -> int:
             raise RemoteArmError(
                 f"{joint_name!r} is not a canonical {args.side} arm joint: {', '.join(names)}"
             )
-        measured = armed.get("measured_arm_q")
-        if not isinstance(measured, list) or len(measured) != 14:
-            raise RemoteArmError("Bridge has no complete measured 14-joint baseline")
+        # Enable latches a complete measured pose before the weight ramp. Use
+        # that stable desired pose rather than a later noisy LowState sample,
+        # otherwise an exact +0.05 command can appear microscopically larger
+        # than the robot-side 0.05-rad step limit.
+        latched = armed.get("desired_arm_q")
+        if not isinstance(latched, list) or len(latched) != 14:
+            raise RemoteArmError("Bridge has no complete latched 14-joint baseline")
         offset = 0 if args.side == "left" else 7
-        baseline = [float(value) for value in measured[offset : offset + 7]]
+        baseline = [float(value) for value in latched[offset : offset + 7]]
         target = list(baseline)
         target[names.index(joint_name)] += args.delta
         client.publish_target(
