@@ -185,7 +185,7 @@ def test_point_defaults_to_continuous_vision_tracking_without_return() -> None:
     assert args.server == "http://127.0.0.1:8000"
     assert args.standoff == pytest.approx(0.25)
     assert args.max_approach == pytest.approx(0.05)
-    assert args.duration == pytest.approx(0.45)
+    assert args.duration == pytest.approx(0.55)
     assert args.no_return is False
     assert args.stay is True
     assert args.tracking_step == pytest.approx(0.05)

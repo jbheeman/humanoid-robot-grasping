@@ -375,8 +375,8 @@ def build_parser() -> argparse.ArgumentParser:
     point.add_argument(
         "--duration",
         type=float,
-        default=0.45,
-        help="seconds per guarded joint target (default: 0.45)",
+        default=0.55,
+        help="seconds per guarded joint target (default: 0.55)",
     )
     point.add_argument("--hold", type=float, default=3.0)
     point.add_argument(
