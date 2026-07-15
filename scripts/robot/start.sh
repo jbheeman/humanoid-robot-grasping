@@ -15,6 +15,7 @@ ALLOW_MOVEMENT="${ALLOW_MOVEMENT:-0}"
 EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-}"
 G1_ROBOT_ID="${G1_ROBOT_ID:-}"
 ARM_COMMISSIONING=0
+VISION_POINTING=0
 # The robot's RealSense exposes depth directly but not a usable ROS-aligned
 # RGB stream. Prefer that known-good source; operators can explicitly request
 # --depth-source ros when an aligned sensor_msgs/Image pipeline is present.
@@ -36,12 +37,13 @@ DEPTH_SERIAL="${DEPTH_SERIAL:-}"
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
 
 usage() {
-  echo "Usage: scripts/robot/start.sh [--arm-commissioning]" >&2
+  echo "Usage: scripts/robot/start.sh [--arm-commissioning|--vision-pointing]" >&2
 }
 
 while (($#)); do
   case "$1" in
     --arm-commissioning) ARM_COMMISSIONING=1 ;;
+    --vision-pointing) ARM_COMMISSIONING=1; VISION_POINTING=1 ;;
     -h|--help) usage; exit 0 ;;
     *) echo "Unknown robot launcher argument: $1" >&2; usage; exit 2 ;;
   esac
@@ -54,6 +56,10 @@ if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
   ALLOW_MOVEMENT=1
   EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-ai}"
 fi
+if [[ "${VISION_POINTING}" == "1" ]]; then
+  RGB_MODE="realsense"
+  DEPTH_SOURCE="librealsense"
+fi
 
 if [[ -z "${CLIENT_IP}" ]]; then
   echo "CLIENT_IP (the GB10 address) is required." >&2
@@ -65,6 +71,12 @@ if [[ ! -x "${ROBOT_PYTHON}" ]]; then
 fi
 if [[ "${ALLOW_MOVEMENT}" == "1" && -z "${EXPECTED_MOTION_MODE}" ]]; then
   echo "EXPECTED_MOTION_MODE is required when ALLOW_MOVEMENT=1." >&2
+  exit 1
+fi
+if [[ "${VISION_POINTING}" == "1" ]] && \
+   pgrep -f '[g]st-launch-1.0.*v4l2src.*device=/dev/video4' >/dev/null 2>&1; then
+  echo "The legacy high-FPS camera publisher still owns /dev/video4." >&2
+  echo "Run: sudo systemctl disable --now g1-highfps-camera.service" >&2
   exit 1
 fi
 
@@ -89,6 +101,7 @@ export LD_LIBRARY_PATH="${UNITREE_SDK_DDS_LIBRARY_DIR}${LD_LIBRARY_PATH:+:${LD_L
 
 node_args=(
   --control-mode "${CONTROL_MODE}"
+  --manual-control-profile "${MANUAL_ARM_PROFILE:-xr}"
   --depth-source "${DEPTH_SOURCE}"
   --ros-image-topic "${ROS_IMAGE_TOPIC}"
   --ros-camera-info-topic "${ROS_CAMERA_INFO_TOPIC}"
@@ -162,6 +175,9 @@ pids+=("$!")
 echo "Robot ROS 2 node started control_mode=${CONTROL_MODE} movement_permitted=${ALLOW_MOVEMENT} initial_state=DISARMED."
 if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
   echo "Arm commissioning enabled: manual ROS commands are allowed but remain disarmed until a client enables a session."
+fi
+if [[ "${VISION_POINTING}" == "1" ]]; then
+  echo "Vision pointing transport enabled: RealSense RGB/aligned depth plus XR manual arm ROS bridge."
 fi
 echo "ROS domain ${ROS_DOMAIN_ID}; interface ${ROBOT_INTERFACE}; static peers ${CLIENT_IP}, ${UNITREE_CONTROL_PEER}."
 echo "RGB remains RTP/UDP ${CLIENT_IP}:${CLIENT_PORT:-5600}; the robot exposes no HTTP server."

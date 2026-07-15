@@ -48,19 +48,25 @@ RESEARCH_NOTES="${RESEARCH_NOTES:-}"
 TRAJECTORY_MODEL="${TRAJECTORY_MODEL:-${ROOT_DIR}/models/plushie_detector/trajectory_gru_synth_pretrain_17h/best.pt}"
 GB10_LAN_IP="${GB10_LAN_IP:-}"
 ARM_COMMISSIONING=0
+VISION_POINTING=0
 server_args=()
 
 while (($#)); do
   case "$1" in
     --arm-commissioning) ARM_COMMISSIONING=1 ;;
+    --vision-pointing) ARM_COMMISSIONING=1; VISION_POINTING=1 ;;
     -h|--help)
-      echo "Usage: scripts/gb10/start.sh [--arm-commissioning] [server options]"
+      echo "Usage: scripts/gb10/start.sh [--arm-commissioning|--vision-pointing] [server options]"
       exit 0
       ;;
     *) server_args+=("$1") ;;
   esac
   shift
 done
+
+if [[ "${VISION_POINTING}" == "1" && -z "${CALIBRATION}" ]]; then
+  CALIBRATION="${ROOT_DIR}/runs/localization/g1-tabletop-calibration.json"
+fi
 
 if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
   # The stock robot's Foxy participant is stable with Jazzy only when both
@@ -79,6 +85,11 @@ fi
 if [[ ! -f "${MODEL}" ]]; then
   echo "Fine-tuned plushie model not found: ${MODEL}" >&2
   echo "Set MODEL to an existing checkpoint on the GB10." >&2
+  exit 1
+fi
+if [[ "${VISION_POINTING}" == "1" && ! -f "${CALIBRATION}" ]]; then
+  echo "Vision pointing calibration not found: ${CALIBRATION}" >&2
+  echo "Set CALIBRATION to the validated D435I camera-to-torso artifact." >&2
   exit 1
 fi
 
@@ -185,6 +196,7 @@ echo "YOLO model:          ${MODEL}"
 echo "Tracking profile:    ${VISION_WIDTH}x${VISION_HEIGHT} at ${VISION_FPS} FPS"
 echo "Movement requested:  ${EXECUTE} (robot safety gates still apply)"
 echo "Arm commissioning:    ${ARM_COMMISSIONING}"
+echo "Vision pointing:      ${VISION_POINTING} (planner ready; startup never moves the arm)"
 echo "Research recording:  ${RESEARCH_RECORD} at ${RESEARCH_HZ} Hz"
 echo "Trajectory model:    ${TRAJECTORY_MODEL:-alpha-beta fallback only}"
 echo

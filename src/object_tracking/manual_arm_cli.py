@@ -9,6 +9,7 @@ from pathlib import Path
 import signal
 import threading
 import time
+import urllib.request
 import uuid
 from typing import Any, Optional, Sequence
 
@@ -30,6 +31,8 @@ MAX_MANUAL_TOTAL_DELTA_RAD = 0.20
 MAX_IK_WAYPOINT_DISTANCE_M = 0.01
 MAX_IK_WAYPOINT_JOINT_DELTA_RAD = 0.35
 MAX_IK_CARTESIAN_OFFSET_M = 0.50
+MAX_VISION_TARGET_AGE_MS = 500.0
+RIGHT_SHOULDER_POSITION_M = (0.0, -0.18, 0.35)
 
 
 class RemoteArmError(RuntimeError):
@@ -137,9 +140,7 @@ class ManualArmClient:
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.request_publisher = self.node.create_publisher(
-            ArmManualRequest, REQUEST_TOPIC, qos
-        )
+        self.request_publisher = self.node.create_publisher(ArmManualRequest, REQUEST_TOPIC, qos)
         self.heartbeat_publisher = self.node.create_publisher(String, HEARTBEAT_TOPIC, qos)
         self.target_publishers = {
             "left": self.node.create_publisher(ArmSideTarget, LEFT_TOPIC, qos),
@@ -147,9 +148,7 @@ class ManualArmClient:
         }
         self.responses: dict[str, object] = {}
         self.status: Optional[dict[str, Any]] = None
-        self.node.create_subscription(
-            ArmManualResponse, RESPONSE_TOPIC, self._on_response, qos
-        )
+        self.node.create_subscription(ArmManualResponse, RESPONSE_TOPIC, self._on_response, qos)
         self.node.create_subscription(ArmStateMessage, STATUS_TOPIC, self._on_status, qos)
 
     def _on_response(self, message: object) -> None:
@@ -280,7 +279,9 @@ class ManualArmClient:
             failure = _arming_failure(last_status, session_id, session_seen=session_seen)
             if failure:
                 raise RemoteArmError(failure)
-        detail = "no arm status received" if last_status is None else _arming_status_summary(last_status)
+        detail = (
+            "no arm status received" if last_status is None else _arming_status_summary(last_status)
+        )
         raise RemoteArmError(f"Timed out waiting for robot arm weight ramp; last status: {detail}")
 
     def stop_and_wait(self, session_id: str, reason: str, timeout_s: float) -> dict[str, Any]:
@@ -349,6 +350,18 @@ def build_parser() -> argparse.ArgumentParser:
     ik.add_argument("--no-return", action="store_true")
     ik.add_argument("--stay", action="store_true", help="hold until Ctrl-C")
     ik.add_argument("--trace-output", type=Path)
+    point = commands.add_parser(
+        "point",
+        help="move toward the latest vision-localized plushie with standoff",
+    )
+    point.add_argument("--server", default="http://127.0.0.1:8000")
+    point.add_argument("--standoff", type=float, default=0.25)
+    point.add_argument("--max-approach", type=float, default=0.05)
+    point.add_argument("--duration", type=float, default=0.6)
+    point.add_argument("--hold", type=float, default=3.0)
+    point.add_argument("--no-return", action="store_true")
+    point.add_argument("--stay", action="store_true", help="hold until Ctrl-C")
+    point.add_argument("--trace-output", type=Path)
     commands.add_parser("stop", help="stop/release and clear a latched fault")
     return parser
 
@@ -358,7 +371,7 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise RemoteArmError("--timeout must be finite and > 0")
     if args.command == "enable" and (not math.isfinite(args.seconds) or args.seconds <= 0.0):
         raise RemoteArmError("--seconds must be finite and > 0")
-    if args.command in ("move", "ik"):
+    if args.command in ("move", "ik", "point"):
         if not math.isfinite(args.duration) or not 0.1 <= args.duration <= 10.0:
             raise RemoteArmError("--duration must be between 0.1 and 10 seconds")
         if not math.isfinite(args.hold) or args.hold < 0.0:
@@ -374,13 +387,11 @@ def _validate_args(args: argparse.Namespace) -> None:
             else [args.delta]
         )
         if any(
-            not math.isfinite(delta)
-            or not 0.0 < abs(delta) <= MAX_MANUAL_TOTAL_DELTA_RAD
+            not math.isfinite(delta) or not 0.0 < abs(delta) <= MAX_MANUAL_TOTAL_DELTA_RAD
             for delta in deltas
         ):
             raise RemoteArmError(
-                "each absolute delta must be > 0 and <= "
-                f"{MAX_MANUAL_TOTAL_DELTA_RAD:.2f} rad"
+                f"each absolute delta must be > 0 and <= {MAX_MANUAL_TOTAL_DELTA_RAD:.2f} rad"
             )
     if args.command == "ik":
         offset = (args.dx, args.dy, args.dz)
@@ -389,18 +400,20 @@ def _validate_args(args: argparse.Namespace) -> None:
         distance = math.sqrt(sum(value * value for value in offset))
         if not 0.0 < distance <= MAX_IK_CARTESIAN_OFFSET_M:
             raise RemoteArmError(
-                "IK offset norm must be > 0 and <= "
-                f"{MAX_IK_CARTESIAN_OFFSET_M:.2f} m"
+                f"IK offset norm must be > 0 and <= {MAX_IK_CARTESIAN_OFFSET_M:.2f} m"
             )
+    if args.command == "point":
+        if not math.isfinite(args.standoff) or not 0.10 <= args.standoff <= 0.50:
+            raise RemoteArmError("--standoff must be between 0.10 and 0.50 m")
+        if not math.isfinite(args.max_approach) or not 0.01 <= args.max_approach <= 0.30:
+            raise RemoteArmError("--max-approach must be between 0.01 and 0.30 m")
 
 
 def _print(report: object) -> None:
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
-def _write_motion_trace(
-    path: Path, result: dict[str, Any], samples: list[dict[str, Any]]
-) -> Path:
+def _write_motion_trace(path: Path, result: dict[str, Any], samples: list[dict[str, Any]]) -> Path:
     trace_path = path.expanduser()
     trace_path.parent.mkdir(parents=True, exist_ok=True)
     trace_path.write_text(
@@ -417,6 +430,53 @@ def _write_motion_trace(
         encoding="utf-8",
     )
     return trace_path
+
+
+def _fetch_vision_target(server: str, timeout_s: float = 1.0) -> dict[str, Any]:
+    """Read one fresh, depth-backed plush localization without mutating state."""
+
+    url = f"{server.rstrip('/')}/arm-tracking"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout_s) as response:
+            payload = json.loads(response.read().decode("utf-8"))
+    except Exception as exc:
+        raise RemoteArmError(f"could not read vision target from {url}: {exc}") from exc
+    if not isinstance(payload, dict):
+        raise RemoteArmError("vision server returned a non-object /arm-tracking response")
+    if not payload.get("depth_valid"):
+        reason = payload.get("rejection_reason") or payload.get("status") or "depth_invalid"
+        raise RemoteArmError(f"vision target has no valid registered depth: {reason}")
+    try:
+        target_age_ms = float(payload["target_age_ms"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RemoteArmError("vision target has no valid target_age_ms") from exc
+    if not math.isfinite(target_age_ms) or target_age_ms > MAX_VISION_TARGET_AGE_MS:
+        raise RemoteArmError(
+            f"vision target is stale: {target_age_ms:.1f} ms "
+            f"(maximum {MAX_VISION_TARGET_AGE_MS:.0f} ms)"
+        )
+
+    normalized: dict[str, Any] = {
+        "target_age_ms": target_age_ms,
+        "track_id": payload.get("track_id"),
+        "detector_confidence": payload.get("detector_confidence"),
+        "prediction_source": payload.get("prediction_source"),
+    }
+    for field in ("object_xyz_m", "predicted_xyz_m"):
+        value = payload.get(field)
+        if not isinstance(value, list) or len(value) != 3:
+            if field == "object_xyz_m":
+                raise RemoteArmError("vision target has no 3D object_xyz_m")
+            normalized[field] = None
+            continue
+        try:
+            point = tuple(float(component) for component in value)
+        except (TypeError, ValueError) as exc:
+            raise RemoteArmError(f"vision target {field} is not numeric") from exc
+        if not all(math.isfinite(component) for component in point):
+            raise RemoteArmError(f"vision target {field} contains non-finite values")
+        normalized[field] = point
+    return normalized
 
 
 def _signed_progress(start: float, actual: float, requested_delta: float) -> float:
@@ -449,10 +509,7 @@ def _guarded_joint_path(
         for step in range(1, steps + 1):
             ratio = step / steps
             path.append(
-                tuple(
-                    (1.0 - ratio) * begin + ratio * end
-                    for begin, end in zip(start, target)
-                )
+                tuple((1.0 - ratio) * begin + ratio * end for begin, end in zip(start, target))
             )
     return path
 
@@ -473,8 +530,7 @@ def _manual_deltas(args: argparse.Namespace, names: Sequence[str]) -> dict[str, 
         joint_name = args.joint or f"{args.side}_shoulder_pitch_joint"
         if joint_name not in names:
             raise RemoteArmError(
-                f"{joint_name!r} is not a canonical {args.side} arm joint: "
-                + ", ".join(names)
+                f"{joint_name!r} is not a canonical {args.side} arm joint: " + ", ".join(names)
             )
         return {joint_name: float(args.delta)}
     result: dict[str, float] = {}
@@ -482,8 +538,7 @@ def _manual_deltas(args: argparse.Namespace, names: Sequence[str]) -> dict[str, 
         joint_name, delta = _parse_joint_delta(value)
         if joint_name not in names:
             raise RemoteArmError(
-                f"{joint_name!r} is not a canonical {args.side} arm joint: "
-                + ", ".join(names)
+                f"{joint_name!r} is not a canonical {args.side} arm joint: " + ", ".join(names)
             )
         if joint_name in result:
             raise RemoteArmError(f"duplicate --joint-delta for {joint_name}")
@@ -525,7 +580,8 @@ def run(args: argparse.Namespace) -> int:
             return 0
 
         ik_solver = None
-        if args.command == "ik":
+        vision_target = None
+        if args.command in ("ik", "point"):
             import numpy as np
 
             from object_tracking.arm_tracking.ik_solver import (
@@ -548,6 +604,11 @@ def run(args: argparse.Namespace) -> int:
                 )
             except IKUnavailable as exc:
                 raise RemoteArmError(str(exc)) from exc
+
+        # Fail before taking arm ownership if the perception pipeline is not
+        # currently producing a fresh, depth-backed 3D target.
+        if args.command == "point":
+            vision_target = _fetch_vision_target(args.server)
 
         enabled = client.request("enable", timeout_s=args.timeout)
         session_id = str(enabled.get("session_id") or "")
@@ -581,6 +642,7 @@ def run(args: argparse.Namespace) -> int:
         path_knots: list[tuple[float, ...]] = [tuple(baseline)]
         ik_start_transform = None
         ik_target_transform = None
+        point_desired_hand_xyz_m = None
         manual_deltas = None
         if args.command == "move":
             manual_deltas = _manual_deltas(args, names)
@@ -596,22 +658,40 @@ def run(args: argparse.Namespace) -> int:
             assert ik_solver is not None
             ik_start_transform = ik_solver.forward_kinematics(baseline)
             ik_target_transform = ik_start_transform.copy()
-            cartesian_offset = np.array([args.dx, args.dy, args.dz])
+            if args.command == "ik":
+                cartesian_offset = np.array([args.dx, args.dy, args.dz])
+            else:
+                # Refresh after arming so the solved route uses the newest
+                # localization rather than the preflight sample.
+                vision_target = _fetch_vision_target(args.server)
+                object_xyz = np.asarray(vision_target["object_xyz_m"], dtype=float)
+                shoulder_xyz = np.asarray(RIGHT_SHOULDER_POSITION_M, dtype=float)
+                shoulder_to_object = object_xyz - shoulder_xyz
+                shoulder_distance = float(np.linalg.norm(shoulder_to_object))
+                if shoulder_distance <= args.standoff + 0.02:
+                    raise RemoteArmError(
+                        "vision object is too close to form the requested "
+                        f"{args.standoff:.2f} m pointing standoff"
+                    )
+                desired_hand_xyz = (
+                    object_xyz - shoulder_to_object / shoulder_distance * args.standoff
+                )
+                point_desired_hand_xyz_m = desired_hand_xyz.tolist()
+                cartesian_offset = desired_hand_xyz - ik_start_transform[:3, 3]
+                approach_distance = float(np.linalg.norm(cartesian_offset))
+                if approach_distance > args.max_approach:
+                    cartesian_offset *= args.max_approach / approach_distance
             ik_target_transform[:3, 3] += cartesian_offset
             waypoint_count = max(
                 1,
                 math.ceil(
-                    float(np.linalg.norm(cartesian_offset))
-                    / MAX_IK_WAYPOINT_DISTANCE_M
-                    - 1e-9
+                    float(np.linalg.norm(cartesian_offset)) / MAX_IK_WAYPOINT_DISTANCE_M - 1e-9
                 ),
             )
             solution_q = tuple(baseline)
             for waypoint_index in range(1, waypoint_count + 1):
                 waypoint = ik_start_transform.copy()
-                waypoint[:3, 3] += (
-                    cartesian_offset * waypoint_index / waypoint_count
-                )
+                waypoint[:3, 3] += cartesian_offset * waypoint_index / waypoint_count
                 result = ik_solver.solve(waypoint, solution_q)
                 if not result.ok or result.q_rad is None:
                     raise RemoteArmError(
@@ -655,9 +735,7 @@ def run(args: argparse.Namespace) -> int:
                     f"state={status.get('state')}, "
                     f"fault={status.get('fault_reason')}"
                 )
-        client.pump_heartbeat(
-            session_id, args.hold, stop, trace=motion_trace, phase="outward_hold"
-        )
+        client.pump_heartbeat(session_id, args.hold, stop, trace=motion_trace, phase="outward_hold")
         outward_status = client.status or {}
         if outward_status.get("state") != "ARMED":
             raise RemoteArmError(
@@ -688,7 +766,8 @@ def run(args: argparse.Namespace) -> int:
         ik_measured_xyz_m = None
         ik_achieved_delta_xyz_m = None
         validation_error = None
-        if args.command == "ik":
+        point_angular_error_deg = None
+        if args.command in ("ik", "point"):
             assert ik_solver is not None and ik_target_transform is not None
             measured_right = [float(value) for value in measured_after[-7:]]
             measured_transform = ik_solver.forward_kinematics(measured_right)
@@ -705,6 +784,21 @@ def run(args: argparse.Namespace) -> int:
                     "measured hand pose did not reach the IK target: "
                     f"position error {ik_position_error_m:.4f} m"
                 )
+            if args.command == "point":
+                assert vision_target is not None
+                object_xyz = np.asarray(vision_target["object_xyz_m"], dtype=float)
+                shoulder_xyz = np.asarray(RIGHT_SHOULDER_POSITION_M, dtype=float)
+                expected_ray = object_xyz - shoulder_xyz
+                measured_ray = measured_transform[:3, 3] - shoulder_xyz
+                cosine = float(
+                    np.dot(expected_ray, measured_ray)
+                    / (np.linalg.norm(expected_ray) * np.linalg.norm(measured_ray))
+                )
+                point_angular_error_deg = math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
+                # Depth/localization error is centimetre-scale, so the first
+                # pointing gate is deliberately looser than relative IK tests.
+                if ik_position_error_m <= 0.025:
+                    validation_error = None
         if args.stay and not stop.is_set():
             while not stop.is_set():
                 client.pump_heartbeat(
@@ -722,9 +816,7 @@ def run(args: argparse.Namespace) -> int:
                         f"fault={status.get('fault_reason')}"
                     )
         if not args.no_return and not args.stay and not stop.is_set():
-            return_targets = list(
-                reversed([tuple(baseline), *guarded_targets[:-1]])
-            )
+            return_targets = list(reversed([tuple(baseline), *guarded_targets[:-1]]))
             for step, return_target in enumerate(return_targets, start=1):
                 sequence += 1
                 client.publish_target(
@@ -747,28 +839,42 @@ def run(args: argparse.Namespace) -> int:
         final = client.stop_and_wait(session_id, "manual_move_complete", args.timeout)
         session_id = ""
         report = {
-                "ok": validation_error is None,
-                "error": validation_error,
-                "mode": args.command,
-                "manual_deltas_rad": manual_deltas,
-                "sdk_deltas_rad": sdk_deltas,
-                "guarded_steps": step_count,
-                "measured_outward_progress_rad": measured_progress,
-                "ik_start_xyz_m": (
-                    None
-                    if ik_start_transform is None
-                    else ik_start_transform[:3, 3].tolist()
-                ),
-                "ik_target_xyz_m": (
-                    None
-                    if ik_target_transform is None
-                    else ik_target_transform[:3, 3].tolist()
-                ),
-                "ik_measured_xyz_m": ik_measured_xyz_m,
-                "ik_achieved_delta_xyz_m": ik_achieved_delta_xyz_m,
-                "ik_position_error_m": ik_position_error_m,
-                "returned": not args.no_return and not args.stay,
-                "bridge": final,
+            "ok": validation_error is None,
+            "error": validation_error,
+            "mode": args.command,
+            "manual_deltas_rad": manual_deltas,
+            "sdk_deltas_rad": sdk_deltas,
+            "guarded_steps": step_count,
+            "measured_outward_progress_rad": measured_progress,
+            "ik_start_xyz_m": (
+                None if ik_start_transform is None else ik_start_transform[:3, 3].tolist()
+            ),
+            "ik_target_xyz_m": (
+                None if ik_target_transform is None else ik_target_transform[:3, 3].tolist()
+            ),
+            "ik_measured_xyz_m": ik_measured_xyz_m,
+            "ik_achieved_delta_xyz_m": ik_achieved_delta_xyz_m,
+            "ik_position_error_m": ik_position_error_m,
+            "vision_object_xyz_m": (
+                None if vision_target is None else list(vision_target["object_xyz_m"])
+            ),
+            "vision_predicted_xyz_m": (
+                None
+                if vision_target is None or vision_target["predicted_xyz_m"] is None
+                else list(vision_target["predicted_xyz_m"])
+            ),
+            "vision_target_age_ms": (
+                None if vision_target is None else vision_target["target_age_ms"]
+            ),
+            "point_angular_error_deg": point_angular_error_deg,
+            "point_standoff_m": (args.standoff if args.command == "point" else None),
+            "point_desired_hand_xyz_m": point_desired_hand_xyz_m,
+            "vision_track_id": (None if vision_target is None else vision_target["track_id"]),
+            "vision_detector_confidence": (
+                None if vision_target is None else vision_target["detector_confidence"]
+            ),
+            "returned": not args.no_return and not args.stay,
+            "bridge": final,
         }
         if args.trace_output is not None:
             trace_path = _write_motion_trace(args.trace_output, report, motion_trace)

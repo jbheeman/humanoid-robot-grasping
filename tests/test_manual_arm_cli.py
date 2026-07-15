@@ -1,3 +1,4 @@
+import json
 import math
 
 import pytest
@@ -10,6 +11,7 @@ from object_tracking.manual_arm_cli import (
     MAX_MANUAL_TOTAL_DELTA_RAD,
     _arming_failure,
     _arming_status_summary,
+    _fetch_vision_target,
     _guarded_offsets,
     _guarded_joint_path,
     _manual_deltas,
@@ -125,6 +127,72 @@ def test_ik_rejects_zero_or_large_offset() -> None:
         _validate_args(build_parser().parse_args(["ik", "--dx", "0.501"]))
 
 
+def test_point_defaults_to_bounded_one_shot_vision_approach() -> None:
+    args = build_parser().parse_args(["point"])
+    _validate_args(args)
+    assert args.server == "http://127.0.0.1:8000"
+    assert args.standoff == pytest.approx(0.25)
+    assert args.max_approach == pytest.approx(0.05)
+    assert args.duration == pytest.approx(0.6)
+    assert args.no_return is False
+
+
+def test_fetch_vision_target_requires_fresh_registered_xyz(monkeypatch) -> None:
+    payload = {
+        "depth_valid": True,
+        "target_age_ms": 42.0,
+        "track_id": 7,
+        "detector_confidence": 0.91,
+        "object_xyz_m": [0.55, -0.1, 0.02],
+        "predicted_xyz_m": [0.57, -0.1, 0.02],
+        "prediction_source": "learned_trajectory",
+    }
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setattr(
+        "object_tracking.manual_arm_cli.urllib.request.urlopen",
+        lambda url, timeout: Response(),
+    )
+    target = _fetch_vision_target("http://127.0.0.1:8000/")
+    assert target["object_xyz_m"] == pytest.approx((0.55, -0.1, 0.02))
+    assert target["predicted_xyz_m"] == pytest.approx((0.57, -0.1, 0.02))
+    assert target["target_age_ms"] == pytest.approx(42.0)
+
+
+def test_fetch_vision_target_rejects_stale_sample(monkeypatch) -> None:
+    payload = {
+        "depth_valid": True,
+        "target_age_ms": 501.0,
+        "object_xyz_m": [0.55, -0.1, 0.02],
+    }
+
+    class Response:
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *args):
+            return False
+
+        def read(self):
+            return json.dumps(payload).encode("utf-8")
+
+    monkeypatch.setattr(
+        "object_tracking.manual_arm_cli.urllib.request.urlopen",
+        lambda url, timeout: Response(),
+    )
+    with pytest.raises(RemoteArmError, match="stale"):
+        _fetch_vision_target("http://127.0.0.1:8000")
+
+
 def test_move_allows_visible_delta_split_into_guarded_steps() -> None:
     args = build_parser().parse_args(["move", "--delta", "0.15"])
     _validate_args(args)
@@ -154,10 +222,13 @@ def test_guarded_joint_path_preserves_waypoint_route() -> None:
     assert path[1] == pytest.approx((0.08, -0.02))
     assert path[-1] == pytest.approx((0.03, 0.04))
     complete = [(0.0, 0.0), *path]
-    assert max(
-        max(abs(end - start) for start, end in zip(before, after))
-        for before, after in zip(complete, complete[1:])
-    ) <= 0.05
+    assert (
+        max(
+            max(abs(end - start) for start, end in zip(before, after))
+            for before, after in zip(complete, complete[1:])
+        )
+        <= 0.05
+    )
 
 
 def test_signed_progress_rejects_motion_opposite_the_requested_direction() -> None:

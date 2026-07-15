@@ -131,6 +131,51 @@ never publishes Cartesian targets or native Unitree DDS packets directly: the
 GB10 solves IK to seven canonical joint angles and the robot-local bridge owns
 interpolation, heartbeat release, state gates, and `rt/arm_sdk` output.
 
+## First vision-derived pointing test
+
+The combined vision mode uses one D435I session for RGB and RGB-aligned depth,
+the fine-tuned plush detector on the GB10, the calibrated optical-to-torso
+transform, and the same manual ROS arm bridge tested above. The legacy camera
+service must be stopped because it otherwise owns `/dev/video4`:
+
+```bash
+# Robot
+sudo systemctl disable --now g1-highfps-camera.service
+cd ~/humanoid-robot-grasping
+CLIENT_IP=192.168.0.66 scripts/robot/start.sh --vision-pointing
+
+# GB10, in a second terminal
+cd ~/Documents/project
+scripts/gb10/start.sh --vision-pointing
+```
+
+Neither launcher arms or moves the robot. Open `http://192.168.0.66:8000/`
+and verify the plush detection. Check the exact read-only 3D input before any
+motion:
+
+```bash
+curl -s http://127.0.0.1:8000/arm-tracking | python3 -m json.tool
+```
+
+The report must show `depth_valid: true`, a fresh `target_age_ms`, and a
+plausible `object_xyz_m`. With a clear workspace and spotter, the operator can
+request one bounded test from a separate GB10 terminal:
+
+```bash
+scripts/gb10/arm-remote.sh point \
+  --max-approach 0.05 \
+  --duration 0.6 \
+  --hold 3 \
+  --trace-output runs/arm/vision-point-xr.json
+```
+
+This first phase uses the measured object position, puts the hand toward the
+shoulder-to-object ray with a 25 cm standoff, limits the approach to 5 cm,
+checks the swept IK route in 1 cm Cartesian waypoints, then returns and
+disarms. It rejects missing or older-than-500 ms registered depth before
+movement. Continuous updates and the learned future-position prediction are
+intentionally enabled only after this one-shot geometry test succeeds.
+
 ## Compare the two Unitree controller profiles
 
 The robot bridge exposes two deliberate A/B candidates:
