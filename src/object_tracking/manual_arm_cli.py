@@ -1165,8 +1165,14 @@ def run(args: argparse.Namespace) -> int:
                         phase="tracking_hold",
                     )
                     continue
+                # The collision planner normally returns solution_q as its
+                # first knot. Make that continuity explicit anyway: a route
+                # that comes back from an alternate RRT branch must still be
+                # bridged from the exact last command the robot accepted.
+                # This is the authoritative source for the 0.050-rad guard.
                 tracking_targets = _guarded_joint_path(
-                    route.q_path, maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD
+                    (solution_q, *route.q_path[1:]),
+                    maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD,
                 )
                 for target in tracking_targets:
                     if stop.is_set():
