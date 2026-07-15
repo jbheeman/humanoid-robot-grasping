@@ -46,6 +46,9 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("arm", "commissioning"): Route(
         "script", "scripts/robot/commission.sh", "robot-local guarded arm commissioning"
     ),
+    ("arm", "remote"): Route(
+        "script", "scripts/gb10/arm-remote.sh", "GB10 ROS 2 manual left/right arm control"
+    ),
     ("calibrate", "camera"): Route(
         "module", "object_tracking.arm_tracking.calibration_cli", "camera calibration workflow"
     ),
@@ -72,6 +75,9 @@ ROUTES: dict[tuple[str, str], Route] = {
     ),
     ("robot", "loco"): Route(
         "module", "object_tracking.g1_loco_cli", "send a Unitree G1 locomotion command"
+    ),
+    ("robot", "manual-arm"): Route(
+        "script", "scripts/robot/manual-arm.sh", "robot-local ROS 2 manual arm bridge"
     ),
     ("robot", "scan"): Route(
         "module", "object_tracking.g1_scan_cli", "scan the local robot network"

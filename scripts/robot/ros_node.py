@@ -29,6 +29,8 @@ from object_tracking.arm_tracking.arm_commissioning import (
 from object_tracking.arm_tracking.arm_unitree import UnitreeArmHardware
 from object_tracking.arm_tracking.calibration import load_calibration
 from object_tracking.arm_tracking.joints import joint_contract_id
+from object_tracking.arm_tracking.manual_arm import ManualArmConfig, ManualArmController
+from object_tracking.arm_tracking.joints import ARM_JOINT_NAMES
 from object_tracking.ros2_transport import Ros2NodeRunner
 from scripts.robot.depth_service import (
     AutoDepthSource,
@@ -44,6 +46,14 @@ ARM_STATE_TOPIC = "/g1/arm/state"
 DEPTH_TOPIC = "/g1/depth"
 ARM_CONTROL_SERVICE = "/g1/arm/control"
 COMMISSIONING_STATE_TOPIC = "/g1/commissioning/state"
+MANUAL_BASE = "/g1/arm_control"
+MANUAL_LEFT_TOPIC = f"{MANUAL_BASE}/left/command"
+MANUAL_RIGHT_TOPIC = f"{MANUAL_BASE}/right/command"
+MANUAL_HEARTBEAT_TOPIC = f"{MANUAL_BASE}/heartbeat"
+MANUAL_REQUEST_TOPIC = f"{MANUAL_BASE}/request"
+MANUAL_RESPONSE_TOPIC = f"{MANUAL_BASE}/response"
+MANUAL_STATUS_TOPIC = f"{MANUAL_BASE}/status"
+MANUAL_JOINT_STATES_TOPIC = f"{MANUAL_BASE}/joint_states"
 _HEADER_LENGTH = struct.Struct("!I")
 
 
@@ -52,7 +62,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--calibration")
     parser.add_argument(
         "--control-mode",
-        choices=("tracking", "commissioning"),
+        choices=("tracking", "commissioning", "manual"),
         default="tracking",
     )
     parser.add_argument("--allow-movement", action="store_true")
@@ -104,12 +114,17 @@ def _imports() -> dict[str, Any]:
         from g1_control_interfaces.msg import (
             ArmState,
             ArmTarget,
+            ArmManualRequest,
+            ArmManualResponse,
+            ArmSideTarget,
             CommissioningRequest,
             CommissioningResponse,
             CommissioningState,
             CompressedDepth,
         )
         from g1_control_interfaces.srv import ArmControl
+        from sensor_msgs.msg import JointState
+        from std_msgs.msg import String
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
@@ -123,11 +138,16 @@ def _imports() -> dict[str, Any]:
     return {
         "ArmState": ArmState,
         "ArmTarget": ArmTarget,
+        "ArmManualRequest": ArmManualRequest,
+        "ArmManualResponse": ArmManualResponse,
+        "ArmSideTarget": ArmSideTarget,
         "CommissioningState": CommissioningState,
         "CommissioningRequest": CommissioningRequest,
         "CommissioningResponse": CommissioningResponse,
         "CompressedDepth": CompressedDepth,
         "ArmControl": ArmControl,
+        "JointState": JointState,
+        "String": String,
         "QoSProfile": QoSProfile,
         "ReliabilityPolicy": ReliabilityPolicy,
         "DurabilityPolicy": DurabilityPolicy,
@@ -173,29 +193,40 @@ class RobotRosNode:
         self.types = _imports()
         calibration = None if args.calibration is None else load_calibration(args.calibration)
         calibration_id = None if calibration is None else calibration.calibration_id
-        control_mode = ArmControlMode(args.control_mode)
-        config = ArmBridgeConfig(
-            control_mode=control_mode,
-            allow_movement=args.allow_movement,
-            calibration_id=calibration_id,
-            joint_contract_id=(
-                joint_contract_id() if control_mode is ArmControlMode.COMMISSIONING else None
-            ),
-            waist_reference_rad=(None if calibration is None else calibration.waist_reference_rad),
-            max_velocity_rad_s=(0.10 if control_mode is ArmControlMode.COMMISSIONING else 0.50),
-            max_acceleration_rad_s2=(
-                0.50 if control_mode is ArmControlMode.COMMISSIONING else 2.0
-            ),
-            max_following_error_rad=(
-                0.05 if control_mode is ArmControlMode.COMMISSIONING else 0.35
-            ),
-        )
         self.hardware = UnitreeArmHardware(
             interface=args.hardware_interface,
             domain_id=args.hardware_domain_id,
             expected_motion_mode=args.expected_motion_mode,
         )
-        self.controller = ArmBridgeController(self.hardware, config)
+        if args.control_mode == "manual":
+            control_mode = None
+            self.controller = ManualArmController(
+                self.hardware,
+                ManualArmConfig(allow_movement=args.allow_movement),
+            )
+        else:
+            control_mode = ArmControlMode(args.control_mode)
+            config = ArmBridgeConfig(
+                control_mode=control_mode,
+                allow_movement=args.allow_movement,
+                calibration_id=calibration_id,
+                joint_contract_id=(
+                    joint_contract_id() if control_mode is ArmControlMode.COMMISSIONING else None
+                ),
+                waist_reference_rad=(
+                    None if calibration is None else calibration.waist_reference_rad
+                ),
+                max_velocity_rad_s=(
+                    0.10 if control_mode is ArmControlMode.COMMISSIONING else 0.50
+                ),
+                max_acceleration_rad_s2=(
+                    0.50 if control_mode is ArmControlMode.COMMISSIONING else 2.0
+                ),
+                max_following_error_rad=(
+                    0.05 if control_mode is ArmControlMode.COMMISSIONING else 0.35
+                ),
+            )
+            self.controller = ArmBridgeController(self.hardware, config)
         # SDK2 must create the native Unitree DDS domain before rclpy creates
         # the project ROS domain.  Reversing this order fails on the stock G1
         # image with "ChannelFactory create domain error".
@@ -234,6 +265,15 @@ class RobotRosNode:
         self.arm_state_publisher = self.node.create_publisher(
             self.types["ArmState"], ARM_STATE_TOPIC, qos
         )
+        self.manual_status_publisher = self.node.create_publisher(
+            self.types["ArmState"], MANUAL_STATUS_TOPIC, qos
+        )
+        self.manual_joint_state_publisher = self.node.create_publisher(
+            self.types["JointState"], MANUAL_JOINT_STATES_TOPIC, depth_qos
+        )
+        self.manual_response_publisher = self.node.create_publisher(
+            self.types["ArmManualResponse"], MANUAL_RESPONSE_TOPIC, qos
+        )
         self.commissioning_state_publisher = self.node.create_publisher(
             self.types["CommissioningState"], COMMISSIONING_STATE_TOPIC, qos
         )
@@ -245,6 +285,27 @@ class RobotRosNode:
             self.types["ArmTarget"], ARM_TARGET_TOPIC, self._on_target, qos
         )
         self.node.create_subscription(
+            self.types["ArmSideTarget"],
+            MANUAL_LEFT_TOPIC,
+            lambda message: self._on_manual_target("left", message),
+            qos,
+        )
+        self.node.create_subscription(
+            self.types["ArmSideTarget"],
+            MANUAL_RIGHT_TOPIC,
+            lambda message: self._on_manual_target("right", message),
+            qos,
+        )
+        self.node.create_subscription(
+            self.types["String"], MANUAL_HEARTBEAT_TOPIC, self._on_manual_heartbeat, qos
+        )
+        self.node.create_subscription(
+            self.types["ArmManualRequest"],
+            MANUAL_REQUEST_TOPIC,
+            self._on_manual_request,
+            qos,
+        )
+        self.node.create_subscription(
             self.types["CommissioningRequest"],
             "/g1/commissioning/request",
             self._on_commissioning_request,
@@ -254,6 +315,7 @@ class RobotRosNode:
             self.types["ArmControl"], ARM_CONTROL_SERVICE, self._on_arm_control
         )
         self.node.create_timer(0.05, self._publish_state)
+        self.node.create_timer(0.05, self._publish_manual_joint_states)
         self.node.create_timer(0.1, self._publish_commissioning_state)
 
         self.depth_service = None
@@ -303,6 +365,8 @@ class RobotRosNode:
         )
 
     def _on_target(self, message: object) -> None:
+        if self.args.control_mode == "manual":
+            return
         try:
             self.controller.set_target(
                 session_id=message.session_id,
@@ -315,6 +379,78 @@ class RobotRosNode:
             return
         except Exception:
             self.controller.stop("ros_target_failure")
+
+    @staticmethod
+    def _stamp_ns(stamp: object) -> int:
+        return int(getattr(stamp, "sec", 0)) * 1_000_000_000 + int(
+            getattr(stamp, "nanosec", 0)
+        )
+
+    def _on_manual_target(self, side: str, message: object) -> None:
+        if self.args.control_mode != "manual":
+            return
+        try:
+            duration = getattr(message, "move_duration")
+            duration_s = float(getattr(duration, "sec", 0)) + float(
+                getattr(duration, "nanosec", 0)
+            ) / 1e9
+            self.controller.set_side_target(
+                side=side,
+                session_id=str(message.session_id),
+                sequence=int(message.sequence),
+                joint_names=tuple(message.joint_names),
+                position_rad=tuple(message.position_rad),
+                duration_s=duration_s,
+                sent_time_ns=self._stamp_ns(message.header.stamp),
+            )
+        except ArmBridgeError as exc:
+            # Rejections are reported on the typed status topic and do not
+            # disturb a currently safe command.
+            self.controller.record_rejection(side, exc)
+            return
+        except Exception as exc:
+            self.controller.stop(f"manual_target_failure:{type(exc).__name__}")
+
+    def _on_manual_heartbeat(self, message: object) -> None:
+        if self.args.control_mode != "manual":
+            return
+        try:
+            self.controller.heartbeat(str(message.data))
+        except ArmBridgeError:
+            return
+
+    def _on_manual_request(self, request: object) -> None:
+        response = self.types["ArmManualResponse"]()
+        response.request_id = str(getattr(request, "request_id", ""))
+        try:
+            if self.args.control_mode != "manual":
+                raise ArmBridgeError("Manual control mode is not active", code="mode_mismatch")
+            operation = str(getattr(request, "operation", "")).strip().lower()
+            if operation == "enable":
+                report = self.controller.enable(str(getattr(request, "session_id", "")))
+            elif operation == "heartbeat":
+                report = self.controller.heartbeat(str(getattr(request, "session_id", "")))
+            elif operation == "stop":
+                report = self.controller.stop(
+                    str(getattr(request, "reason", "") or "operator_stop")
+                )
+            elif operation == "state":
+                report = self.controller.state_report()
+            else:
+                raise ArmBridgeError("Unknown manual arm operation", code="invalid_request")
+        except Exception as exc:
+            response.ok = False
+            response.error_code = str(getattr(exc, "code", "bridge_failure"))
+            response.message = str(exc)
+            response.session_id = ""
+            response.report_json = "{}"
+        else:
+            response.ok = True
+            response.error_code = ""
+            response.message = ""
+            response.session_id = _optional_string(report.get("session_id"))
+            response.report_json = _safe_json(report)
+        self.manual_response_publisher.publish(response)
 
     @staticmethod
     def _service_error(response: object, exc: Exception) -> object:
@@ -464,6 +600,23 @@ class RobotRosNode:
         message.hold_reason = _optional_string(report.get("hold_reason"))
         message.report_json = _safe_json(report)
         self.arm_state_publisher.publish(message)
+        if self.args.control_mode == "manual":
+            self.manual_status_publisher.publish(message)
+
+    def _publish_manual_joint_states(self) -> None:
+        if self.args.control_mode != "manual":
+            return
+        report = self.controller.state_report()
+        measured = report.get("measured_arm_q")
+        if measured is None:
+            return
+        message = self.types["JointState"]()
+        message.header.stamp = self.node.get_clock().now().to_msg()
+        message.name = list(ARM_JOINT_NAMES)
+        message.position = list(measured)
+        velocity = report.get("measured_arm_dq")
+        message.velocity = list(velocity if velocity is not None else [])
+        self.manual_joint_state_publisher.publish(message)
 
     def _publish_commissioning_state(self) -> None:
         if self.commissioning is None:

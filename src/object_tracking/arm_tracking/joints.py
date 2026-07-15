@@ -66,6 +66,14 @@ DEFAULT_RIGHT_JOINT_LIMITS = (
     (-1.6144, 1.6144),
 )
 
+# The shoulder-roll range is mirrored between sides. The remaining limits use
+# the same signs in Unitree's canonical 29-DOF joint convention.
+DEFAULT_LEFT_JOINT_LIMITS = (
+    DEFAULT_RIGHT_JOINT_LIMITS[0],
+    (-DEFAULT_RIGHT_JOINT_LIMITS[1][1], -DEFAULT_RIGHT_JOINT_LIMITS[1][0]),
+    *DEFAULT_RIGHT_JOINT_LIMITS[2:],
+)
+
 
 def joint_contract() -> list[dict[str, Any]]:
     """Return the right-arm command order shared by IK and the ROS 2 arm node."""

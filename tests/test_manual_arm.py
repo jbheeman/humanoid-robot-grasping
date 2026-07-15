@@ -1,0 +1,209 @@
+from __future__ import annotations
+
+import math
+
+import pytest
+
+from object_tracking.arm_tracking.arm_bridge import ArmBridgeError, ArmCommand, ArmState, RobotState
+from object_tracking.arm_tracking.joints import LEFT_ARM_JOINT_NAMES, RIGHT_ARM_JOINT_NAMES
+from object_tracking.arm_tracking.manual_arm import ManualArmConfig, ManualArmController
+
+
+class Clock:
+    def __init__(self) -> None:
+        self.monotonic = 10.0
+        self.wall_ns = 1_800_000_000_000_000_000
+
+    def advance(self, seconds: float) -> None:
+        self.monotonic += seconds
+        self.wall_ns += int(seconds * 1e9)
+
+
+class Hardware:
+    def __init__(self, clock: Clock) -> None:
+        self.clock = clock
+        self.state = self.make_state()
+        self.commands: list[ArmCommand] = []
+        self.started = False
+        self.closed = False
+
+    def make_state(self, q: tuple[float, ...] = (0.0,) * 14, **changes: object) -> RobotState:
+        values: dict[str, object] = {
+            "arm_q": q,
+            "arm_dq": (0.0,) * 14,
+            "received_at": self.clock.monotonic,
+            "standing": True,
+            "standing_since": self.clock.monotonic - 3.0,
+            "compatible_motion_mode": True,
+            "controller_available": True,
+            "mode_machine": 5,
+            "motion_mode_name": "ai",
+            "motion_mode_verified": True,
+            "controller_ownership_verified": True,
+            "motor_status_verified": True,
+            "motor_state_healthy": True,
+        }
+        values.update(changes)
+        return RobotState(**values)  # type: ignore[arg-type]
+
+    def refresh(self, q: tuple[float, ...] | None = None) -> None:
+        self.state = self.make_state(self.state.arm_q if q is None else q)
+
+    def start(self) -> None:
+        self.started = True
+
+    def latest_state(self) -> RobotState:
+        return self.state
+
+    def publish(self, command: ArmCommand) -> None:
+        self.commands.append(command)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def setup() -> tuple[Clock, Hardware, ManualArmController]:
+    clock = Clock()
+    hardware = Hardware(clock)
+    controller = ManualArmController(
+        hardware,
+        ManualArmConfig(allow_movement=True, weight_ramp_s=0.5),
+        monotonic=lambda: clock.monotonic,
+        wall_time_ns=lambda: clock.wall_ns,
+    )
+    return clock, hardware, controller
+
+
+def arm(clock: Clock, hardware: Hardware, controller: ManualArmController) -> str:
+    report = controller.enable("session-a")
+    assert report["state"] == ArmState.ARMING.value
+    clock.advance(0.5)
+    hardware.refresh()
+    controller.heartbeat("session-a")
+    controller.tick()
+    assert controller.state_report()["state"] == ArmState.ARMED.value
+    return "session-a"
+
+
+def target(
+    controller: ManualArmController,
+    clock: Clock,
+    *,
+    side: str,
+    sequence: int,
+    positions: tuple[float, ...],
+    duration: float = 1.0,
+) -> None:
+    controller.set_side_target(
+        side=side,
+        session_id="session-a",
+        sequence=sequence,
+        joint_names=LEFT_ARM_JOINT_NAMES if side == "left" else RIGHT_ARM_JOINT_NAMES,
+        position_rad=positions,
+        duration_s=duration,
+        sent_time_ns=clock.wall_ns,
+    )
+
+
+def test_left_and_right_trajectories_are_independent_and_publish_full_frame() -> None:
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    target(controller, clock, side="left", sequence=0, positions=(0.05,) + (0.0,) * 6)
+    clock.advance(0.25)
+    hardware.refresh()
+    controller.heartbeat("session-a")
+    controller.tick()
+    left_at_quarter = hardware.commands[-1].q[0]
+    assert 0.0 < left_at_quarter < 0.05
+    assert hardware.commands[-1].q[7:] == (0.0,) * 7
+
+    target(controller, clock, side="right", sequence=0, positions=(0.05,) + (0.0,) * 6)
+    clock.advance(0.25)
+    hardware.refresh()
+    controller.heartbeat("session-a")
+    controller.tick()
+    command = hardware.commands[-1]
+    assert len(command.q) == 14
+    assert command.q[0] > left_at_quarter
+    assert 0.0 < command.q[7] < 0.05
+
+
+def test_sequences_are_per_side_and_replay_is_rejected() -> None:
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    target(controller, clock, side="left", sequence=0, positions=(0.01,) + (0.0,) * 6)
+    target(controller, clock, side="right", sequence=0, positions=(0.01,) + (0.0,) * 6)
+    with pytest.raises(ArmBridgeError, match="sequence"):
+        target(controller, clock, side="left", sequence=0, positions=(0.02,) + (0.0,) * 6)
+
+
+@pytest.mark.parametrize(
+    ("names", "positions", "match"),
+    [
+        (RIGHT_ARM_JOINT_NAMES[::-1], (0.0,) * 7, "canonical"),
+        (RIGHT_ARM_JOINT_NAMES, (math.nan,) + (0.0,) * 6, "finite"),
+        (RIGHT_ARM_JOINT_NAMES, (0.051,) + (0.0,) * 6, "exceeds"),
+    ],
+)
+def test_target_contract_rejections(names, positions, match) -> None:
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    with pytest.raises(ArmBridgeError, match=match):
+        controller.set_side_target(
+            side="right",
+            session_id="session-a",
+            sequence=0,
+            joint_names=names,
+            position_rad=positions,
+            duration_s=1.0,
+            sent_time_ns=clock.wall_ns,
+        )
+
+
+def test_heartbeat_timeout_ramps_to_zero_and_stop_resets_fault() -> None:
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    clock.advance(0.501)
+    hardware.refresh()
+    controller.tick()
+    assert controller.state_report()["state"] == ArmState.HOLDING.value
+    assert hardware.commands[-1].weight == pytest.approx(1.0)
+    clock.advance(0.5)
+    hardware.refresh()
+    controller.tick()
+    assert controller.state_report()["state"] == ArmState.DISARMED.value
+    assert controller.state_report()["weight"] == 0.0
+
+    arm(clock, hardware, controller)
+    hardware.state = hardware.make_state(motion_mode_verified=False)
+    controller.tick()
+    clock.advance(0.5)
+    hardware.refresh()
+    controller.tick()
+    assert controller.state_report()["state"] == ArmState.FAULT.value
+    assert controller.stop("operator_reset")["state"] == ArmState.DISARMED.value
+
+
+def test_disabled_bridge_and_stale_timestamp_fail_closed() -> None:
+    clock, hardware, _controller = setup()
+    disabled = ManualArmController(
+        hardware,
+        ManualArmConfig(allow_movement=False),
+        monotonic=lambda: clock.monotonic,
+        wall_time_ns=lambda: clock.wall_ns,
+    )
+    with pytest.raises(ArmBridgeError, match="disabled"):
+        disabled.enable()
+
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    with pytest.raises(ArmBridgeError, match="not fresh"):
+        controller.set_side_target(
+            side="right",
+            session_id="session-a",
+            sequence=0,
+            joint_names=RIGHT_ARM_JOINT_NAMES,
+            position_rad=(0.01,) + (0.0,) * 6,
+            duration_s=1.0,
+            sent_time_ns=clock.wall_ns - 1_000_000_000,
+        )

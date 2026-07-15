@@ -6,10 +6,11 @@ ROLE=""
 PEER=""
 INTERFACE="auto"
 DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+PROFILE="full"
 UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
 
 usage() {
-  echo "Usage: g1 inspect ros --role {robot|gb10} --peer IP [--interface NAME] [--domain-id ID]"
+  echo "Usage: g1 inspect ros --role {robot|gb10} --peer IP [--interface NAME] [--domain-id ID] [--profile {full|manual}]"
   echo "Lists ROS nodes/topics and verifies the project and Unitree interface types without commanding movement."
 }
 
@@ -31,6 +32,10 @@ while (( $# > 0 )); do
       DOMAIN_ID="${2:-}"
       shift 2
       ;;
+    --profile)
+      PROFILE="${2:-}"
+      shift 2
+      ;;
     -h|--help)
       usage
       exit 0
@@ -46,6 +51,10 @@ done
 if [[ "${ROLE}" != "robot" && "${ROLE}" != "gb10" ]]; then
   echo "--role must be robot or gb10." >&2
   usage >&2
+  exit 2
+fi
+if [[ "${PROFILE}" != "full" && "${PROFILE}" != "manual" ]]; then
+  echo "--profile must be full or manual." >&2
   exit 2
 fi
 if [[ -z "${PEER}" ]]; then
@@ -73,11 +82,24 @@ echo "Topics:"
 topics="$(timeout 8 ros2 topic list || true)"
 printf '%s\n' "${topics}"
 
-expected_topics=(
-  /g1/arm/state
-  /g1/depth
-  /g1/commissioning/state
-)
+if [[ "${PROFILE}" == "manual" ]]; then
+  expected_topics=(
+    /g1/arm/state
+    /g1/arm_control/left/command
+    /g1/arm_control/right/command
+    /g1/arm_control/heartbeat
+    /g1/arm_control/status
+    /g1/arm_control/joint_states
+    /g1/arm_control/request
+    /g1/arm_control/response
+  )
+else
+  expected_topics=(
+    /g1/arm/state
+    /g1/depth
+    /g1/commissioning/state
+  )
+fi
 echo
 echo "Expected interface check:"
 missing=0
