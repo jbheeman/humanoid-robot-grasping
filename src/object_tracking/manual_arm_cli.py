@@ -842,6 +842,44 @@ def run(args: argparse.Namespace) -> int:
                 point_desired_hand_xyz_m = desired_hand_xyz.tolist()
                 ik_target_transform[:3, 3] = desired_hand_xyz
                 preplanned_targets: list[tuple[float, ...]] = []
+                # The parked right hand can begin beside the hip.  Establish
+                # an arm-up/forward clearance posture before turning toward a
+                # tabletop target, rather than asking IK for a direct branch
+                # that folds the thumb through the right hip.
+                clearance_transform = ik_solver.forward_kinematics(solution_q)
+                clearance_transform[:3, 3] += np.asarray((0.06, 0.0, 0.12))
+                clearance_route = ik_solver.solve_with_collision_detour(
+                    clearance_transform,
+                    solution_q,
+                    enforce_orientation=False,
+                )
+                if clearance_route.ok and clearance_route.q_path is not None:
+                    clearance_q_path = clearance_route.q_path
+                    preplanned_targets.extend(
+                        _guarded_joint_path(
+                            (solution_q, *clearance_q_path[1:]),
+                            maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD,
+                        )
+                    )
+                    path_knots.extend(clearance_q_path[1:])
+                    total_route_knots += len(clearance_q_path) - 1
+                    used_detour = used_detour or len(clearance_q_path) > 2
+                    solution_q = clearance_q_path[-1]
+                    motion_trace.append(
+                        {
+                            "phase": "preplan_clearance",
+                            "kind": "hip_clearance",
+                            "path_knots": len(clearance_q_path),
+                        }
+                    )
+                else:
+                    motion_trace.append(
+                        {
+                            "phase": "preplan_clearance",
+                            "kind": "hip_clearance_unavailable",
+                            "reason": clearance_route.reason,
+                        }
+                    )
                 while True:
                     current_transform = ik_solver.forward_kinematics(solution_q)
                     stage_offset = desired_hand_xyz - current_transform[:3, 3]
