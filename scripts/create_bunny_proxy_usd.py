@@ -26,23 +26,32 @@ if not project_root:
     raise SystemExit("Set G1_BUNNY_PROJECT_ROOT to the humanoid-robot-grasping checkout")
 sys.path.insert(0, str(Path(project_root) / "src"))
 
-def _sphere(stage, path, position, scale) -> None:
+TAN = (0.82, 0.67, 0.54)
+CREAM = (0.95, 0.91, 0.83)
+PINK = (0.96, 0.53, 0.65)
+
+
+def _sphere(stage, path, position, scale, color=TAN, collision=True) -> None:
     shape = UsdGeom.Sphere.Define(stage, path)
     shape.CreateRadiusAttr(1.0)
     shape.AddTranslateOp().Set(Gf.Vec3d(*position))
     shape.AddScaleOp().Set(Gf.Vec3f(*scale))
-    shape.CreateDisplayColorAttr([Gf.Vec3f(0.82, 0.67, 0.54)])
-    UsdPhysics.CollisionAPI.Apply(shape.GetPrim())
+    shape.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    if collision:
+        UsdPhysics.CollisionAPI.Apply(shape.GetPrim())
 
 
-def _ear(stage, path, position) -> None:
+def _ear(stage, path, position, color=TAN, collision=True) -> None:
     shape = UsdGeom.Capsule.Define(stage, path)
-    shape.CreateRadiusAttr(0.012)
-    shape.CreateHeightAttr(0.064)
+    shape.CreateRadiusAttr(0.010)
+    # USD capsule height is the cylindrical span; with the hemispherical caps
+    # this keeps the ears below the measured 14 cm total height.
+    shape.CreateHeightAttr(0.032)
     shape.CreateAxisAttr(UsdGeom.Tokens.z)
     shape.AddTranslateOp().Set(Gf.Vec3d(*position))
-    shape.CreateDisplayColorAttr([Gf.Vec3f(0.82, 0.67, 0.54)])
-    UsdPhysics.CollisionAPI.Apply(shape.GetPrim())
+    shape.CreateDisplayColorAttr([Gf.Vec3f(*color)])
+    if collision:
+        UsdPhysics.CollisionAPI.Apply(shape.GetPrim())
 
 
 def main() -> int:
@@ -66,12 +75,20 @@ def main() -> int:
         mass = UsdPhysics.MassAPI.Apply(root.GetPrim())
         mass.CreateMassAttr().Set(spec.mass_kg)
 
-        # The torso drives the measured 15 cm x 7 cm envelope.  The head and ears
-        # make the profile grasp-relevant while keeping the total height at 14 cm.
-        _sphere(stage, "/Bunny/Geometry/Torso", (0.0, 0.0, 0.038), (0.075, 0.035, 0.038))
-        _sphere(stage, "/Bunny/Geometry/Head", (0.042, 0.0, 0.081), (0.038, 0.031, 0.031))
-        _ear(stage, "/Bunny/Geometry/LeftEar", (0.049, 0.018, 0.116))
-        _ear(stage, "/Bunny/Geometry/RightEar", (0.049, -0.018, 0.116))
+        # Upright profile from the supplied reference: rounded haunches, chest,
+        # head, front paws, and long ears.  Collision parts stay inside the
+        # measured 15 cm (X) x 7 cm (Y) x 14 cm (Z) envelope.
+        _sphere(stage, "/Bunny/Geometry/RearBody", (-0.010, 0.0, 0.038), (0.065, 0.035, 0.038))
+        _sphere(stage, "/Bunny/Geometry/Chest", (0.020, 0.0, 0.064), (0.040, 0.030, 0.038))
+        _sphere(stage, "/Bunny/Geometry/Head", (0.045, 0.0, 0.096), (0.030, 0.029, 0.028))
+        _sphere(stage, "/Bunny/Geometry/LeftRearPaw", (-0.035, 0.020, 0.016), (0.034, 0.014, 0.016))
+        _sphere(stage, "/Bunny/Geometry/RightRearPaw", (-0.035, -0.020, 0.016), (0.034, 0.014, 0.016))
+        _sphere(stage, "/Bunny/Geometry/LeftFrontPaw", (0.035, 0.020, 0.028), (0.017, 0.012, 0.024))
+        _sphere(stage, "/Bunny/Geometry/RightFrontPaw", (0.035, -0.020, 0.028), (0.017, 0.012, 0.024))
+        _ear(stage, "/Bunny/Geometry/LeftEar", (0.018, 0.017, 0.113))
+        _ear(stage, "/Bunny/Geometry/RightEar", (0.018, -0.017, 0.113))
+        _sphere(stage, "/Bunny/Visual/Muzzle", (0.073, 0.0, 0.091), (0.008, 0.022, 0.016), CREAM, False)
+        _sphere(stage, "/Bunny/Visual/Nose", (0.080, 0.0, 0.096), (0.004, 0.006, 0.004), PINK, False)
 
         stage.SetDefaultPrim(root.GetPrim())
         stage.GetRootLayer().Save()
