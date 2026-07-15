@@ -323,13 +323,13 @@ class RobotRosNode:
                     # increase so visual tracking is not dominated by the
                     # transport waypoint cadence.
                     max_velocity_rad_s=(
-                        0.25 if args.manual_control_profile == "sdk2" else 0.30
+                        0.25 if args.manual_control_profile == "sdk2" else 0.50
                     ),
                     max_target_delta_rad=(
-                        0.05 if args.manual_control_profile == "sdk2" else 0.10
+                        0.05 if args.manual_control_profile == "sdk2" else 0.12
                     ),
                     max_acceleration_rad_s2=(
-                        1.0 if args.manual_control_profile == "sdk2" else 1.20
+                        1.0 if args.manual_control_profile == "sdk2" else 2.00
                     ),
                 ),
                 event_sink=lambda event: print(

@@ -27,10 +27,10 @@ HEARTBEAT_TOPIC = f"{BASE}/heartbeat"
 REQUEST_TOPIC = f"{BASE}/request"
 RESPONSE_TOPIC = f"{BASE}/response"
 STATUS_TOPIC = f"{BASE}/status"
-MAX_ROBOT_STEP_RAD = 0.10
+MAX_ROBOT_STEP_RAD = 0.12
 # Keep a small numerical margin only for generated IK routes. Manual jogs
 # retain their documented 0.050-rad increments.
-SAFE_IK_PUBLISHED_STEP_RAD = 0.09
+SAFE_IK_PUBLISHED_STEP_RAD = 0.11
 MAX_MANUAL_TOTAL_DELTA_RAD = 0.20
 MAX_IK_WAYPOINT_DISTANCE_M = 0.01
 MAX_IK_WAYPOINT_JOINT_DELTA_RAD = 0.35
@@ -377,20 +377,20 @@ def build_parser() -> argparse.ArgumentParser:
     point.add_argument(
         "--duration",
         type=float,
-        default=0.55,
-        help="seconds per guarded joint target (default: 0.55)",
+        default=0.35,
+        help="requested seconds per guarded joint target (default: 0.35; bridge retimes if needed)",
     )
     point.add_argument("--hold", type=float, default=3.0)
     point.add_argument(
         "--tracking-step",
         type=float,
-        default=0.05,
+        default=0.07,
         help="maximum Cartesian correction per update while --stay is active",
     )
     point.add_argument(
         "--tracking-poll",
         type=float,
-        default=0.10,
+        default=0.05,
         help="seconds between target checks while --stay is active",
     )
     point.add_argument(
@@ -466,10 +466,10 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise RemoteArmError("--standoff must be between 0.10 and 0.50 m")
         if not math.isfinite(args.max_approach) or not 0.01 <= args.max_approach <= 0.30:
             raise RemoteArmError("--max-approach must be between 0.01 and 0.30 m")
-        if not math.isfinite(args.tracking_step) or not 0.005 <= args.tracking_step <= 0.05:
-            raise RemoteArmError("--tracking-step must be between 0.005 and 0.05 m")
-        if not math.isfinite(args.tracking_poll) or not 0.10 <= args.tracking_poll <= 2.0:
-            raise RemoteArmError("--tracking-poll must be between 0.10 and 2.0 seconds")
+        if not math.isfinite(args.tracking_step) or not 0.005 <= args.tracking_step <= 0.08:
+            raise RemoteArmError("--tracking-step must be between 0.005 and 0.08 m")
+        if not math.isfinite(args.tracking_poll) or not 0.05 <= args.tracking_poll <= 2.0:
+            raise RemoteArmError("--tracking-poll must be between 0.05 and 2.0 seconds")
         if not 2 <= args.reacquire_samples <= 10:
             raise RemoteArmError("--reacquire-samples must be between 2 and 10")
 
@@ -1169,7 +1169,7 @@ def run(args: argparse.Namespace) -> int:
                 # first knot. Make that continuity explicit anyway: a route
                 # that comes back from an alternate RRT branch must still be
                 # bridged from the exact last command the robot accepted.
-                # This is the authoritative source for the 0.050-rad guard.
+                # This is the authoritative source for the bounded target-step guard.
                 tracking_targets = _guarded_joint_path(
                     (solution_q, *route.q_path[1:]),
                     maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD,
@@ -1223,7 +1223,7 @@ def run(args: argparse.Namespace) -> int:
                 # Plan the *next command* from the last desired waypoint,
                 # not the delayed encoder sample.  The arm bridge enforces
                 # its step contract against desired_arm_q, and using the
-                # encoder here could create a >0.050-rad discontinuity even
+                # encoder here could create a discontinuity even
                 # though both individual IK routes were guarded.
                 solution_q = commanded_q
                 tracking_updates += 1

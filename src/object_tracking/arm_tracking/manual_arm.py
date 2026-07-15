@@ -32,7 +32,7 @@ class ManualArmConfig:
     heartbeat_ttl_s: float = 0.500
     stable_standing_s: float = 2.0
     weight_ramp_s: float = 0.500
-    max_target_delta_rad: float = 0.10
+    max_target_delta_rad: float = 0.12
     max_velocity_rad_s: float = 0.25
     max_measured_velocity_rad_s: float = 1.0
     max_acceleration_rad_s2: float = 1.0
