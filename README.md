@@ -2,6 +2,10 @@
 
 The RealSense-guided right-arm pregrasp pipeline is implemented as a disarmed-by-default robot depth/arm service plus a GB10 hardware-depth fusion and IK runtime. See [docs/ARM_TRACKING_RUNBOOK.md](docs/ARM_TRACKING_RUNBOOK.md) for installation, calibration, dry-run, REST schemas, port forwarding, and operator-gated hardware stages.
 
+The Isaac Sim capture, Unitree-compatible HDF5/RLDS conversion, and UniFoLM-VLA
+registration workflow is documented in
+[docs/VLA_SIM_DATASET.md](docs/VLA_SIM_DATASET.md).
+
 The GB10 startup output prints the exact browser URL and SSH tunnel command for a MacBook. Its research console combines live RGB/depth views with pipeline timing, detections, 3D targets, IK/arm state, rejection diagnostics, and downloadable JSONL telemetry stored under `runs/research/arm_tracking/`.
 
 For the shortest, discoverable command interface, use `uv run g1`. It groups setup, robot services, arm commissioning, streams, tuning, data, and training while preserving the existing host-specific scripts for automation. Start with `uv run g1 --help` and see [docs/COMMANDS.md](docs/COMMANDS.md).

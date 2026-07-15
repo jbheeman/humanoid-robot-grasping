@@ -1,0 +1,30 @@
+dataset_name: g1_bunny_stop
+fps: 30
+resolution: [640, 480]
+camera_names:
+  - cam_left_high
+  - cam_right_high
+  - cam_left_wrist
+  - cam_right_wrist
+language_instruction: "Grasp the moving bunny and bring it to a gentle stop."
+curriculum:
+  static_grasp:
+    episodes: 100
+    max_speed_mps: 0.0
+  slow_linear:
+    episodes: 300
+    speed_range_mps: [0.02, 0.08]
+  varied_motion:
+    episodes: 600
+    speed_range_mps: [0.04, 0.15]
+split_by_seed:
+  train: 0.8
+  validation: 0.1
+  test: 0.1
+unifolm:
+  representation: ee_r6_g1
+  state_dim: 23
+  action_dim: 23
+  action_chunk: 25
+  normalization: bounds_q99
+
