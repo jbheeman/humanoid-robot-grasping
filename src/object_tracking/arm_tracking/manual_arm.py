@@ -393,6 +393,16 @@ class ManualArmController:
                 self._weight = _smoothstep(ratio)
                 if ratio >= 1.0:
                     self._weight = 1.0
+                    # The motion controller and arm_sdk blend can settle the
+                    # measured joints slightly during ownership transfer. Use
+                    # that fresh physical pose as the origin for subsequent
+                    # relative joint/Cartesian commands instead of retaining
+                    # the pre-ramp latch and reporting its drift as IK error.
+                    settled = tuple(robot.arm_q)
+                    self._baseline_q = settled
+                    self._commanded_q = settled
+                    self._desired_q = settled
+                    self._maximum_measured_displacement = [0.0] * 14
                     self._state = ArmState.ARMED
             elif self._state is ArmState.ARMED and self._commanded_q is not None:
                 commanded = list(self._commanded_q)

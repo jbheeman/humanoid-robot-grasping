@@ -137,6 +137,23 @@ def test_sequences_are_per_side_and_replay_is_rejected() -> None:
         target(controller, clock, side="left", sequence=0, positions=(0.02,) + (0.0,) * 6)
 
 
+def test_arming_rebases_commands_to_the_measured_settled_pose() -> None:
+    clock, hardware, controller = setup()
+    controller.enable("session-a")
+    settled = tuple(0.01 * (index + 1) for index in range(14))
+    clock.advance(0.5)
+    hardware.state = hardware.make_state(q=settled)
+    controller.heartbeat("session-a")
+    controller.tick()
+
+    report = controller.state_report()
+    assert report["state"] == ArmState.ARMED.value
+    assert report["baseline_arm_q"] == list(settled)
+    assert report["commanded_arm_q"] == list(settled)
+    assert report["desired_arm_q"] == list(settled)
+    assert hardware.commands[-1].q == settled
+
+
 @pytest.mark.parametrize(
     ("names", "positions", "match"),
     [
