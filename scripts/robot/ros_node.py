@@ -66,6 +66,12 @@ def build_parser() -> argparse.ArgumentParser:
         default="tracking",
     )
     parser.add_argument("--allow-movement", action="store_true")
+    parser.add_argument(
+        "--manual-control-profile",
+        choices=("sdk2", "xr"),
+        default="sdk2",
+        help="Manual arm A/B profile: installed SDK2 example or Unitree XR.",
+    )
     parser.add_argument("--expected-motion-mode")
     parser.add_argument(
         "--hardware-interface",
@@ -202,7 +208,11 @@ class RobotRosNode:
             control_mode = None
             self.controller = ManualArmController(
                 self.hardware,
-                ManualArmConfig(allow_movement=args.allow_movement),
+                ManualArmConfig(
+                    allow_movement=args.allow_movement,
+                    gain_profile=args.manual_control_profile,
+                    control_hz=50.0 if args.manual_control_profile == "sdk2" else 250.0,
+                ),
             )
         else:
             control_mode = ArmControlMode(args.control_mode)

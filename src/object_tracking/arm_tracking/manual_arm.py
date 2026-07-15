@@ -39,6 +39,7 @@ class ManualArmConfig:
     joint_limit_margin_rad: float = 0.05
     kp: float = 60.0
     kd: float = 1.5
+    gain_profile: str = "sdk2"
 
     def __post_init__(self) -> None:
         for name in (
@@ -62,6 +63,8 @@ class ManualArmConfig:
             raise ValueError("control_hz must be between 50 and 250 Hz")
         if self.joint_limit_margin_rad < 0.0:
             raise ValueError("joint_limit_margin_rad must be >= 0")
+        if self.gain_profile not in {"sdk2", "xr"}:
+            raise ValueError("gain_profile must be 'sdk2' or 'xr'")
 
 
 @dataclass(frozen=True)
@@ -335,10 +338,14 @@ class ManualArmController:
 
     def _command(self, robot: RobotState, now: float) -> ArmCommand:
         q = self._commanded_q or tuple(robot.arm_q)
-        # Unitree's motion-mode reference uses lower gains on shoulder/elbow
-        # motors and still lower gains on the three wrist motors per side.
-        side_kp = (80.0, 80.0, 80.0, 80.0, 40.0, 40.0, 40.0)
-        side_kd = (3.0, 3.0, 3.0, 3.0, 1.5, 1.5, 1.5)
+        if self.config.gain_profile == "xr":
+            # Current Unitree xr_teleoperate G1 profile.
+            side_kp = (80.0, 80.0, 80.0, 80.0, 40.0, 40.0, 40.0)
+            side_kd = (3.0, 3.0, 3.0, 3.0, 1.5, 1.5, 1.5)
+        else:
+            # Installed official SDK2 G1 arm7 example defaults.
+            side_kp = (self.config.kp,) * 7
+            side_kd = (self.config.kd,) * 7
         return ArmCommand(
             q=tuple(q),
             dq=(0.0,) * 14,
@@ -443,6 +450,8 @@ class ManualArmController:
                 "state": self._state.value,
                 "session_id": self._session_id,
                 "control_mode": "manual",
+                "gain_profile": self.config.gain_profile,
+                "control_hz": self.config.control_hz,
                 "calibration_id": None,
                 "last_sequence": max(self._last_sequences.values()),
                 "last_sequences": dict(self._last_sequences),

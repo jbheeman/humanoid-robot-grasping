@@ -209,8 +209,36 @@ def test_disabled_bridge_and_stale_timestamp_fail_closed() -> None:
         )
 
 
-def test_manual_commands_use_unitree_motion_mode_arm_gains() -> None:
+def test_manual_commands_use_installed_sdk2_example_gains() -> None:
     clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    command = hardware.commands[-1]
+    assert command.kp == (60.0,) * 14
+    assert command.kd == (1.5,) * 14
+
+
+def test_manual_command_gains_follow_configuration() -> None:
+    clock, hardware, _controller = setup()
+    controller = ManualArmController(
+        hardware,
+        ManualArmConfig(allow_movement=True, kp=55.0, kd=1.25),
+        monotonic=lambda: clock.monotonic,
+        wall_time_ns=lambda: clock.wall_ns,
+    )
+    arm(clock, hardware, controller)
+    command = hardware.commands[-1]
+    assert command.kp == (55.0,) * 14
+    assert command.kd == (1.25,) * 14
+
+
+def test_manual_xr_profile_uses_unitree_xr_gains() -> None:
+    clock, hardware, _controller = setup()
+    controller = ManualArmController(
+        hardware,
+        ManualArmConfig(allow_movement=True, gain_profile="xr"),
+        monotonic=lambda: clock.monotonic,
+        wall_time_ns=lambda: clock.wall_ns,
+    )
     arm(clock, hardware, controller)
     command = hardware.commands[-1]
     assert command.kp == (80.0, 80.0, 80.0, 80.0, 40.0, 40.0, 40.0) * 2

@@ -130,3 +130,38 @@ move from that pose can correctly fail the swept-collision check. Perception
 never publishes Cartesian targets or native Unitree DDS packets directly: the
 GB10 solves IK to seven canonical joint angles and the robot-local bridge owns
 interpolation, heartbeat release, state gates, and `rt/arm_sdk` output.
+
+## Compare the two Unitree controller profiles
+
+The robot bridge exposes two deliberate A/B candidates:
+
+- `sdk2`: the installed G1 arm7 SDK2 example profile, 50 Hz with Kp 60 and
+  Kd 1.5 on all arm joints.
+- `xr`: the current Unitree XR profile, 250 Hz with Kp/Kd 80/3 on the four
+  shoulder/elbow joints and 40/1.5 on the three wrist joints.
+
+Select a profile when starting the robot bridge. Restarting is required to
+change profiles, and startup itself does not arm or move the robot:
+
+```bash
+# Candidate A
+MANUAL_ARM_PROFILE=sdk2 CLIENT_IP=192.168.0.66 \
+  scripts/robot/manual-arm.sh move
+
+# Candidate B (after stopping candidate A)
+MANUAL_ARM_PROFILE=xr CLIENT_IP=192.168.0.66 \
+  scripts/robot/manual-arm.sh move
+```
+
+Run the same user-authorized GB10 movement for each candidate and save its
+measured response. Return the robot to the same preparation pose first:
+
+```bash
+scripts/gb10/arm-remote.sh ik \
+  --dz 0.01 --duration 2 --hold 3 \
+  --trace-output runs/arm/ik-z10-sdk2.json
+```
+
+Use a distinct trace filename for the XR trial. Compare Cartesian endpoint
+error, movement in the two unintended axes, overshoot, settling, and any
+following-error fault; visual appearance alone is not the selection metric.

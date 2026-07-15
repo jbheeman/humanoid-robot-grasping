@@ -90,11 +90,14 @@ def test_manual_multi_joint_deltas_parse_together() -> None:
 
 
 def test_ik_accepts_small_pelvis_frame_offset() -> None:
-    args = build_parser().parse_args(["ik", "--dz", "0.01"])
+    args = build_parser().parse_args(
+        ["ik", "--dz", "0.01", "--trace-output", "runs/arm/trace.json"]
+    )
     _validate_args(args)
     assert args.dx == 0.0
     assert args.dy == 0.0
     assert args.dz == 0.01
+    assert args.trace_output.as_posix() == "runs/arm/trace.json"
 
 
 def test_ik_rejects_zero_or_large_offset() -> None:

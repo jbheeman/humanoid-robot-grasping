@@ -7,10 +7,19 @@ from scripts.robot.ros_node import build_parser as build_robot_parser
 
 
 def test_robot_ros_node_parser_supports_depth_free_commissioning() -> None:
-    args = build_robot_parser().parse_args(["--control-mode", "commissioning", "--disable-depth"])
+    args = build_robot_parser().parse_args(
+        [
+            "--control-mode",
+            "commissioning",
+            "--disable-depth",
+            "--manual-control-profile",
+            "xr",
+        ]
+    )
 
     assert args.control_mode == "commissioning"
     assert args.disable_depth is True
+    assert args.manual_control_profile == "xr"
 
 
 def test_unified_cli_exposes_expected_workflows() -> None:

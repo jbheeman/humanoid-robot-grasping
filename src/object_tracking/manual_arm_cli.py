@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+from pathlib import Path
 import signal
 import threading
 import time
@@ -199,12 +200,30 @@ class ManualArmClient:
         self.target_publishers[side].publish(message)
 
     def pump_heartbeat(
-        self, session_id: str, seconds: float, stop: threading.Event
+        self,
+        session_id: str,
+        seconds: float,
+        stop: threading.Event,
+        *,
+        trace: Optional[list[dict[str, Any]]] = None,
+        phase: str = "",
     ) -> None:
+        started = time.monotonic()
         deadline = time.monotonic() + seconds
         while not stop.is_set() and time.monotonic() < deadline:
             self.heartbeat(session_id)
             self.rclpy.spin_once(self.node, timeout_sec=0.05)
+            if trace is not None and self.status:
+                trace.append(
+                    {
+                        "elapsed_s": time.monotonic() - started,
+                        "phase": phase,
+                        "state": self.status.get("state"),
+                        "weight": self.status.get("weight"),
+                        "measured_arm_q": self.status.get("measured_arm_q"),
+                        "commanded_arm_q": self.status.get("commanded_arm_q"),
+                    }
+                )
 
     def wait_armed(self, session_id: str, timeout_s: float) -> dict[str, Any]:
         deadline = time.monotonic() + timeout_s
@@ -278,6 +297,7 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--duration", type=float, default=2.0)
     move.add_argument("--hold", type=float, default=0.5)
     move.add_argument("--no-return", action="store_true")
+    move.add_argument("--trace-output", type=Path)
     ik = commands.add_parser(
         "ik",
         help="move the right hand by a pelvis-frame Cartesian offset using IK",
@@ -288,6 +308,7 @@ def build_parser() -> argparse.ArgumentParser:
     ik.add_argument("--duration", type=float, default=2.0)
     ik.add_argument("--hold", type=float, default=2.0)
     ik.add_argument("--no-return", action="store_true")
+    ik.add_argument("--trace-output", type=Path)
     commands.add_parser("stop", help="stop/release and clear a latched fault")
     return parser
 
@@ -390,6 +411,7 @@ def run(args: argparse.Namespace) -> int:
     for signum in (signal.SIGINT, signal.SIGTERM):
         previous_handlers[signum] = signal.signal(signum, request_stop)
     session_id = ""
+    motion_trace: list[dict[str, Any]] = []
     try:
         status = client.wait_status(args.timeout)
         if args.command == "inspect":
@@ -410,8 +432,6 @@ def run(args: argparse.Namespace) -> int:
 
         ik_solver = None
         if args.command == "ik":
-            from pathlib import Path
-
             import numpy as np
 
             from object_tracking.arm_tracking.ik_solver import (
@@ -502,7 +522,13 @@ def run(args: argparse.Namespace) -> int:
                 duration_s=args.duration,
             )
             client.wait_sequence(side, sequence, session_id, args.timeout)
-            client.pump_heartbeat(session_id, args.duration, stop)
+            client.pump_heartbeat(
+                session_id,
+                args.duration,
+                stop,
+                trace=motion_trace,
+                phase=f"outward_{step}",
+            )
             status = client.status or {}
             if status.get("state") != "ARMED":
                 raise RemoteArmError(
@@ -510,7 +536,9 @@ def run(args: argparse.Namespace) -> int:
                     f"state={status.get('state')}, "
                     f"fault={status.get('fault_reason')}"
                 )
-        client.pump_heartbeat(session_id, args.hold, stop)
+        client.pump_heartbeat(
+            session_id, args.hold, stop, trace=motion_trace, phase="outward_hold"
+        )
         outward_status = client.status or {}
         if outward_status.get("state") != "ARMED":
             raise RemoteArmError(
@@ -571,11 +599,16 @@ def run(args: argparse.Namespace) -> int:
                     duration_s=args.duration,
                 )
                 client.wait_sequence(side, sequence, session_id, args.timeout)
-                client.pump_heartbeat(session_id, args.duration, stop)
+                client.pump_heartbeat(
+                    session_id,
+                    args.duration,
+                    stop,
+                    trace=motion_trace,
+                    phase=f"return_{step}",
+                )
         final = client.stop_and_wait(session_id, "manual_move_complete", args.timeout)
         session_id = ""
-        _print(
-            {
+        report = {
                 "ok": True,
                 "mode": args.command,
                 "manual_deltas_rad": manual_deltas,
@@ -598,7 +631,25 @@ def run(args: argparse.Namespace) -> int:
                 "returned": not args.no_return,
                 "bridge": final,
             }
-        )
+        if args.trace_output is not None:
+            trace_path = args.trace_output.expanduser()
+            trace_path.parent.mkdir(parents=True, exist_ok=True)
+            trace_path.write_text(
+                json.dumps(
+                    {
+                        "schema": "g1-manual-arm-trace-v1",
+                        "result": report,
+                        "samples": motion_trace,
+                    },
+                    indent=2,
+                    sort_keys=True,
+                )
+                + "\n",
+                encoding="utf-8",
+            )
+            report["trace_output"] = str(trace_path)
+            report["trace_samples"] = len(motion_trace)
+        _print(report)
         return 0
     finally:
         if session_id:

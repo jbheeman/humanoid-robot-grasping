@@ -33,6 +33,7 @@ export LD_LIBRARY_PATH="/usr/local/lib${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 args=(
   --control-mode manual
+  --manual-control-profile "${MANUAL_ARM_PROFILE:-sdk2}"
   --disable-depth
   --expected-motion-mode "${EXPECTED_MOTION_MODE:-ai}"
   --hardware-interface "${HARDWARE_INTERFACE}"
@@ -42,6 +43,6 @@ if [[ "${ALLOW_MOVEMENT}" == "1" ]]; then
   args+=(--allow-movement)
 fi
 
-echo "G1 manual arm bridge: mode=${MODE}, ROS domain=${ROS_DOMAIN_ID}, project NIC=${ROBOT_INTERFACE}."
+echo "G1 manual arm bridge: mode=${MODE}, profile=${MANUAL_ARM_PROFILE:-sdk2}, ROS domain=${ROS_DOMAIN_ID}, project NIC=${ROBOT_INTERFACE}."
 echo "No camera, depth, calibration, or browser server is started by this command."
 exec "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${args[@]}"
