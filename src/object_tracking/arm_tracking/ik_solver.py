@@ -251,6 +251,13 @@ class G1RightArmIK:
             if result.isCollision()
         }
 
+    def _collision_pair_label(self, pair_index: int) -> str:
+        assert self.collision_model is not None
+        pair = self.collision_model.collisionPairs[pair_index]
+        first = self.collision_model.geometryObjects[pair.first].name
+        second = self.collision_model.geometryObjects[pair.second].name
+        return f"{first}<->{second}"
+
     def solve(
         self,
         target_transform: np.ndarray,
@@ -295,8 +302,19 @@ class G1RightArmIK:
         baseline_collisions = self._collision_pairs(last_q)
         for alpha in np.linspace(0.0, 1.0, 12):
             swept_q = (1.0 - alpha) * last_q + alpha * q
-            if self._collision_pairs(swept_q) - baseline_collisions:
-                return IKResult(False, None, float("inf"), float("inf"), "self_collision")
+            introduced = self._collision_pairs(swept_q) - baseline_collisions
+            if introduced:
+                labels = ",".join(
+                    self._collision_pair_label(index)
+                    for index in sorted(introduced)
+                )
+                return IKResult(
+                    False,
+                    None,
+                    float("inf"),
+                    float("inf"),
+                    f"self_collision:{labels}:path_fraction={alpha:.3f}",
+                )
         self.pin.framesForwardKinematics(self.model, self.data, q)
         if support_plane is not None:
             for joint_name in RIGHT_ARM_JOINTS:
