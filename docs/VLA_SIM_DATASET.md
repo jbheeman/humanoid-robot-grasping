@@ -28,7 +28,7 @@ dataset and the official UniFoLM conversion code:
    ```bash
    G1_BUNNY_PROJECT_ROOT=/path/to/humanoid-robot-grasping \
      /path/to/isaac-python scripts/create_bunny_proxy_usd.py \
-     --output /path/to/assets/g1_bunny_proxy.usda
+     --output /path/to/assets/g1_bunny_proxy.usda --headless
    ```
 
    It is intended for slow hand-push trajectories of 0.03--0.15 m/s on a
