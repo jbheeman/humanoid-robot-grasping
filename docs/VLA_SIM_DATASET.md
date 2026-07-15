@@ -21,18 +21,31 @@ dataset and the official UniFoLM conversion code:
 
 ## Workflow
 
-1. Run `scripts/probe_remote.sh` on the Isaac workstation and save the output.
-2. Integrate `g1_bunny_vla.EpisodeWriter` into the Isaac control loop. A complete
+1. Generate the measured bunny proxy with Isaac Sim's Python. The first asset
+   represents the plush as a non-compressible rigid frame with a soft-looking
+   visual surface: 15 cm front-to-back, 7 cm side-to-side, 14 cm tall, 150 g.
+
+   ```bash
+   G1_BUNNY_PROJECT_ROOT=/path/to/humanoid-robot-grasping \
+     /path/to/isaac-python scripts/create_bunny_proxy_usd.py \
+     --output /path/to/assets/g1_bunny_proxy.usda
+   ```
+
+   It is intended for slow hand-push trajectories of 0.03--0.15 m/s on a
+   tabletop; do not label it as a deformable simulation.
+
+2. Run `scripts/probe_remote.sh` on the Isaac workstation and save the output.
+3. Integrate `g1_bunny_vla.EpisodeWriter` into the Isaac control loop. A complete
    sample contract is in `examples/record_from_isaac.py`.
-3. Record curriculum stages in order: static grasp, slow linear motion, then
+4. Record curriculum stages in order: static grasp, slow linear motion, then
    randomized moving trajectories.
-4. Validate every episode before conversion:
+5. Validate every episode before conversion:
 
    ```bash
    python -m g1_bunny_vla.validate_dataset /path/to/hdf5
    ```
 
-5. Build RLDS directly with the project builder. This avoids the optional
+6. Build RLDS directly with the project builder. This avoids the optional
    Apache Beam dependency pulled in by the `tfds` command-line wrapper:
 
    ```bash
@@ -41,7 +54,7 @@ dataset and the official UniFoLM conversion code:
      --output /data/rlds
    ```
 
-6. Register `g1_bunny_stop` in a UniFoLM checkout:
+7. Register `g1_bunny_stop` in a UniFoLM checkout:
 
    ```bash
    python scripts/register_unifolm_dataset.py /path/to/unifolm-vla
