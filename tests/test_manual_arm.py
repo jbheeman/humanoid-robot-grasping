@@ -283,3 +283,42 @@ def test_manual_xr_profile_uses_unitree_xr_gains() -> None:
     command = hardware.commands[-1]
     assert command.kp == (80.0, 80.0, 80.0, 80.0, 40.0, 40.0, 40.0) * 2
     assert command.kd == (3.0, 3.0, 3.0, 3.0, 1.5, 1.5, 1.5) * 2
+
+
+def test_manual_controller_emits_sparse_diagnostic_events() -> None:
+    clock = Clock()
+    hardware = Hardware(clock)
+    events: list[dict[str, object]] = []
+    controller = ManualArmController(
+        hardware,
+        ManualArmConfig(allow_movement=True, weight_ramp_s=0.5),
+        monotonic=lambda: clock.monotonic,
+        wall_time_ns=lambda: clock.wall_ns,
+        event_sink=events.append,
+    )
+
+    controller.enable("session-a")
+    clock.advance(0.5)
+    hardware.refresh()
+    controller.heartbeat("session-a")
+    controller.tick()
+    target(
+        controller,
+        clock,
+        side="right",
+        sequence=0,
+        positions=(0.01,) + (0.0,) * 6,
+    )
+    controller.stop("test_complete")
+
+    names = [str(event["event"]) for event in events]
+    assert names == [
+        "enable_accepted",
+        "armed",
+        "target_accepted",
+        "release_started",
+    ]
+    accepted = events[2]
+    assert accepted["side"] == "right"
+    assert accepted["sequence"] == 0
+    assert accepted["target_q"] == [0.01, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0]

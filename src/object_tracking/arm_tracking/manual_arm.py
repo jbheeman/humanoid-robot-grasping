@@ -92,11 +92,13 @@ class ManualArmController:
         *,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time_ns: Callable[[], int] = time.time_ns,
+        event_sink: Optional[Callable[[dict[str, object]], None]] = None,
     ) -> None:
         self.hardware = hardware
         self.config = config
         self._monotonic = monotonic
         self._wall_time_ns = wall_time_ns
+        self._event_sink = event_sink
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: Optional[threading.Thread] = None
@@ -122,6 +124,22 @@ class ManualArmController:
         self._maximum_measured_displacement = [0.0] * 14
         self._started = False
 
+    def _emit_event(self, event: str, **fields: object) -> None:
+        if self._event_sink is None:
+            return
+        payload: dict[str, object] = {
+            "event": event,
+            "monotonic_s": round(self._monotonic(), 6),
+            "state": self._state.value,
+            "weight": round(self._weight, 6),
+            **fields,
+        }
+        try:
+            self._event_sink(payload)
+        except Exception:
+            # Diagnostics must never interfere with the control loop.
+            pass
+
     def start(self) -> None:
         if self._started:
             return
@@ -132,6 +150,12 @@ class ManualArmController:
             target=self._run_loop, daemon=True, name="g1-manual-arm-controller"
         )
         self._thread.start()
+        self._emit_event(
+            "controller_started",
+            allow_movement=self.config.allow_movement,
+            gain_profile=self.config.gain_profile,
+            control_hz=self.config.control_hz,
+        )
 
     def close(self) -> None:
         if not self._started:
@@ -149,6 +173,7 @@ class ManualArmController:
         self.hardware.close()
         self._thread = None
         self._started = False
+        self._emit_event("controller_stopped")
 
     def _gate_failures(self, robot: Optional[RobotState], now: float) -> list[str]:
         if robot is None:
@@ -197,6 +222,7 @@ class ManualArmController:
             robot = self.hardware.latest_state()
             failures = self._gate_failures(robot, now)
             if failures:
+                self._emit_event("enable_rejected", failures=failures)
                 raise ArmBridgeError(
                     "Arm preflight failed: " + ", ".join(failures), code="preflight_failed"
                 )
@@ -216,6 +242,7 @@ class ManualArmController:
             self._fault_reason = None
             self._last_rejection = None
             self._state = ArmState.ARMING
+            self._emit_event("enable_accepted")
             return self.state_report()
 
     def heartbeat(self, session_id: str) -> dict[str, object]:
@@ -233,6 +260,7 @@ class ManualArmController:
                 self._session_id = None
                 self._fault_reason = None
                 self._release_reason = str(reason)
+                self._emit_event("fault_reset", reason=str(reason))
                 return self.state_report()
             self._begin_release(str(reason), ArmState.DISARMED)
             return self.state_report()
@@ -322,6 +350,13 @@ class ManualArmController:
             self._last_sequences[side] = int(sequence)
             self._last_target_at = now
             self._last_rejection = None
+            self._emit_event(
+                "target_accepted",
+                side=side,
+                sequence=int(sequence),
+                duration_s=round(float(duration_s), 6),
+                target_q=[round(value, 6) for value in positions],
+            )
             return self.state_report()
 
     def record_rejection(self, side: str, exc: Exception) -> None:
@@ -331,6 +366,7 @@ class ManualArmController:
                 "code": str(getattr(exc, "code", "invalid_request")),
                 "message": str(exc),
             }
+            self._emit_event("target_rejected", **self._last_rejection)
 
     def _begin_release(self, reason: str, terminal: ArmState) -> None:
         if self._state is ArmState.HOLDING and self._release_terminal is ArmState.FAULT:
@@ -341,10 +377,14 @@ class ManualArmController:
         self._ramp_started_at = self._monotonic()
         self._release_start_weight = self._weight
         self._trajectories = {"left": None, "right": None}
+        self._emit_event("release_started", reason=reason, terminal=terminal.value)
 
     def _fault(self, reason: str) -> None:
+        if self._state is ArmState.HOLDING and self._release_terminal is ArmState.FAULT:
+            return
         self._fault_reason = reason
         self._begin_release(reason, ArmState.FAULT)
+        self._emit_event("fault_latched", reason=reason)
 
     def _command(self, robot: RobotState, now: float) -> ArmCommand:
         q = self._commanded_q or tuple(robot.arm_q)
@@ -404,6 +444,7 @@ class ManualArmController:
                     self._desired_q = settled
                     self._maximum_measured_displacement = [0.0] * 14
                     self._state = ArmState.ARMED
+                    self._emit_event("armed")
             elif self._state is ArmState.ARMED and self._commanded_q is not None:
                 commanded = list(self._commanded_q)
                 for side, offset in (("left", 0), ("right", 7)):
@@ -429,6 +470,11 @@ class ManualArmController:
                     self._state = self._release_terminal
                     self._session_id = None
                     self._last_heartbeat = None
+                    self._emit_event(
+                        "release_complete",
+                        terminal=self._release_terminal.value,
+                        reason=self._release_reason,
+                    )
             if self._state in (ArmState.ARMING, ArmState.ARMED, ArmState.HOLDING):
                 if self._commanded_q is not None:
                     following_index, following = max(

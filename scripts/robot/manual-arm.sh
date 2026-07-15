@@ -17,6 +17,11 @@ case "${MODE}" in
   *) echo "Usage: scripts/robot/manual-arm.sh {observe|move}" >&2; exit 2 ;;
 esac
 
+source "${ROOT_DIR}/scripts/shared/run-logging.sh"
+g1_begin_run_log "${ROOT_DIR}" "robot-manual-arm"
+g1_log_command "$0" "$@"
+trap 'status=$?; g1_log_exit "${status}"' EXIT
+
 if [[ ! -x "${ROBOT_PYTHON}" ]]; then
   echo "Missing robot environment. Run: uv run g1 setup robot" >&2
   exit 1
@@ -45,4 +50,4 @@ fi
 
 echo "G1 manual arm bridge: mode=${MODE}, profile=${MANUAL_ARM_PROFILE:-sdk2}, ROS domain=${ROS_DOMAIN_ID}, project NIC=${ROBOT_INTERFACE}."
 echo "No camera, depth, calibration, or browser server is started by this command."
-exec "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${args[@]}"
+"${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${args[@]}"

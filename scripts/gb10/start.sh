@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
+original_args=("$@")
 
 if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
   echo "Missing ${VENV_DIR}. On the GB10, run: uv run g1 setup gb10" >&2
@@ -63,6 +64,18 @@ while (($#)); do
   esac
   shift
 done
+
+source "${ROOT_DIR}/scripts/shared/run-logging.sh"
+if [[ "${VISION_POINTING}" == "1" ]]; then
+  log_component="gb10-vision-pointing"
+elif [[ "${ARM_COMMISSIONING}" == "1" ]]; then
+  log_component="gb10-arm-commissioning"
+else
+  log_component="gb10-vision"
+fi
+g1_begin_run_log "${ROOT_DIR}" "${log_component}"
+g1_log_command "$0" "${original_args[@]}"
+trap 'status=$?; g1_log_exit "${status}"' EXIT
 
 if [[ "${VISION_POINTING}" == "1" && -z "${CALIBRATION}" ]]; then
   CALIBRATION="${ROOT_DIR}/runs/localization/g1-tabletop-calibration.json"
@@ -212,6 +225,7 @@ echo "Arm commissioning:    ${ARM_COMMISSIONING}"
 echo "Vision pointing:      ${VISION_POINTING} (planner ready; startup never moves the arm)"
 echo "Research recording:  ${RESEARCH_RECORD} at ${RESEARCH_HZ} Hz"
 echo "Trajectory model:    ${TRAJECTORY_MODEL:-alpha-beta fallback only}"
+echo "Process log:         ${G1_ACTIVE_LOG_FILE}"
 echo
 echo "Open the single GB10 UI:"
 echo "  http://${DISPLAY_HOST}:${PORT}/"

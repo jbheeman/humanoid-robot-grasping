@@ -296,6 +296,10 @@ class RobotRosNode:
                     gain_profile=args.manual_control_profile,
                     control_hz=50.0 if args.manual_control_profile == "sdk2" else 250.0,
                 ),
+                event_sink=lambda event: print(
+                    _safe_json({"source": "manual_arm_controller", **event}),
+                    flush=True,
+                ),
             )
         else:
             control_mode = ArmControlMode(args.control_mode)

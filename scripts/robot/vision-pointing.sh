@@ -10,6 +10,10 @@ UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
 ROS_DOMAIN_ID="${G1_PROJECT_ROS_DOMAIN_ID:-42}"
 DEPTH_ROS_DOMAIN_ID="${G1_DEPTH_ROS_DOMAIN_ID:-43}"
 
+source "${ROOT_DIR}/scripts/shared/run-logging.sh"
+g1_begin_run_log "${ROOT_DIR}" "robot-vision-pointing"
+g1_log_command "$0" "$@"
+
 if ! systemctl is-active --quiet g1-highfps-camera.service; then
   echo "The native 60 FPS camera publisher is not running." >&2
   echo "Run: sudo systemctl enable --now g1-highfps-camera.service" >&2
@@ -70,6 +74,7 @@ echo "Vision pointing stack started initially DISARMED."
 echo "  RGB: native 960x540@60 relay to ${CLIENT_IP}:5600"
 echo "  Depth: isolated CycloneDDS /g1/depth on domain ${DEPTH_ROS_DOMAIN_ID}"
 echo "  Arm: isolated Fast DDS XR manual bridge on domain ${ROS_DOMAIN_ID}"
+echo "  Combined log: ${G1_ACTIVE_LOG_FILE}"
 
 wait -n "${pids[@]}"
 echo "A vision-pointing process exited; stopping the stack." >&2

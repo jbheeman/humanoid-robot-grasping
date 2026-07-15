@@ -85,6 +85,21 @@ The bridge must report motion mode `ai`, stable standing, fresh LowState,
 verified arm ownership, and healthy motor status. `inspect` never enables the
 arm.
 
+Every invocation is automatically copied to a timestamped `.log` file under
+`runs/logs/arm/<command>/`. Movement commands also write a high-rate sibling
+`.trace.log` containing sampled bridge state throughout the outward move,
+hold, and return. The newest files are always available as:
+
+```text
+runs/logs/arm/<command>/latest.log
+runs/logs/arm/<command>/latest-trace.log
+```
+
+The robot vision launcher and GB10 dashboard similarly maintain
+`runs/logs/robot-vision-pointing/latest.log` and
+`runs/logs/gb10-vision-pointing/latest.log`. Set `G1_LOG_ROOT` to relocate all
+logs, or `G1_DISABLE_FILE_LOG=1` for an intentionally unlogged diagnostic run.
+
 ## First custom movement test
 
 Manual delta signs are inverted only at this operator-facing boundary to match
