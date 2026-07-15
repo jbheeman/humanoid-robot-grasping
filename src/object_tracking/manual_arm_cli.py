@@ -428,6 +428,7 @@ def run(args: argparse.Namespace) -> int:
                     default_urdf_path(repo_root),
                     position_tolerance_m=0.005,
                     discontinuity_limit_rad=MAX_MANUAL_TOTAL_DELTA_RAD,
+                    translation_weight=400.0,
                 )
             except IKUnavailable as exc:
                 raise RemoteArmError(str(exc)) from exc
@@ -538,15 +539,20 @@ def run(args: argparse.Namespace) -> int:
                 )
         ik_position_error_m = None
         ik_measured_xyz_m = None
+        ik_achieved_delta_xyz_m = None
         if args.command == "ik":
             assert ik_solver is not None and ik_target_transform is not None
             measured_right = [float(value) for value in measured_after[-7:]]
             measured_transform = ik_solver.forward_kinematics(measured_right)
             ik_measured_xyz_m = measured_transform[:3, 3].tolist()
+            assert ik_start_transform is not None
+            ik_achieved_delta_xyz_m = (
+                measured_transform[:3, 3] - ik_start_transform[:3, 3]
+            ).tolist()
             ik_position_error_m = float(
                 np.linalg.norm(measured_transform[:3, 3] - ik_target_transform[:3, 3])
             )
-            if ik_position_error_m > 0.02:
+            if ik_position_error_m > 0.0075:
                 raise RemoteArmError(
                     "measured hand pose did not reach the IK target: "
                     f"position error {ik_position_error_m:.4f} m"
@@ -587,6 +593,7 @@ def run(args: argparse.Namespace) -> int:
                     else ik_target_transform[:3, 3].tolist()
                 ),
                 "ik_measured_xyz_m": ik_measured_xyz_m,
+                "ik_achieved_delta_xyz_m": ik_achieved_delta_xyz_m,
                 "ik_position_error_m": ik_position_error_m,
                 "returned": not args.no_return,
                 "bridge": final,

@@ -46,6 +46,7 @@ class G1RightArmIK:
         orientation_tolerance_rad: float = 0.15,
         discontinuity_limit_rad: float = 0.25,
         joint_limit_margin_rad: float = 0.05,
+        translation_weight: float = 50.0,
     ) -> None:
         try:
             import pinocchio as pin
@@ -78,6 +79,9 @@ class G1RightArmIK:
         self.position_tolerance_m = position_tolerance_m
         self.orientation_tolerance_rad = orientation_tolerance_rad
         self.discontinuity_limit_rad = discontinuity_limit_rad
+        if not np.isfinite(translation_weight) or translation_weight <= 0.0:
+            raise IKUnavailable("translation_weight must be finite and positive")
+        self.translation_weight = float(translation_weight)
 
         full_model = pin.buildModelFromUrdf(str(self.urdf_path))
         unlocked = set(RIGHT_ARM_JOINTS)
@@ -159,7 +163,8 @@ class G1RightArmIK:
         self.param_last_q = self.opti.parameter(self.model.nq)
         self.param_target = self.opti.parameter(4, 4)
         cost = (
-            50.0 * casadi.sumsqr(self.translation_error(self.var_q, self.param_target))
+            self.translation_weight
+            * casadi.sumsqr(self.translation_error(self.var_q, self.param_target))
             + casadi.sumsqr(self.rotation_error(self.var_q, self.param_target))
             + 0.1 * casadi.sumsqr(self.var_q - self.param_last_q)
             + 0.02 * casadi.sumsqr(self.var_q)
@@ -190,7 +195,7 @@ class G1RightArmIK:
         return transform
 
     def _solve_numerical(self, target: np.ndarray, last_q: np.ndarray) -> np.ndarray:
-        sqrt_translation = np.sqrt(50.0)
+        sqrt_translation = np.sqrt(self.translation_weight)
         sqrt_smooth = np.sqrt(0.1)
         sqrt_regularization = np.sqrt(0.02)
 
