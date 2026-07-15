@@ -815,20 +815,20 @@ def run(args: argparse.Namespace) -> int:
             if args.command == "point":
                 used_detour = False
                 total_route_knots = 1
+                # Freeze one fresh predicted target for the initial approach.
+                # No arm target is published until every stage below has a
+                # collision-free joint-space route.
+                vision_target = _fetch_vision_target(args.server)
+                pointing_xyz = (
+                    vision_target["predicted_xyz_m"]
+                    if vision_target["predicted_xyz_m"] is not None
+                    else vision_target["object_xyz_m"]
+                )
+                desired_hand_xyz = _point_hand_target(pointing_xyz, args.standoff)
+                point_desired_hand_xyz_m = desired_hand_xyz.tolist()
+                ik_target_transform[:3, 3] = desired_hand_xyz
+                preplanned_targets: list[tuple[float, ...]] = []
                 while True:
-                    # Re-read vision before every guarded approach stage.  The
-                    # first route is therefore not committed to an old plush
-                    # location; a moving target shifts the next collision-free
-                    # segment immediately.
-                    vision_target = _fetch_vision_target(args.server)
-                    pointing_xyz = (
-                        vision_target["predicted_xyz_m"]
-                        if vision_target["predicted_xyz_m"] is not None
-                        else vision_target["object_xyz_m"]
-                    )
-                    desired_hand_xyz = _point_hand_target(pointing_xyz, args.standoff)
-                    point_desired_hand_xyz_m = desired_hand_xyz.tolist()
-                    ik_target_transform[:3, 3] = desired_hand_xyz
                     current_transform = ik_solver.forward_kinematics(solution_q)
                     stage_offset = desired_hand_xyz - current_transform[:3, 3]
                     remaining_distance = float(np.linalg.norm(stage_offset))
@@ -843,9 +843,8 @@ def run(args: argparse.Namespace) -> int:
                     last_route_reason = "no IK candidate"
                     last_route_error = float("inf")
                     # A full clearance stride can choose an IK branch whose
-                    # endpoint intersects the torso.  Retry shorter strides
-                    # from the *measured/executed* stage instead of abandoning
-                    # the whole point operation.
+                    # endpoint intersects the torso. Retry shorter planned
+                    # strides instead of abandoning the whole route.
                     for scale in (1.0, 0.75, 0.50, 0.30, 0.20):
                         stage_target = current_transform.copy()
                         stage_target[:3, 3] += stage_offset * (
@@ -870,17 +869,8 @@ def run(args: argparse.Namespace) -> int:
                     used_detour = used_detour or len(route.q_path) > 2
                     total_route_knots += len(route.q_path) - 1
                     path_knots.extend(route.q_path[1:])
-                    execute_targets(
-                        _guarded_joint_path(route.q_path),
-                        phase=f"outward_stage_{point_stages + 1}",
-                    )
-                    if stop.is_set():
-                        break
-                    post_stage = client.status or {}
-                    measured_stage = post_stage.get("measured_arm_q")
-                    if not isinstance(measured_stage, list) or len(measured_stage) != 14:
-                        raise RemoteArmError("Bridge has no measured pose after a pointing stage")
-                    solution_q = tuple(float(value) for value in measured_stage[-7:])
+                    preplanned_targets.extend(_guarded_joint_path(route.q_path))
+                    solution_q = route.q_path[-1]
                     point_stages += 1
                 point_route_kind = "collision_aware_detour" if used_detour else "direct"
                 point_route_knots = total_route_knots
@@ -915,6 +905,9 @@ def run(args: argparse.Namespace) -> int:
         if args.command != "point":
             guarded_targets = _guarded_joint_path(path_knots)
             execute_targets(guarded_targets, phase="outward")
+        else:
+            guarded_targets = preplanned_targets
+            execute_targets(guarded_targets, phase="outward_preplanned")
         client.pump_heartbeat(session_id, args.hold, stop, trace=motion_trace, phase="outward_hold")
         outward_status = client.status or {}
         if outward_status.get("state") != "ARMED":
@@ -926,6 +919,10 @@ def run(args: argparse.Namespace) -> int:
         measured_after = outward_status.get("measured_arm_q")
         if not isinstance(measured_after, list) or len(measured_after) != 14:
             raise RemoteArmError("Bridge has no fresh measured pose after movement")
+        if args.command == "point":
+            # Live tracking starts from the actual endpoint of the preplanned
+            # route, not its nominal final IK target.
+            solution_q = tuple(float(value) for value in measured_after[-7:])
         measured_progress: dict[str, float] = {}
         joint_verification: dict[str, dict[str, float | bool]] = {}
         manual_verification_failures: list[str] = []
