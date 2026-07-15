@@ -225,6 +225,13 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--side", choices=("left", "right"), default="right")
     move.add_argument("--joint", help="canonical joint name (default: shoulder pitch)")
     move.add_argument("--delta", type=float, default=0.05)
+    move.add_argument(
+        "--joint-delta",
+        action="append",
+        default=[],
+        metavar="JOINT=RAD",
+        help="move several joints together; may be repeated",
+    )
     move.add_argument("--duration", type=float, default=2.0)
     move.add_argument("--hold", type=float, default=0.5)
     move.add_argument("--no-return", action="store_true")
@@ -238,12 +245,20 @@ def _validate_args(args: argparse.Namespace) -> None:
     if args.command == "enable" and (not math.isfinite(args.seconds) or args.seconds <= 0.0):
         raise RemoteArmError("--seconds must be finite and > 0")
     if args.command == "move":
-        if (
-            not math.isfinite(args.delta)
-            or not 0.0 < abs(args.delta) <= MAX_MANUAL_TOTAL_DELTA_RAD
+        if args.joint_delta and args.joint:
+            raise RemoteArmError("use either --joint or --joint-delta, not both")
+        deltas = (
+            [_parse_joint_delta(value)[1] for value in args.joint_delta]
+            if args.joint_delta
+            else [args.delta]
+        )
+        if any(
+            not math.isfinite(delta)
+            or not 0.0 < abs(delta) <= MAX_MANUAL_TOTAL_DELTA_RAD
+            for delta in deltas
         ):
             raise RemoteArmError(
-                "absolute --delta must be > 0 and <= "
+                "each absolute delta must be > 0 and <= "
                 f"{MAX_MANUAL_TOTAL_DELTA_RAD:.2f} rad"
             )
         if not math.isfinite(args.duration) or not 0.1 <= args.duration <= 10.0:
@@ -266,6 +281,40 @@ def _guarded_offsets(delta: float) -> list[float]:
 
     steps = max(1, math.ceil(abs(delta) / MAX_ROBOT_STEP_RAD - 1e-9))
     return [delta * index / steps for index in range(1, steps + 1)]
+
+
+def _parse_joint_delta(value: str) -> tuple[str, float]:
+    try:
+        name, raw_delta = str(value).rsplit("=", 1)
+        delta = float(raw_delta)
+    except (TypeError, ValueError) as exc:
+        raise RemoteArmError("--joint-delta must use JOINT=RAD") from exc
+    if not name.strip():
+        raise RemoteArmError("--joint-delta must name a joint")
+    return name.strip(), delta
+
+
+def _manual_deltas(args: argparse.Namespace, names: Sequence[str]) -> dict[str, float]:
+    if not args.joint_delta:
+        joint_name = args.joint or f"{args.side}_shoulder_pitch_joint"
+        if joint_name not in names:
+            raise RemoteArmError(
+                f"{joint_name!r} is not a canonical {args.side} arm joint: "
+                + ", ".join(names)
+            )
+        return {joint_name: float(args.delta)}
+    result: dict[str, float] = {}
+    for value in args.joint_delta:
+        joint_name, delta = _parse_joint_delta(value)
+        if joint_name not in names:
+            raise RemoteArmError(
+                f"{joint_name!r} is not a canonical {args.side} arm joint: "
+                + ", ".join(names)
+            )
+        if joint_name in result:
+            raise RemoteArmError(f"duplicate --joint-delta for {joint_name}")
+        result[joint_name] = delta
+    return result
 
 
 def run(args: argparse.Namespace) -> int:
@@ -311,11 +360,7 @@ def run(args: argparse.Namespace) -> int:
             return 0
 
         names = LEFT_ARM_JOINT_NAMES if args.side == "left" else RIGHT_ARM_JOINT_NAMES
-        joint_name = args.joint or f"{args.side}_shoulder_pitch_joint"
-        if joint_name not in names:
-            raise RemoteArmError(
-                f"{joint_name!r} is not a canonical {args.side} arm joint: {', '.join(names)}"
-            )
+        manual_deltas = _manual_deltas(args, names)
         # Enable latches a complete measured pose before the weight ramp. Use
         # that stable desired pose rather than a later noisy LowState sample,
         # otherwise an exact +0.05 command can appear microscopically larger
@@ -328,13 +373,19 @@ def run(args: argparse.Namespace) -> int:
             raise RemoteArmError("Bridge has no fresh measured pose before movement")
         offset = 0 if args.side == "left" else 7
         baseline = [float(value) for value in latched[offset : offset + 7]]
-        joint_index = names.index(joint_name)
-        offsets = _guarded_offsets(args.delta)
+        # Operator-facing manual deltas intentionally use the opposite sign
+        # from Unitree's canonical SDK joint coordinates. Keep this conversion
+        # at the manual boundary so URDF/IK joint angles remain canonical.
+        sdk_deltas = {name: -delta for name, delta in manual_deltas.items()}
+        step_count = max(
+            len(_guarded_offsets(delta)) for delta in sdk_deltas.values()
+        )
         sequence = -1
-        for offset_rad in offsets:
+        for step in range(1, step_count + 1):
             sequence += 1
             target = list(baseline)
-            target[joint_index] += offset_rad
+            for joint_name, delta in sdk_deltas.items():
+                target[names.index(joint_name)] += delta * step / step_count
             client.publish_target(
                 side=args.side,
                 session_id=session_id,
@@ -353,7 +404,6 @@ def run(args: argparse.Namespace) -> int:
                 )
         client.pump_heartbeat(session_id, args.hold, stop)
         outward_status = client.status or {}
-        joint_offset = offset + names.index(joint_name)
         if outward_status.get("state") != "ARMED":
             raise RemoteArmError(
                 "bridge left ARMED during movement: "
@@ -363,23 +413,28 @@ def run(args: argparse.Namespace) -> int:
         measured_after = outward_status.get("measured_arm_q")
         if not isinstance(measured_after, list) or len(measured_after) != 14:
             raise RemoteArmError("Bridge has no fresh measured pose after movement")
-        measured_displacement = _signed_progress(
-            float(measured_before[joint_offset]),
-            float(measured_after[joint_offset]),
-            args.delta,
-        )
-        required_displacement = max(0.005, abs(args.delta) * 0.5)
-        if measured_displacement < required_displacement:
-            raise RemoteArmError(
-                "motor did not follow command: "
-                f"measured {measured_displacement:.4f} rad, "
-                f"required at least {required_displacement:.4f} rad"
+        measured_progress: dict[str, float] = {}
+        for joint_name, sdk_delta in sdk_deltas.items():
+            joint_offset = offset + names.index(joint_name)
+            progress = _signed_progress(
+                float(measured_before[joint_offset]),
+                float(measured_after[joint_offset]),
+                sdk_delta,
             )
+            measured_progress[joint_name] = progress
+            required_displacement = max(0.005, abs(sdk_delta) * 0.5)
+            if progress < required_displacement:
+                raise RemoteArmError(
+                    f"{joint_name} did not follow command: "
+                    f"measured {progress:.4f} rad, "
+                    f"required at least {required_displacement:.4f} rad"
+                )
         if not args.no_return and not stop.is_set():
-            for offset_rad in reversed([0.0, *offsets[:-1]]):
+            for step in reversed(range(step_count)):
                 sequence += 1
                 return_target = list(baseline)
-                return_target[joint_index] += offset_rad
+                for joint_name, delta in sdk_deltas.items():
+                    return_target[names.index(joint_name)] += delta * step / step_count
                 client.publish_target(
                     side=args.side,
                     session_id=session_id,
@@ -394,10 +449,10 @@ def run(args: argparse.Namespace) -> int:
         _print(
             {
                 "ok": True,
-                "joint": joint_name,
-                "delta_rad": args.delta,
-                "guarded_steps": len(offsets),
-                "measured_outward_joint_progress_rad": measured_displacement,
+                "manual_deltas_rad": manual_deltas,
+                "sdk_deltas_rad": sdk_deltas,
+                "guarded_steps": step_count,
+                "measured_outward_progress_rad": measured_progress,
                 "returned": not args.no_return,
                 "bridge": final,
             }

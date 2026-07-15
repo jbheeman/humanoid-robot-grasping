@@ -3,6 +3,7 @@ import pytest
 from object_tracking.manual_arm_cli import (
     RemoteArmError,
     _guarded_offsets,
+    _manual_deltas,
     _signed_progress,
     _validate_args,
     build_parser,
@@ -16,6 +17,31 @@ def test_move_defaults_to_guarded_right_shoulder_cycle() -> None:
     assert args.delta == 0.05
     assert args.duration == 2.0
     assert args.no_return is False
+
+
+def test_manual_multi_joint_deltas_parse_together() -> None:
+    args = build_parser().parse_args(
+        [
+            "move",
+            "--side",
+            "right",
+            "--joint-delta",
+            "right_shoulder_pitch_joint=0.15",
+            "--joint-delta",
+            "right_elbow_joint=-0.10",
+        ]
+    )
+    _validate_args(args)
+    assert _manual_deltas(
+        args,
+        (
+            "right_shoulder_pitch_joint",
+            "right_elbow_joint",
+        ),
+    ) == {
+        "right_shoulder_pitch_joint": 0.15,
+        "right_elbow_joint": -0.10,
+    }
 
 
 def test_move_allows_visible_delta_split_into_guarded_steps() -> None:
