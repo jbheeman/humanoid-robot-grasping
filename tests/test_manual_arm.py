@@ -189,12 +189,10 @@ def test_oversized_target_is_clamped_instead_of_rejected() -> None:
         sent_time_ns=clock.wall_ns,
     )
     assert report["last_rejection"] is None
-    assert report["last_clamp"] == {
-        "side": "right",
-        "maximum_requested_delta_rad": pytest.approx(0.20),
-        "maximum_applied_delta_rad": pytest.approx(0.05),
-    }
-    assert report["desired_arm_q"][7] == pytest.approx(0.05)
+    assert report["last_clamp"]["side"] == "right"
+    assert report["last_clamp"]["maximum_requested_delta_rad"] == pytest.approx(0.20)
+    assert report["last_clamp"]["maximum_applied_delta_rad"] == pytest.approx(0.10)
+    assert report["desired_arm_q"][7] == pytest.approx(0.10)
 
 
 def test_heartbeat_timeout_ramps_to_zero_and_stop_resets_fault() -> None:

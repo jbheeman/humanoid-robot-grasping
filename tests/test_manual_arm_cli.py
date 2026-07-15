@@ -312,7 +312,7 @@ def test_fetch_vision_target_rejects_stale_sample(monkeypatch) -> None:
 def test_move_allows_visible_delta_split_into_guarded_steps() -> None:
     args = build_parser().parse_args(["move", "--delta", "0.15"])
     _validate_args(args)
-    assert _guarded_offsets(args.delta) == pytest.approx([0.05, 0.10, 0.15])
+    assert _guarded_offsets(args.delta) == pytest.approx([0.075, 0.15])
 
 
 def test_move_rejects_delta_beyond_manual_total_limit() -> None:
@@ -324,7 +324,7 @@ def test_move_rejects_delta_beyond_manual_total_limit() -> None:
 def test_guarded_offsets_keep_each_target_step_bounded() -> None:
     offsets = [0.0, *_guarded_offsets(-0.16)]
     assert offsets[-1] == pytest.approx(-0.16)
-    assert max(abs(end - start) for start, end in zip(offsets, offsets[1:])) <= 0.05
+    assert max(abs(end - start) for start, end in zip(offsets, offsets[1:])) <= 0.10
 
 
 def test_guarded_joint_path_preserves_waypoint_route() -> None:
@@ -335,7 +335,7 @@ def test_guarded_joint_path_preserves_waypoint_route() -> None:
             (0.03, 0.04),
         ]
     )
-    assert path[1] == pytest.approx((0.08, -0.02))
+    assert path[0] == pytest.approx((0.08, -0.02))
     assert path[-1] == pytest.approx((0.03, 0.04))
     complete = [(0.0, 0.0), *path]
     assert (
@@ -343,7 +343,7 @@ def test_guarded_joint_path_preserves_waypoint_route() -> None:
             max(abs(end - start) for start, end in zip(before, after))
             for before, after in zip(complete, complete[1:])
         )
-        <= 0.05
+        <= 0.10
     )
 
 

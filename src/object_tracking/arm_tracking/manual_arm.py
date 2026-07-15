@@ -32,7 +32,7 @@ class ManualArmConfig:
     heartbeat_ttl_s: float = 0.500
     stable_standing_s: float = 2.0
     weight_ramp_s: float = 0.500
-    max_target_delta_rad: float = 0.05
+    max_target_delta_rad: float = 0.10
     max_velocity_rad_s: float = 0.25
     max_measured_velocity_rad_s: float = 1.0
     max_acceleration_rad_s2: float = 1.0
@@ -352,11 +352,11 @@ class ManualArmController:
                 1.5 * maximum_delta / self.config.max_velocity_rad_s,
                 math.sqrt(6.0 * maximum_delta / self.config.max_acceleration_rad_s2),
             )
-            if duration_s + 1e-9 < minimum_duration:
-                raise ArmBridgeError(
-                    f"move_duration must be at least {minimum_duration:.3f}s for this step",
-                    code="duration_too_short",
-                )
+            # Retiming preserves the requested position while ensuring a
+            # larger XR step never turns into a terminal client error merely
+            # because the supplied duration was tuned for the old 0.05-rad
+            # limit.
+            applied_duration_s = max(float(duration_s), minimum_duration)
             target = list(self._desired_q)
             target[offset : offset + 7] = positions
             now = self._monotonic()
@@ -366,7 +366,7 @@ class ManualArmController:
                 tuple(start_q[offset : offset + 7]),
                 tuple(positions),
                 now,
-                duration_s,
+                applied_duration_s,
             )
             self._last_sequences[side] = int(sequence)
             self._last_target_at = now
@@ -375,7 +375,8 @@ class ManualArmController:
                 "target_accepted",
                 side=side,
                 sequence=int(sequence),
-                duration_s=round(float(duration_s), 6),
+                duration_s=round(applied_duration_s, 6),
+                requested_duration_s=round(float(duration_s), 6),
                 target_q=[round(value, 6) for value in positions],
                 requested_target_q=[round(value, 6) for value in requested_positions],
             )

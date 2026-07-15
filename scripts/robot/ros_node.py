@@ -302,6 +302,9 @@ class RobotRosNode:
                     max_velocity_rad_s=(
                         0.25 if args.manual_control_profile == "sdk2" else 0.30
                     ),
+                    max_target_delta_rad=(
+                        0.05 if args.manual_control_profile == "sdk2" else 0.10
+                    ),
                     max_acceleration_rad_s2=(
                         1.0 if args.manual_control_profile == "sdk2" else 1.20
                     ),
