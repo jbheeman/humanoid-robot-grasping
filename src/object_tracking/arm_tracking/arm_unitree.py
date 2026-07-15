@@ -28,6 +28,10 @@ ARM_COMMAND_TOPIC = "rt/arm_sdk"
 MOTION_REQUEST_TOPIC = "/api/motion_switcher/request"
 MOTION_RESPONSE_TOPIC = "/api/motion_switcher/response"
 
+# Gains used by Unitree's current motion-mode G1 arm controller reference.
+_WRIST_INDICES = frozenset((19, 20, 21, 26, 27, 28))
+_WEAK_INDICES = frozenset((4, 10, 15, 16, 17, 18, 22, 23, 24, 25))
+
 
 class UnitreeArmHardware:
     """Native-SDK implementation of the bridge's small ``ArmHardware`` API."""
@@ -191,8 +195,15 @@ class UnitreeArmHardware:
                 motor.q = state.body_q[joint_index]
                 motor.dq = 0.0
                 motor.tau = 0.0
-                motor.kp = 0.0
-                motor.kd = 0.0
+                if joint_index in _WRIST_INDICES:
+                    motor.kp = 40.0
+                    motor.kd = 1.5
+                elif joint_index in _WEAK_INDICES:
+                    motor.kp = 80.0
+                    motor.kd = 3.0
+                else:
+                    motor.kp = 300.0
+                    motor.kd = 3.0
         for offset, joint_index in enumerate(ARM_INDICES):
             motor = low_cmd.motor_cmd[joint_index]
             motor.mode = 1

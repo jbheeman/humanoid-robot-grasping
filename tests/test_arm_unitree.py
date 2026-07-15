@@ -10,7 +10,6 @@ from object_tracking.arm_tracking.arm_unitree import (
     ARM_COMMAND_TOPIC,
     ARM_INDICES,
     ARM_WEIGHT_INDEX,
-    LOW_STATE_TOPIC,
     UnitreeArmHardware,
 )
 
@@ -126,6 +125,7 @@ def test_ros_adapter_writes_all_fourteen_arm_slots_and_weight_without_crc() -> N
     hardware._low_cmd = low_command
     hardware._publisher = publisher
     hardware._crc = SimpleNamespace(Crc=lambda message: 123)
+    hardware._low_state_callback(LowState())
     command = arm_command()
 
     hardware.publish(command)
@@ -142,8 +142,10 @@ def test_ros_adapter_writes_all_fourteen_arm_slots_and_weight_without_crc() -> N
         assert motor.kd == 1.5
         assert motor.tau == 0.0
     assert low_command.motor_cmd[ARM_WEIGHT_INDEX].q == 0.75
-    assert [low_command.motor_cmd[index].q for index in (12, 13, 14)] == [-999.0] * 3
-    assert [low_command.motor_cmd[index].q for index in range(12)] == [-999.0] * 12
+    assert [low_command.motor_cmd[index].q for index in range(15)] == [0.0] * 15
+    assert low_command.motor_cmd[0].kp == 300.0
+    assert low_command.motor_cmd[4].kp == 80.0
+    assert low_command.motor_cmd[12].kp == 300.0
 
 
 def test_standing_excludes_arm_velocity_and_reads_ros_temperature_arrays() -> None:

@@ -248,6 +248,11 @@ def _print(report: object) -> None:
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
+def _signed_progress(start: float, actual: float, requested_delta: float) -> float:
+    direction = 1.0 if requested_delta > 0.0 else -1.0
+    return direction * (actual - start)
+
+
 def run(args: argparse.Namespace) -> int:
     _validate_args(args)
     client = ManualArmClient()
@@ -303,6 +308,9 @@ def run(args: argparse.Namespace) -> int:
         latched = armed.get("desired_arm_q")
         if not isinstance(latched, list) or len(latched) != 14:
             raise RemoteArmError("Bridge has no complete latched 14-joint baseline")
+        measured_before = armed.get("measured_arm_q")
+        if not isinstance(measured_before, list) or len(measured_before) != 14:
+            raise RemoteArmError("Bridge has no fresh measured pose before movement")
         offset = 0 if args.side == "left" else 7
         baseline = [float(value) for value in latched[offset : offset + 7]]
         target = list(baseline)
@@ -316,6 +324,29 @@ def run(args: argparse.Namespace) -> int:
         )
         client.wait_sequence(args.side, 0, session_id, args.timeout)
         client.pump_heartbeat(session_id, args.duration + args.hold, stop)
+        outward_status = client.status or {}
+        joint_offset = offset + names.index(joint_name)
+        if outward_status.get("state") != "ARMED":
+            raise RemoteArmError(
+                "bridge left ARMED during movement: "
+                f"state={outward_status.get('state')}, "
+                f"fault={outward_status.get('fault_reason')}"
+            )
+        measured_after = outward_status.get("measured_arm_q")
+        if not isinstance(measured_after, list) or len(measured_after) != 14:
+            raise RemoteArmError("Bridge has no fresh measured pose after movement")
+        measured_displacement = _signed_progress(
+            float(measured_before[joint_offset]),
+            float(measured_after[joint_offset]),
+            args.delta,
+        )
+        required_displacement = max(0.005, abs(args.delta) * 0.5)
+        if measured_displacement < required_displacement:
+            raise RemoteArmError(
+                "motor did not follow command: "
+                f"measured {measured_displacement:.4f} rad, "
+                f"required at least {required_displacement:.4f} rad"
+            )
         if not args.no_return and not stop.is_set():
             client.publish_target(
                 side=args.side,
@@ -333,6 +364,7 @@ def run(args: argparse.Namespace) -> int:
                 "ok": True,
                 "joint": joint_name,
                 "delta_rad": args.delta,
+                "measured_outward_joint_progress_rad": measured_displacement,
                 "returned": not args.no_return,
                 "bridge": final,
             }

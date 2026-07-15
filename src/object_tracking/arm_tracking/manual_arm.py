@@ -35,7 +35,7 @@ class ManualArmConfig:
     max_target_delta_rad: float = 0.05
     max_velocity_rad_s: float = 0.25
     max_acceleration_rad_s2: float = 1.0
-    max_following_error_rad: float = 0.35
+    max_following_error_rad: float = 0.03
     joint_limit_margin_rad: float = 0.05
     kp: float = 60.0
     kd: float = 1.5
@@ -113,6 +113,8 @@ class ManualArmController:
         self._release_terminal = ArmState.DISARMED
         self._fault_reason: Optional[str] = None
         self._last_rejection: Optional[dict[str, str]] = None
+        self._baseline_q: Optional[tuple[float, ...]] = None
+        self._maximum_measured_displacement = [0.0] * 14
         self._started = False
 
     def start(self) -> None:
@@ -192,6 +194,8 @@ class ManualArmController:
             self._last_target_at = None
             self._desired_q = tuple(robot.arm_q)
             self._commanded_q = tuple(robot.arm_q)
+            self._baseline_q = tuple(robot.arm_q)
+            self._maximum_measured_displacement = [0.0] * 14
             self._trajectories = {"left": None, "right": None}
             self._weight = 0.0
             self._ramp_started_at = now
@@ -331,11 +335,15 @@ class ManualArmController:
 
     def _command(self, robot: RobotState, now: float) -> ArmCommand:
         q = self._commanded_q or tuple(robot.arm_q)
+        # Unitree's motion-mode reference uses lower gains on shoulder/elbow
+        # motors and still lower gains on the three wrist motors per side.
+        side_kp = (80.0, 80.0, 80.0, 80.0, 40.0, 40.0, 40.0)
+        side_kd = (3.0, 3.0, 3.0, 3.0, 1.5, 1.5, 1.5)
         return ArmCommand(
             q=tuple(q),
             dq=(0.0,) * 14,
-            kp=(self.config.kp,) * 14,
-            kd=(self.config.kd,) * 14,
+            kp=side_kp + side_kp,
+            kd=side_kd + side_kd,
             weight=self._weight,
             mode_machine=robot.mode_machine,
             published_at=now,
@@ -353,6 +361,15 @@ class ManualArmController:
                     self._begin_release("heartbeat_timeout", ArmState.DISARMED)
             if robot is None:
                 return
+            if self._baseline_q is not None:
+                self._maximum_measured_displacement = [
+                    max(previous, abs(actual - baseline))
+                    for previous, actual, baseline in zip(
+                        self._maximum_measured_displacement,
+                        robot.arm_q,
+                        self._baseline_q,
+                    )
+                ]
             if self._state is ArmState.ARMING:
                 assert self._ramp_started_at is not None
                 ratio = (now - self._ramp_started_at) / self.config.weight_ramp_s
@@ -436,6 +453,10 @@ class ManualArmController:
                 "measured_arm_dq": None if robot is None else list(robot.arm_dq),
                 "commanded_arm_q": None if self._commanded_q is None else list(self._commanded_q),
                 "desired_arm_q": None if self._desired_q is None else list(self._desired_q),
+                "baseline_arm_q": None if self._baseline_q is None else list(self._baseline_q),
+                "maximum_measured_displacement_rad": list(
+                    self._maximum_measured_displacement
+                ),
                 "standing": False if robot is None else robot.standing,
                 "compatible_motion_mode": False if robot is None else robot.compatible_motion_mode,
                 "controller_available": False if robot is None else robot.controller_available,

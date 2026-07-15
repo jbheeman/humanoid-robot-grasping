@@ -207,3 +207,11 @@ def test_disabled_bridge_and_stale_timestamp_fail_closed() -> None:
             duration_s=1.0,
             sent_time_ns=clock.wall_ns - 1_000_000_000,
         )
+
+
+def test_manual_commands_use_unitree_motion_mode_arm_gains() -> None:
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    command = hardware.commands[-1]
+    assert command.kp == (80.0, 80.0, 80.0, 80.0, 40.0, 40.0, 40.0) * 2
+    assert command.kd == (3.0, 3.0, 3.0, 3.0, 1.5, 1.5, 1.5) * 2
