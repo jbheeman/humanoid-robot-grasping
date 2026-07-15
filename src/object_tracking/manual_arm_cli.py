@@ -36,6 +36,38 @@ class RemoteArmError(RuntimeError):
     pass
 
 
+class _HeartbeatKeeper:
+    """Publish the session deadman while CPU-bound IK planning is running."""
+
+    def __init__(self, callback: Any, session_id: str, period_s: float = 0.10) -> None:
+        self.callback = callback
+        self.session_id = session_id
+        self.period_s = period_s
+        self.stop_event = threading.Event()
+        self.thread = threading.Thread(
+            target=self._run,
+            daemon=True,
+            name="g1-manual-arm-heartbeat",
+        )
+
+    def start(self) -> None:
+        self.thread.start()
+
+    def close(self) -> None:
+        self.stop_event.set()
+        if self.thread.is_alive():
+            self.thread.join(timeout=1.0)
+
+    def _run(self) -> None:
+        while not self.stop_event.is_set():
+            try:
+                self.callback(self.session_id)
+            except Exception:
+                # The main status/response path reports transport failures.
+                pass
+            self.stop_event.wait(self.period_s)
+
+
 def _arming_status_summary(status: dict[str, Any]) -> str:
     """Keep arming failures useful without dumping the full 14-joint report."""
 
@@ -472,6 +504,7 @@ def run(args: argparse.Namespace) -> int:
     for signum in (signal.SIGINT, signal.SIGTERM):
         previous_handlers[signum] = signal.signal(signum, request_stop)
     session_id = ""
+    heartbeat_keeper: _HeartbeatKeeper | None = None
     motion_trace: list[dict[str, Any]] = []
     try:
         status = client.wait_status(args.timeout)
@@ -521,8 +554,12 @@ def run(args: argparse.Namespace) -> int:
         if not session_id:
             raise RemoteArmError("Robot enabled without returning a session ID")
         armed = client.wait_armed(session_id, args.timeout)
+        heartbeat_keeper = _HeartbeatKeeper(client.heartbeat, session_id)
+        heartbeat_keeper.start()
         if args.command == "enable":
             client.pump_heartbeat(session_id, args.seconds, stop)
+            heartbeat_keeper.close()
+            heartbeat_keeper = None
             _print(client.stop_and_wait(session_id, "enable_test_complete", args.timeout))
             session_id = ""
             return 0
@@ -705,6 +742,8 @@ def run(args: argparse.Namespace) -> int:
                     trace=motion_trace,
                     phase=f"return_{step}",
                 )
+        heartbeat_keeper.close()
+        heartbeat_keeper = None
         final = client.stop_and_wait(session_id, "manual_move_complete", args.timeout)
         session_id = ""
         report = {
@@ -752,6 +791,8 @@ def run(args: argparse.Namespace) -> int:
             )
         raise
     finally:
+        if heartbeat_keeper is not None:
+            heartbeat_keeper.close()
         if session_id:
             try:
                 client.request("stop", session_id=session_id, reason="client_exit", timeout_s=1.0)
