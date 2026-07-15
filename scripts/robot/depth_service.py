@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 from dataclasses import dataclass
 import math
+import subprocess
 import threading
 import time
 from typing import Any, Dict, List, Optional, Protocol
@@ -147,14 +148,20 @@ class RealSenseDepthSource:
             "camera_serial": self.serial,
             "firmware": device.get_info(rs.camera_info.firmware_version),
             "depth_profile": {
-                "width": (color_profile.width() if color_profile is not None else depth_profile.width()),
-                "height": (color_profile.height() if color_profile is not None else depth_profile.height()),
+                "width": (
+                    color_profile.width() if color_profile is not None else depth_profile.width()
+                ),
+                "height": (
+                    color_profile.height() if color_profile is not None else depth_profile.height()
+                ),
                 "fps": self.fps,
                 "format": "z16",
                 "intrinsics": _intrinsics_dict(intrinsics),
                 "depth_scale": depth_scale,
             },
-            "color_profile": None if color_profile is None else {
+            "color_profile": None
+            if color_profile is None
+            else {
                 "width": color_profile.width(),
                 "height": color_profile.height(),
                 "fps": self.color_fps,
@@ -285,7 +292,9 @@ class RosAlignedDepthSource:
             self._latest = CapturedDepth(z16, timestamp_ms, "ros_time")
             self._refresh_calibration(width=int(message.width), height=int(message.height))
 
-    def _refresh_calibration(self, width: Optional[int] = None, height: Optional[int] = None) -> None:
+    def _refresh_calibration(
+        self, width: Optional[int] = None, height: Optional[int] = None
+    ) -> None:
         info = self._camera_info
         if info is None:
             return
@@ -411,13 +420,19 @@ class DepthService:
     def start(self, calibration_path: Optional[str] = None) -> None:
         self._calibration_path = calibration_path
         self.source.start()
-        if calibration_path:
-            bind_validated_calibration(self.source, calibration_path)
-        if self.rgb_relay is not None:
-            color = self.source.calibration.get("color_profile")
-            if not isinstance(color, dict):
-                raise RuntimeError("RGB relay requires a source with a color profile")
-            self.rgb_relay.start(width=int(color["width"]), height=int(color["height"]))
+        try:
+            if calibration_path:
+                bind_validated_calibration(self.source, calibration_path)
+            if self.rgb_relay is not None:
+                color = self.source.calibration.get("color_profile")
+                if not isinstance(color, dict):
+                    raise RuntimeError("RGB relay requires a source with a color profile")
+                self.rgb_relay.start(width=int(color["width"]), height=int(color["height"]))
+        except Exception:
+            if self.rgb_relay is not None:
+                self.rgb_relay.close()
+            self.source.close()
+            raise
         self.stop_event.clear()
         self.thread = threading.Thread(
             target=self._capture_loop, daemon=True, name="realsense-depth"
@@ -534,44 +549,96 @@ class RealSenseRgbRtpRelay:
         self.port = port
         self.fps = fps
         self.bitrate = bitrate
-        self.writer: Any = None
+        self.process: subprocess.Popen[bytes] | None = None
         self.frames_sent = 0
         self.last_error: str | None = None
 
     def start(self, *, width: int, height: int) -> None:
+        command = [
+            "gst-launch-1.0",
+            "-q",
+            "fdsrc",
+            "fd=0",
+            "!",
+            "videoparse",
+            "format=bgr",
+            f"width={width}",
+            f"height={height}",
+            f"framerate={self.fps}/1",
+            "!",
+            "queue",
+            "max-size-buffers=1",
+            "max-size-time=0",
+            "max-size-bytes=0",
+            "leaky=downstream",
+            "!",
+            "videoconvert",
+            "!",
+            "nvvidconv",
+            "!",
+            "video/x-raw(memory:NVMM),format=NV12",
+            "!",
+            "nvv4l2h264enc",
+            f"bitrate={self.bitrate}",
+            f"iframeinterval={self.fps}",
+            f"idrinterval={self.fps}",
+            "insert-sps-pps=1",
+            "!",
+            "h264parse",
+            "!",
+            "rtph264pay",
+            "pt=96",
+            "config-interval=1",
+            "!",
+            "udpsink",
+            f"host={self.host}",
+            f"port={self.port}",
+            "sync=false",
+            "async=false",
+        ]
         try:
-            import cv2
-        except ImportError as exc:
-            raise RuntimeError("OpenCV with GStreamer is required for the RGB relay") from exc
-        pipeline = (
-            "appsrc is-live=true block=true format=time do-timestamp=true ! "
-            f"video/x-raw,format=BGR,width={width},height={height},framerate={self.fps}/1 ! "
-            "videoconvert ! nvvidconv ! video/x-raw(memory:NVMM),format=NV12 ! "
-            f"nvv4l2h264enc bitrate={self.bitrate} iframeinterval={self.fps} "
-            f"idrinterval={self.fps} insert-sps-pps=1 ! h264parse ! "
-            "rtph264pay pt=96 config-interval=1 ! "
-            f"udpsink host={self.host} port={self.port} sync=false async=false"
-        )
-        self.writer = cv2.VideoWriter(pipeline, cv2.CAP_GSTREAMER, 0, self.fps, (width, height))
-        if not self.writer.isOpened():
-            self.writer.release()
-            self.writer = None
-            raise RuntimeError("Could not open the D435I H264 RTP relay pipeline")
+            self.process = subprocess.Popen(
+                command,
+                stdin=subprocess.PIPE,
+                stdout=subprocess.DEVNULL,
+                bufsize=0,
+            )
+        except (OSError, subprocess.SubprocessError) as exc:
+            self.process = None
+            raise RuntimeError(f"Could not start the D435I H264 RTP relay: {exc}") from exc
 
     def write(self, frame: np.ndarray) -> None:
-        if self.writer is None:
+        if self.process is None:
             return
         try:
-            self.writer.write(frame)
+            if self.process.poll() is not None or self.process.stdin is None:
+                raise RuntimeError(f"GStreamer relay exited with code {self.process.returncode}")
+            contiguous = np.ascontiguousarray(frame, dtype=np.uint8)
+            self.process.stdin.write(contiguous.tobytes())
             self.frames_sent += 1
             self.last_error = None
         except Exception as exc:
             self.last_error = f"{type(exc).__name__}: {exc}"
 
     def close(self) -> None:
-        if self.writer is not None:
-            self.writer.release()
-            self.writer = None
+        process = self.process
+        self.process = None
+        if process is None:
+            return
+        if process.stdin is not None:
+            try:
+                process.stdin.close()
+            except OSError:
+                pass
+        try:
+            process.wait(timeout=2.0)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            try:
+                process.wait(timeout=1.0)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(timeout=1.0)
 
     def health(self) -> Dict[str, Any]:
         return {

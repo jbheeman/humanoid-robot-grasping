@@ -2,7 +2,11 @@ import time
 
 import numpy as np
 
-from scripts.robot.depth_service import CapturedDepth, DepthService
+from scripts.robot.depth_service import (
+    CapturedDepth,
+    DepthService,
+    RealSenseRgbRtpRelay,
+)
 
 
 class FakeDepthSource:
@@ -71,3 +75,70 @@ def test_depth_service_prepares_latest_ros_payload_and_health() -> None:
         service.stop()
 
     assert source.started is False
+
+
+def test_depth_service_closes_realsense_when_rgb_relay_start_fails() -> None:
+    source = FakeDepthSource()
+    source.calibration["color_profile"] = {"width": 4, "height": 3}
+
+    class FailingRelay:
+        def start(self, *, width: int, height: int) -> None:
+            raise RuntimeError("relay failed")
+
+        def close(self) -> None:
+            pass
+
+    service = DepthService(source, rgb_relay=FailingRelay())  # type: ignore[arg-type]
+    try:
+        service.start()
+    except RuntimeError as exc:
+        assert str(exc) == "relay failed"
+    else:
+        raise AssertionError("relay startup failure was not propagated")
+    assert source.started is False
+
+
+def test_rgb_relay_feeds_native_gstreamer_subprocess(monkeypatch) -> None:
+    class Stdin:
+        def __init__(self) -> None:
+            self.data = bytearray()
+
+        def write(self, value: bytes) -> int:
+            self.data.extend(value)
+            return len(value)
+
+        def close(self) -> None:
+            pass
+
+    class Process:
+        def __init__(self) -> None:
+            self.stdin = Stdin()
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout: float):
+            self.returncode = 0
+            return 0
+
+    process = Process()
+    captured: dict[str, object] = {}
+
+    def fake_popen(command, **kwargs):
+        captured["command"] = command
+        captured["kwargs"] = kwargs
+        return process
+
+    monkeypatch.setattr("scripts.robot.depth_service.subprocess.Popen", fake_popen)
+    relay = RealSenseRgbRtpRelay(host="192.168.0.66", port=5600, fps=60)
+    relay.start(width=4, height=3)
+    relay.write(np.zeros((3, 4, 3), dtype=np.uint8))
+    relay.close()
+
+    command = captured["command"]
+    assert command[0:3] == ["gst-launch-1.0", "-q", "fdsrc"]
+    assert "nvv4l2h264enc" in command
+    assert "host=192.168.0.66" in command
+    assert len(process.stdin.data) == 3 * 4 * 3
+    assert relay.frames_sent == 1
