@@ -389,6 +389,32 @@ class G1RightArmIK:
             return np.asarray(solution.value(self.var_q), dtype=float).reshape(7)
         return self._solve_numerical(target, last_q)
 
+    def _ik_seed_variants(self, start_q: np.ndarray) -> tuple[np.ndarray, ...]:
+        """Offer the optimizer bounded G1 arm postures, not one local branch.
+
+        A single smooth seed can repeatedly fold the elbow toward the torso.
+        These alternatives bias shoulder yaw, elbow, and wrist posture while
+        retaining the measured arm pose as the actual route start.  They are
+        only seeds for IK; collision checking still vets the solved goal and
+        every joint-space edge.
+        """
+
+        offsets = (
+            (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+            (0.0, 0.0, 0.40, -0.50, 0.0, -0.25, 0.20),
+            (0.0, 0.0, -0.40, -0.50, 0.0, 0.25, -0.20),
+            (0.0, 0.15, 0.35, -0.35, 0.20, -0.35, 0.25),
+            (0.0, -0.15, -0.35, -0.35, -0.20, 0.35, -0.25),
+            (0.15, 0.10, 0.20, -0.60, 0.25, -0.40, 0.30),
+            (-0.15, -0.10, -0.20, -0.60, -0.25, 0.40, -0.30),
+        )
+        variants: list[np.ndarray] = []
+        for offset in offsets:
+            candidate = np.clip(start_q + np.asarray(offset, dtype=float), self.lower, self.upper)
+            if not any(np.allclose(candidate, existing, atol=1e-6) for existing in variants):
+                variants.append(candidate)
+        return tuple(variants)
+
     def _pose_errors(self, target: np.ndarray, q: np.ndarray) -> tuple[float, float]:
         self.pin.framesForwardKinematics(self.model, self.data, q)
         pose = self.data.oMf[self.ee_frame]
@@ -426,81 +452,61 @@ class G1RightArmIK:
                 float("inf"),
                 "collision_model_unavailable",
             )
-        try:
-            goal_q = self._candidate_q(target, start_q)
-        except Exception:
-            return IKPathResult(False, None, float("inf"), float("inf"), "solver_failed")
-        if float(np.max(np.abs(goal_q - start_q))) > 1.20:
-            return IKPathResult(
-                False,
-                None,
-                float("inf"),
-                float("inf"),
-                "goal_joint_delta_too_large",
-            )
-
-        position_error, orientation_error = self._pose_errors(target, goal_q)
-        if position_error > self.position_tolerance_m:
-            return IKPathResult(
-                False, None, position_error, orientation_error, "position_error"
-            )
-        if (
-            enforce_orientation
-            and self.orientation_weight > 0.0
-            and orientation_error > self.orientation_tolerance_rad
-        ):
-            return IKPathResult(
-                False, None, position_error, orientation_error, "orientation_error"
-            )
-
         allowed_collisions = self._collision_pairs(start_q)
-        introduced_at_goal = self._collision_pairs(goal_q) - allowed_collisions
-        if introduced_at_goal:
-            labels = ",".join(
-                self._collision_pair_label(index) for index in sorted(introduced_at_goal)
-            )
-            return IKPathResult(
-                False,
-                None,
-                position_error,
-                orientation_error,
-                f"goal_self_collision:{labels}",
-            )
-
         start_xyz = self.forward_kinematics(start_q)[:3, 3]
-        goal_xyz = self.forward_kinematics(goal_q)[:3, 3]
-        corridor_margin = np.array([0.50, 0.40, 0.50, 0.70, 0.50, 0.50, 0.60])
-        lower = np.maximum(self.lower, np.minimum(start_q, goal_q) - corridor_margin)
-        upper = np.minimum(self.upper, np.maximum(start_q, goal_q) + corridor_margin)
+        last_failure = (float("inf"), float("inf"), "solver_failed")
+        for seed_q in self._ik_seed_variants(start_q):
+            try:
+                goal_q = self._candidate_q(target, seed_q)
+            except Exception:
+                continue
+            if float(np.max(np.abs(goal_q - start_q))) > 1.20:
+                last_failure = (float("inf"), float("inf"), "goal_joint_delta_too_large")
+                continue
+            position_error, orientation_error = self._pose_errors(target, goal_q)
+            if position_error > self.position_tolerance_m:
+                last_failure = (position_error, orientation_error, "position_error")
+                continue
+            if (
+                enforce_orientation
+                and self.orientation_weight > 0.0
+                and orientation_error > self.orientation_tolerance_rad
+            ):
+                last_failure = (position_error, orientation_error, "orientation_error")
+                continue
+            introduced_at_goal = self._collision_pairs(goal_q) - allowed_collisions
+            if introduced_at_goal:
+                labels = ",".join(
+                    self._collision_pair_label(index) for index in sorted(introduced_at_goal)
+                )
+                last_failure = (position_error, orientation_error, f"goal_self_collision:{labels}")
+                continue
 
-        def state_is_valid(q: np.ndarray) -> bool:
-            if self._collision_pairs(q) - allowed_collisions:
-                return False
-            xyz = self.forward_kinematics(q)[:3, 3]
-            # Do not let a detour dive toward the table or swing materially
-            # behind the hanging start pose while escaping the hip.
-            if xyz[0] < min(start_xyz[0], goal_xyz[0]) - 0.04:
-                return False
-            if xyz[2] < min(start_xyz[2], goal_xyz[2]) - 0.03:
-                return False
-            return bool(-0.48 <= xyz[1] <= 0.15)
+            goal_xyz = self.forward_kinematics(goal_q)[:3, 3]
+            corridor_margin = np.array([0.50, 0.40, 0.50, 0.70, 0.50, 0.50, 0.60])
+            lower = np.maximum(self.lower, np.minimum(start_q, goal_q) - corridor_margin)
+            upper = np.minimum(self.upper, np.maximum(start_q, goal_q) + corridor_margin)
 
-        path = collision_aware_joint_path(
-            start_q,
-            goal_q,
-            lower,
-            upper,
-            state_is_valid,
-        )
-        if path is None:
-            return IKPathResult(
-                False,
-                None,
-                position_error,
-                orientation_error,
-                "collision_detour_unavailable",
-            )
-        return IKPathResult(True, path, position_error, orientation_error)
+            def state_is_valid(q: np.ndarray) -> bool:
+                if self._collision_pairs(q) - allowed_collisions:
+                    return False
+                xyz = self.forward_kinematics(q)[:3, 3]
+                if xyz[0] < min(start_xyz[0], goal_xyz[0]) - 0.04:
+                    return False
+                if xyz[2] < min(start_xyz[2], goal_xyz[2]) - 0.03:
+                    return False
+                return bool(-0.48 <= xyz[1] <= 0.15)
+
+            path = collision_aware_joint_path(start_q, goal_q, lower, upper, state_is_valid)
+            if path is None:
+                last_failure = (position_error, orientation_error, "collision_detour_unavailable")
+                continue
+            # The measured-pose seed is always first.  Once a collision-free
+            # route is found, execute it rather than spending control time
+            # searching for cosmetically different redundant postures.
+            return IKPathResult(True, path, position_error, orientation_error)
+        position_error, orientation_error, reason = last_failure
+        return IKPathResult(False, None, position_error, orientation_error, reason)
 
     def solve(
         self,
