@@ -47,6 +47,7 @@ class RealSenseDepthSource:
         color_fps: int = 60,
         enable_color: bool = False,
         registered_to_output_rgb: bool = False,
+        apply_depth_filters: bool = True,
     ) -> None:
         self.width = width
         self.height = height
@@ -57,6 +58,7 @@ class RealSenseDepthSource:
         self.color_fps = color_fps
         self.enable_color = enable_color
         self.registered_to_output_rgb = registered_to_output_rgb
+        self.apply_depth_filters = apply_depth_filters
         self.pipeline: Any = None
         self.align: Any = None
         self.spatial: Any = None
@@ -192,8 +194,9 @@ class RealSenseDepthSource:
         color = aligned.get_color_frame() if self.enable_color else None
         if not depth or (self.enable_color and not color):
             return None
-        for filter_ in (self.spatial, self.temporal, self.hole_filling):
-            depth = filter_.process(depth)
+        if self.apply_depth_filters:
+            for filter_ in (self.spatial, self.temporal, self.hole_filling):
+                depth = filter_.process(depth)
         z16 = np.asanyarray(depth.get_data()).astype("<u2", copy=True)
         return CapturedDepth(
             z16=z16,

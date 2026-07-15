@@ -221,6 +221,11 @@ class DepthOnlyRosNode:
             serial=args.depth_serial,
             enable_color=False,
             registered_to_output_rgb=False,
+            # The GB10 uses a robust median over the detector ROI.  Avoid
+            # running three expensive RealSense filters at 30 Hz on the G1,
+            # which otherwise starves the ROS publisher before a frame leaves
+            # the robot.
+            apply_depth_filters=False,
         )
         if args.depth_source != "librealsense":
             self.runner.close()
