@@ -36,10 +36,10 @@ def sample_trajectory(stage: str, seed: int) -> TrajectorySpec:
     if stage == "static_grasp":
         return TrajectorySpec(stage, seed, start, (0.0, 0.0, 0.0))
     if stage == "slow_linear":
-        speed = rng.uniform(0.02, 0.08)
+        speed = rng.uniform(0.03, 0.08)
         return TrajectorySpec(stage, seed, start, (0.0, rng.choice((-speed, speed)), 0.0))
     if stage == "varied_motion":
-        speed = rng.uniform(0.04, 0.15)
+        speed = rng.uniform(0.03, 0.15)
         return TrajectorySpec(
             stage,
             seed,
@@ -49,4 +49,3 @@ def sample_trajectory(stage: str, seed: int) -> TrajectorySpec:
             lateral_frequency_hz=rng.uniform(0.1, 0.4),
         )
     raise ValueError(f"unknown curriculum stage: {stage}")
-

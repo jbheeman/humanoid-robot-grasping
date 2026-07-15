@@ -21,6 +21,13 @@ class ContractTests(unittest.TestCase):
         _, velocity = first.state_at(0.0)
         self.assertLess(np.linalg.norm(velocity), 0.3)
 
+    def test_hand_push_stages_stay_within_measured_speed_bounds(self):
+        for stage in ("slow_linear", "varied_motion"):
+            for seed in range(20):
+                velocity = sample_trajectory(stage, seed).velocity_xyz
+                self.assertLessEqual(abs(velocity[1]), 0.15)
+                self.assertGreaterEqual(abs(velocity[1]), 0.03)
+
     def test_frame_rejects_missing_camera(self):
         contract = DatasetContract()
         sample = FrameSample(
