@@ -5,8 +5,9 @@ absolute seven-joint targets on project ROS domain 42. One robot-local process
 merges both sides into Unitree's required 14-joint frame and is the only
 publisher to native `rt/arm_sdk` on domain 0.
 
-It does not start a camera, depth stream, localization, IK, or the browser
-commissioning UI.
+The arm-only launcher starts no camera or depth stream. The regular robot and
+GB10 launchers can include this bridge with `--arm-commissioning`, and the
+GB10 client also supports bounded relative Cartesian IK tests.
 
 ## Topics
 
@@ -19,7 +20,7 @@ commissioning UI.
 
 The control RPC uses topics instead of a custom ROS service because this has
 proven interoperable between the robot's Foxy/Fast DDS process and the GB10's
-Jazzy/CycloneDDS process.
+Jazzy/Fast DDS process.
 
 ## Install or rebuild after pulling
 
@@ -58,6 +59,20 @@ CLIENT_IP=192.168.0.66 scripts/robot/manual-arm.sh move
 
 Use `observe` instead of `move` to verify ROS without permitting motor output.
 
+To run camera, depth, and the manual arm bridge from one launcher per host,
+stop the old arm-only bridge and use:
+
+```bash
+# Robot
+CLIENT_IP=192.168.0.66 scripts/robot/start.sh --arm-commissioning
+
+# GB10
+scripts/gb10/start.sh --arm-commissioning
+```
+
+This mode permits movement but always starts `DISARMED`; only a fresh client
+session with a heartbeat can temporarily take arm ownership.
+
 ## Verify from GB10 without moving
 
 ```bash
@@ -72,16 +87,18 @@ arm.
 
 ## First custom movement test
 
-This command latches the measured pose, ramps Unitree arm weight, moves only
-the right shoulder pitch by +0.05 rad over two seconds, holds for 0.5 seconds,
-returns to the measured baseline, and releases arm weight to zero:
+Manual delta signs are inverted only at this operator-facing boundary to match
+the observed forward/back convention. Canonical Unitree/URDF angles used by IK
+are not modified. This example moves two joints together, returns to the
+measured baseline, and releases arm weight to zero:
 
 ```bash
 scripts/gb10/arm-remote.sh move \
   --side right \
-  --joint right_shoulder_pitch_joint \
-  --delta 0.05 \
-  --duration 2
+  --joint-delta right_shoulder_pitch_joint=0.12 \
+  --joint-delta right_elbow_joint=0.12 \
+  --duration 2 \
+  --hold 5
 ```
 
 The robot rejects a step above 0.05 rad, stale/replayed messages, the wrong
@@ -96,6 +113,20 @@ Use this motion-free command to stop, release, and clear a latched fault:
 scripts/gb10/arm-remote.sh stop
 ```
 
-After this shoulder cycle passes, repeat on the left side. Plush XYZ and IK
-targets should later publish through these same side topics; perception never
-publishes directly to Unitree DDS.
+## First relative Cartesian IK test
+
+The IK frame is the G1 URDF pelvis/waist-root frame: +X forward, +Y left, and
++Z up. This command solves from fresh measured right-arm joints, requests the
+hand 1 cm upward while preserving its measured orientation, moves all required
+joints through guarded 0.05-rad increments, verifies the measured Cartesian
+result, returns, and releases:
+
+```bash
+scripts/gb10/arm-remote.sh ik --dz 0.01 --duration 2 --hold 3
+```
+
+Start with +Z because the normal hanging hand is beside the hip; a direct +X
+move from that pose can correctly fail the swept-collision check. Perception
+never publishes Cartesian targets or native Unitree DDS packets directly: the
+GB10 solves IK to seven canonical joint angles and the robot-local bridge owns
+interpolation, heartbeat release, state gates, and `rt/arm_sdk` output.

@@ -47,6 +47,30 @@ RESEARCH_NOTES="${RESEARCH_NOTES:-}"
 # to compare a new checkpoint; the launcher should exercise this by default.
 TRAJECTORY_MODEL="${TRAJECTORY_MODEL:-${ROOT_DIR}/models/plushie_detector/trajectory_gru_synth_pretrain_17h/best.pt}"
 GB10_LAN_IP="${GB10_LAN_IP:-}"
+ARM_COMMISSIONING=0
+server_args=()
+
+while (($#)); do
+  case "$1" in
+    --arm-commissioning) ARM_COMMISSIONING=1 ;;
+    -h|--help)
+      echo "Usage: scripts/gb10/start.sh [--arm-commissioning] [server options]"
+      exit 0
+      ;;
+    *) server_args+=("$1") ;;
+  esac
+  shift
+done
+
+if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
+  # The stock robot's Foxy participant is stable with Jazzy only when both
+  # sides of the manual arm channel use Fast DDS.
+  export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+  if [[ "${EXECUTE}" == "1" ]]; then
+    echo "--arm-commissioning cannot be combined with EXECUTE=1 tracking." >&2
+    exit 2
+  fi
+fi
 
 if [[ -z "${ROBOT_HOST}" ]]; then
   echo "ROBOT_HOST (the robot address) is required." >&2
@@ -160,13 +184,18 @@ echo "ROS peer:            ${ROBOT_HOST} (domain ${ROS_DOMAIN_ID})"
 echo "YOLO model:          ${MODEL}"
 echo "Tracking profile:    ${VISION_WIDTH}x${VISION_HEIGHT} at ${VISION_FPS} FPS"
 echo "Movement requested:  ${EXECUTE} (robot safety gates still apply)"
+echo "Arm commissioning:    ${ARM_COMMISSIONING}"
 echo "Research recording:  ${RESEARCH_RECORD} at ${RESEARCH_HZ} Hz"
 echo "Trajectory model:    ${TRAJECTORY_MODEL:-alpha-beta fallback only}"
 echo
 echo "Open the single GB10 UI:"
 echo "  http://${DISPLAY_HOST}:${PORT}/"
 echo "Commissioning:"
-echo "  http://${DISPLAY_HOST}:${PORT}/commissioning/"
+if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
+  echo "  manual ROS bridge mode; use scripts/gb10/arm-remote.sh"
+else
+  echo "  http://${DISPLAY_HOST}:${PORT}/commissioning/"
+fi
 echo
 echo "For off-LAN access, tunnel only this UI port:"
 echo "  ssh -N -L ${PORT}:127.0.0.1:${PORT} ${USER:-USER}@${DISPLAY_HOST}"
@@ -195,4 +224,4 @@ exec "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
   "${access_log_args[@]}" \
   "${tracking_args[@]}" \
   "${research_args[@]}" \
-  "$@"
+  "${server_args[@]}"

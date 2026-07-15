@@ -14,6 +14,7 @@ RGB_MODE="${RGB_MODE:-unitree}"
 ALLOW_MOVEMENT="${ALLOW_MOVEMENT:-0}"
 EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-}"
 G1_ROBOT_ID="${G1_ROBOT_ID:-}"
+ARM_COMMISSIONING=0
 # The robot's RealSense exposes depth directly but not a usable ROS-aligned
 # RGB stream. Prefer that known-good source; operators can explicitly request
 # --depth-source ros when an aligned sensor_msgs/Image pipeline is present.
@@ -33,6 +34,26 @@ REALSENSE_RGB_FPS="${REALSENSE_RGB_FPS:-60}"
 DEPTH_SERIAL="${DEPTH_SERIAL:-}"
 # Keep rclpy separate from the native SDK2 CycloneDDS domain in this process.
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+
+usage() {
+  echo "Usage: scripts/robot/start.sh [--arm-commissioning]" >&2
+}
+
+while (($#)); do
+  case "$1" in
+    --arm-commissioning) ARM_COMMISSIONING=1 ;;
+    -h|--help) usage; exit 0 ;;
+    *) echo "Unknown robot launcher argument: $1" >&2; usage; exit 2 ;;
+  esac
+  shift
+done
+
+CONTROL_MODE="tracking"
+if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
+  CONTROL_MODE="manual"
+  ALLOW_MOVEMENT=1
+  EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-ai}"
+fi
 
 if [[ -z "${CLIENT_IP}" ]]; then
   echo "CLIENT_IP (the GB10 address) is required." >&2
@@ -67,7 +88,7 @@ fi
 export LD_LIBRARY_PATH="${UNITREE_SDK_DDS_LIBRARY_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 node_args=(
-  --control-mode tracking
+  --control-mode "${CONTROL_MODE}"
   --depth-source "${DEPTH_SOURCE}"
   --ros-image-topic "${ROS_IMAGE_TOPIC}"
   --ros-camera-info-topic "${ROS_CAMERA_INFO_TOPIC}"
@@ -138,7 +159,10 @@ esac
 "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${node_args[@]}" &
 pids+=("$!")
 
-echo "Robot ROS 2 node started disarmed=$([[ "${ALLOW_MOVEMENT}" == "1" ]] && echo no || echo yes)."
+echo "Robot ROS 2 node started control_mode=${CONTROL_MODE} movement_permitted=${ALLOW_MOVEMENT} initial_state=DISARMED."
+if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
+  echo "Arm commissioning enabled: manual ROS commands are allowed but remain disarmed until a client enables a session."
+fi
 echo "ROS domain ${ROS_DOMAIN_ID}; interface ${ROBOT_INTERFACE}; static peers ${CLIENT_IP}, ${UNITREE_CONTROL_PEER}."
 echo "RGB remains RTP/UDP ${CLIENT_IP}:${CLIENT_PORT:-5600}; the robot exposes no HTTP server."
 wait -n "${pids[@]}"

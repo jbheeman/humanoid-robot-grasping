@@ -48,17 +48,28 @@ class G1RightArmIK:
         joint_limit_margin_rad: float = 0.05,
     ) -> None:
         try:
-            import casadi
             import pinocchio as pin
-            from pinocchio import casadi as cpin
+            from scipy.optimize import least_squares
         except Exception as exc:  # pragma: no cover - host dependency
             raise IKUnavailable(
-                "G1 IK requires the arm dependency group (pinocchio and casadi)."
+                "G1 IK requires the arm dependency group (pinocchio and scipy)."
             ) from exc
 
-        self.casadi = casadi
         self.pin = pin
-        self.cpin = cpin
+        self.least_squares = least_squares
+        self.casadi = None
+        self.cpin = None
+        try:
+            import casadi
+            from pinocchio import casadi as cpin
+
+            self.casadi = casadi
+            self.cpin = cpin
+        except (ImportError, ModuleNotFoundError):
+            # PyPI/uv Pinocchio wheels do not currently ship the optional
+            # CasADi bindings. The bounded SciPy backend below uses the same
+            # Pinocchio model, objective terms, and acceptance gates.
+            pass
         self.urdf_path = Path(urdf_path)
         if not self.urdf_path.is_file():
             raise IKUnavailable(
@@ -105,14 +116,18 @@ class G1RightArmIK:
             )
         self.data = self.model.createData()
         parent = self.model.getJointId("right_wrist_yaw_joint")
+        parent_frame = self.model.getFrameId("right_wrist_yaw_link")
         self.ee_frame = self.model.addFrame(
             pin.Frame(
                 "right_pregrasp_frame",
                 parent,
+                parent_frame,
                 pin.SE3(np.eye(3), np.array([0.05, 0.0, 0.0])),
                 pin.FrameType.OP_FRAME,
             )
         )
+        # Frame data must be rebuilt after extending the reduced model.
+        self.data = self.model.createData()
 
         lower = self.model.lowerPositionLimit.copy() + joint_limit_margin_rad
         upper = self.model.upperPositionLimit.copy() - joint_limit_margin_rad
@@ -120,7 +135,8 @@ class G1RightArmIK:
             raise IKUnavailable("URDF limits are too narrow for the configured safety margin.")
         self.lower = lower
         self.upper = upper
-        self._build_optimizer()
+        if self.casadi is not None and self.cpin is not None:
+            self._build_optimizer()
 
     def _build_optimizer(self) -> None:
         casadi = self.casadi
@@ -162,6 +178,66 @@ class G1RightArmIK:
             },
         )
 
+    def forward_kinematics(self, q_rad: Sequence[float]) -> np.ndarray:
+        q = np.asarray(q_rad, dtype=float)
+        if q.shape != (7,) or not np.all(np.isfinite(q)):
+            raise ValueError("q_rad must contain seven finite joint positions")
+        self.pin.framesForwardKinematics(self.model, self.data, q)
+        pose = self.data.oMf[self.ee_frame]
+        transform = np.eye(4)
+        transform[:3, :3] = pose.rotation
+        transform[:3, 3] = pose.translation
+        return transform
+
+    def _solve_numerical(self, target: np.ndarray, last_q: np.ndarray) -> np.ndarray:
+        sqrt_translation = np.sqrt(50.0)
+        sqrt_smooth = np.sqrt(0.1)
+        sqrt_regularization = np.sqrt(0.02)
+
+        def residual(q: np.ndarray) -> np.ndarray:
+            self.pin.framesForwardKinematics(self.model, self.data, q)
+            pose = self.data.oMf[self.ee_frame]
+            translation = sqrt_translation * (pose.translation - target[:3, 3])
+            rotation = self.pin.log3(pose.rotation @ target[:3, :3].T)
+            return np.concatenate(
+                (
+                    translation,
+                    rotation,
+                    sqrt_smooth * (q - last_q),
+                    sqrt_regularization * q,
+                )
+            )
+
+        result = self.least_squares(
+            residual,
+            np.clip(last_q, self.lower, self.upper),
+            bounds=(self.lower, self.upper),
+            max_nfev=80,
+            ftol=1e-6,
+            xtol=1e-6,
+            gtol=1e-6,
+        )
+        if not result.success or not np.all(np.isfinite(result.x)):
+            raise RuntimeError(result.message)
+        return np.asarray(result.x, dtype=float).reshape(7)
+
+    def _collision_pairs(self, q: np.ndarray) -> set[int]:
+        if self.collision_model is None or self.collision_data is None:
+            return set()
+        self.pin.computeCollisions(
+            self.model,
+            self.data,
+            self.collision_model,
+            self.collision_data,
+            q,
+            False,
+        )
+        return {
+            index
+            for index, result in enumerate(self.collision_data.collisionResults)
+            if result.isCollision()
+        }
+
     def solve(
         self,
         target_transform: np.ndarray,
@@ -176,11 +252,14 @@ class G1RightArmIK:
         if not np.all(np.isfinite(target)) or not np.all(np.isfinite(last_q)):
             return IKResult(False, None, float("inf"), float("inf"), "non_finite")
         try:
-            self.opti.set_initial(self.var_q, np.clip(last_q, self.lower, self.upper))
-            self.opti.set_value(self.param_last_q, last_q)
-            self.opti.set_value(self.param_target, target)
-            solution = self.opti.solve()
-            q = np.asarray(solution.value(self.var_q), dtype=float).reshape(7)
+            if self.casadi is not None and self.cpin is not None:
+                self.opti.set_initial(self.var_q, np.clip(last_q, self.lower, self.upper))
+                self.opti.set_value(self.param_last_q, last_q)
+                self.opti.set_value(self.param_target, target)
+                solution = self.opti.solve()
+                q = np.asarray(solution.value(self.var_q), dtype=float).reshape(7)
+            else:
+                q = self._solve_numerical(target, last_q)
         except Exception:
             return IKResult(False, None, float("inf"), float("inf"), "solver_failed")
 
@@ -188,17 +267,13 @@ class G1RightArmIK:
             return IKResult(False, None, float("inf"), float("inf"), "discontinuous")
         if self.collision_model is None or self.collision_data is None:
             return IKResult(False, None, float("inf"), float("inf"), "collision_model_unavailable")
+        # Mesh URDFs commonly contain persistent adjacent-link overlaps. Treat
+        # those present at the measured start pose as the baseline and reject
+        # only collision pairs introduced by the candidate sweep.
+        baseline_collisions = self._collision_pairs(last_q)
         for alpha in np.linspace(0.0, 1.0, 12):
             swept_q = (1.0 - alpha) * last_q + alpha * q
-            self.pin.computeCollisions(
-                self.model,
-                self.data,
-                self.collision_model,
-                self.collision_data,
-                swept_q,
-                False,
-            )
-            if any(result.isCollision() for result in self.collision_data.collisionResults):
+            if self._collision_pairs(swept_q) - baseline_collisions:
                 return IKResult(False, None, float("inf"), float("inf"), "self_collision")
         self.pin.framesForwardKinematics(self.model, self.data, q)
         if support_plane is not None:

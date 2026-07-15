@@ -44,6 +44,21 @@ def test_manual_multi_joint_deltas_parse_together() -> None:
     }
 
 
+def test_ik_accepts_small_pelvis_frame_offset() -> None:
+    args = build_parser().parse_args(["ik", "--dz", "0.01"])
+    _validate_args(args)
+    assert args.dx == 0.0
+    assert args.dy == 0.0
+    assert args.dz == 0.01
+
+
+def test_ik_rejects_zero_or_large_offset() -> None:
+    with pytest.raises(RemoteArmError, match="offset norm"):
+        _validate_args(build_parser().parse_args(["ik"]))
+    with pytest.raises(RemoteArmError, match="offset norm"):
+        _validate_args(build_parser().parse_args(["ik", "--dx", "0.051"]))
+
+
 def test_move_allows_visible_delta_split_into_guarded_steps() -> None:
     args = build_parser().parse_args(["move", "--delta", "0.15"])
     _validate_args(args)

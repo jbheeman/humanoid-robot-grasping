@@ -235,6 +235,16 @@ def build_parser() -> argparse.ArgumentParser:
     move.add_argument("--duration", type=float, default=2.0)
     move.add_argument("--hold", type=float, default=0.5)
     move.add_argument("--no-return", action="store_true")
+    ik = commands.add_parser(
+        "ik",
+        help="move the right hand by a pelvis-frame Cartesian offset using IK",
+    )
+    ik.add_argument("--dx", type=float, default=0.0, help="forward offset in metres")
+    ik.add_argument("--dy", type=float, default=0.0, help="left offset in metres")
+    ik.add_argument("--dz", type=float, default=0.0, help="up offset in metres")
+    ik.add_argument("--duration", type=float, default=2.0)
+    ik.add_argument("--hold", type=float, default=2.0)
+    ik.add_argument("--no-return", action="store_true")
     commands.add_parser("stop", help="stop/release and clear a latched fault")
     return parser
 
@@ -244,6 +254,11 @@ def _validate_args(args: argparse.Namespace) -> None:
         raise RemoteArmError("--timeout must be finite and > 0")
     if args.command == "enable" and (not math.isfinite(args.seconds) or args.seconds <= 0.0):
         raise RemoteArmError("--seconds must be finite and > 0")
+    if args.command in ("move", "ik"):
+        if not math.isfinite(args.duration) or not 0.1 <= args.duration <= 10.0:
+            raise RemoteArmError("--duration must be between 0.1 and 10 seconds")
+        if not math.isfinite(args.hold) or args.hold < 0.0:
+            raise RemoteArmError("--hold must be finite and >= 0")
     if args.command == "move":
         if args.joint_delta and args.joint:
             raise RemoteArmError("use either --joint or --joint-delta, not both")
@@ -261,10 +276,12 @@ def _validate_args(args: argparse.Namespace) -> None:
                 "each absolute delta must be > 0 and <= "
                 f"{MAX_MANUAL_TOTAL_DELTA_RAD:.2f} rad"
             )
-        if not math.isfinite(args.duration) or not 0.1 <= args.duration <= 10.0:
-            raise RemoteArmError("--duration must be between 0.1 and 10 seconds")
-        if not math.isfinite(args.hold) or args.hold < 0.0:
-            raise RemoteArmError("--hold must be finite and >= 0")
+    if args.command == "ik":
+        offset = (args.dx, args.dy, args.dz)
+        if any(not math.isfinite(value) for value in offset):
+            raise RemoteArmError("IK offsets must be finite")
+        if not 0.0 < math.sqrt(sum(value * value for value in offset)) <= 0.05:
+            raise RemoteArmError("IK offset norm must be > 0 and <= 0.05 m")
 
 
 def _print(report: object) -> None:
@@ -359,8 +376,8 @@ def run(args: argparse.Namespace) -> int:
             session_id = ""
             return 0
 
-        names = LEFT_ARM_JOINT_NAMES if args.side == "left" else RIGHT_ARM_JOINT_NAMES
-        manual_deltas = _manual_deltas(args, names)
+        side = args.side if args.command == "move" else "right"
+        names = LEFT_ARM_JOINT_NAMES if side == "left" else RIGHT_ARM_JOINT_NAMES
         # Enable latches a complete measured pose before the weight ramp. Use
         # that stable desired pose rather than a later noisy LowState sample,
         # otherwise an exact +0.05 command can appear microscopically larger
@@ -371,12 +388,54 @@ def run(args: argparse.Namespace) -> int:
         measured_before = armed.get("measured_arm_q")
         if not isinstance(measured_before, list) or len(measured_before) != 14:
             raise RemoteArmError("Bridge has no fresh measured pose before movement")
-        offset = 0 if args.side == "left" else 7
+        offset = 0 if side == "left" else 7
         baseline = [float(value) for value in latched[offset : offset + 7]]
-        # Operator-facing manual deltas intentionally use the opposite sign
-        # from Unitree's canonical SDK joint coordinates. Keep this conversion
-        # at the manual boundary so URDF/IK joint angles remain canonical.
-        sdk_deltas = {name: -delta for name, delta in manual_deltas.items()}
+        ik_solver = None
+        ik_start_transform = None
+        ik_target_transform = None
+        manual_deltas = None
+        if args.command == "move":
+            manual_deltas = _manual_deltas(args, names)
+            # Operator-facing manual deltas intentionally use the opposite sign
+            # from Unitree's canonical SDK joint coordinates. Keep this conversion
+            # at the manual boundary so URDF/IK joint angles remain canonical.
+            sdk_deltas = {name: -delta for name, delta in manual_deltas.items()}
+        else:
+            from pathlib import Path
+
+            import numpy as np
+
+            from object_tracking.arm_tracking.ik_solver import (
+                G1RightArmIK,
+                IKUnavailable,
+                default_urdf_path,
+            )
+
+            repo_root = Path(__file__).resolve().parents[2]
+            try:
+                ik_solver = G1RightArmIK(
+                    default_urdf_path(repo_root),
+                    position_tolerance_m=0.005,
+                    discontinuity_limit_rad=MAX_MANUAL_TOTAL_DELTA_RAD,
+                )
+            except IKUnavailable as exc:
+                raise RemoteArmError(str(exc)) from exc
+            ik_start_transform = ik_solver.forward_kinematics(baseline)
+            ik_target_transform = ik_start_transform.copy()
+            ik_target_transform[:3, 3] += np.array([args.dx, args.dy, args.dz])
+            result = ik_solver.solve(ik_target_transform, baseline)
+            if not result.ok or result.q_rad is None:
+                raise RemoteArmError(
+                    "IK rejected Cartesian target: "
+                    f"{result.reason}, position_error={result.position_error_m:.4f} m"
+                )
+            sdk_deltas = {
+                name: float(target - start)
+                for name, target, start in zip(names, result.q_rad, baseline)
+                if abs(float(target - start)) > 1e-5
+            }
+            if not sdk_deltas:
+                raise RemoteArmError("IK returned the measured pose without a movement")
         step_count = max(
             len(_guarded_offsets(delta)) for delta in sdk_deltas.values()
         )
@@ -387,13 +446,13 @@ def run(args: argparse.Namespace) -> int:
             for joint_name, delta in sdk_deltas.items():
                 target[names.index(joint_name)] += delta * step / step_count
             client.publish_target(
-                side=args.side,
+                side=side,
                 session_id=session_id,
                 sequence=sequence,
                 positions=target,
                 duration_s=args.duration,
             )
-            client.wait_sequence(args.side, sequence, session_id, args.timeout)
+            client.wait_sequence(side, sequence, session_id, args.timeout)
             client.pump_heartbeat(session_id, args.duration, stop)
             status = client.status or {}
             if status.get("state") != "ARMED":
@@ -423,11 +482,26 @@ def run(args: argparse.Namespace) -> int:
             )
             measured_progress[joint_name] = progress
             required_displacement = max(0.005, abs(sdk_delta) * 0.5)
-            if progress < required_displacement:
+            if args.command == "move" and progress < required_displacement:
                 raise RemoteArmError(
                     f"{joint_name} did not follow command: "
                     f"measured {progress:.4f} rad, "
                     f"required at least {required_displacement:.4f} rad"
+                )
+        ik_position_error_m = None
+        ik_measured_xyz_m = None
+        if args.command == "ik":
+            assert ik_solver is not None and ik_target_transform is not None
+            measured_right = [float(value) for value in measured_after[-7:]]
+            measured_transform = ik_solver.forward_kinematics(measured_right)
+            ik_measured_xyz_m = measured_transform[:3, 3].tolist()
+            ik_position_error_m = float(
+                np.linalg.norm(measured_transform[:3, 3] - ik_target_transform[:3, 3])
+            )
+            if ik_position_error_m > 0.02:
+                raise RemoteArmError(
+                    "measured hand pose did not reach the IK target: "
+                    f"position error {ik_position_error_m:.4f} m"
                 )
         if not args.no_return and not stop.is_set():
             for step in reversed(range(step_count)):
@@ -436,23 +510,36 @@ def run(args: argparse.Namespace) -> int:
                 for joint_name, delta in sdk_deltas.items():
                     return_target[names.index(joint_name)] += delta * step / step_count
                 client.publish_target(
-                    side=args.side,
+                    side=side,
                     session_id=session_id,
                     sequence=sequence,
                     positions=return_target,
                     duration_s=args.duration,
                 )
-                client.wait_sequence(args.side, sequence, session_id, args.timeout)
+                client.wait_sequence(side, sequence, session_id, args.timeout)
                 client.pump_heartbeat(session_id, args.duration, stop)
         final = client.stop_and_wait(session_id, "manual_move_complete", args.timeout)
         session_id = ""
         _print(
             {
                 "ok": True,
+                "mode": args.command,
                 "manual_deltas_rad": manual_deltas,
                 "sdk_deltas_rad": sdk_deltas,
                 "guarded_steps": step_count,
                 "measured_outward_progress_rad": measured_progress,
+                "ik_start_xyz_m": (
+                    None
+                    if ik_start_transform is None
+                    else ik_start_transform[:3, 3].tolist()
+                ),
+                "ik_target_xyz_m": (
+                    None
+                    if ik_target_transform is None
+                    else ik_target_transform[:3, 3].tolist()
+                ),
+                "ik_measured_xyz_m": ik_measured_xyz_m,
+                "ik_position_error_m": ik_position_error_m,
                 "returned": not args.no_return,
                 "bridge": final,
             }
