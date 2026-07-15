@@ -4,8 +4,9 @@
 from __future__ import annotations
 
 import argparse
-import importlib.util
+import importlib
 import os
+import sys
 from pathlib import Path
 
 
@@ -21,11 +22,9 @@ def main() -> None:
     args = parser.parse_args()
 
     os.environ["G1_BUNNY_HDF5_GLOB"] = args.input
-    spec = importlib.util.spec_from_file_location("g1_bunny_stop", args.builder)
-    if spec is None or spec.loader is None:
-        raise RuntimeError(f"Could not load TFDS builder from {args.builder}")
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    builder_path = args.builder.resolve()
+    sys.path.insert(0, str(builder_path.parent))
+    module = importlib.import_module(builder_path.stem)
 
     builder = module.G1BunnyStop(data_dir=args.output)
     builder.download_and_prepare()
