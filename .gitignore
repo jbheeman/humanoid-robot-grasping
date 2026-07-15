@@ -34,6 +34,7 @@ models/
 !robot/uv.lock
 runs/*
 !runs/.gitkeep
+logs/
 data/sources/
 data/plushie/dataset_manifest.json
 data/plushie/sources.yaml

@@ -15,6 +15,19 @@ fi
 source "${ROOT_DIR}/scripts/shared/run-logging.sh"
 command_name="${1:-unknown}"
 g1_begin_run_log "${ROOT_DIR}" "arm/${command_name}"
+summary_printed=0
+finish_arm_command() {
+  local status=$?
+  g1_log_exit "${status}"
+  if [[ "${status}" != "0" && "${summary_printed}" == "0" ]]; then
+    g1_console_error "Arm ${command_name} stopped before producing a result. Details: ${G1_ACTIVE_LOG_FILE}"
+  fi
+}
+trap finish_arm_command EXIT
+result_file="${G1_ACTIVE_LOG_FILE%.log}.result.log"
+export G1_RESULT_FILE="${result_file}"
+ln -sfn "$(basename "${result_file}")" \
+  "$(dirname "${result_file}")/latest-result.log"
 
 source "${ROOT_DIR}/scripts/shared/ros-env.sh"
 # Foxy Fast DDS repeatedly crashes while parsing Jazzy/Cyclone discovery data
@@ -24,6 +37,7 @@ g1_source_ros "${ROOT_DIR}" jazzy
 if ! ros2 pkg prefix rmw_fastrtps_cpp >/dev/null 2>&1; then
   echo "Missing ros-jazzy-rmw-fastrtps-cpp on the GB10." >&2
   echo "Install it once: sudo apt-get install ros-jazzy-rmw-fastrtps-cpp" >&2
+  g1_console_error "Missing ros-jazzy-rmw-fastrtps-cpp. See ${G1_ACTIVE_LOG_FILE}"
   exit 1
 fi
 if [[ "${ROS_INTERFACE}" == "auto" ]]; then
@@ -31,6 +45,7 @@ if [[ "${ROS_INTERFACE}" == "auto" ]]; then
 fi
 if [[ -z "${ROS_INTERFACE}" ]]; then
   echo "Could not determine the GB10 interface used to reach ${ROBOT_HOST}." >&2
+  g1_console_error "Could not determine the interface to ${ROBOT_HOST}. See ${G1_ACTIVE_LOG_FILE}"
   exit 1
 fi
 g1_configure_cyclonedds manual-arm-gb10 "${ROS_INTERFACE}" "${ROBOT_HOST}" "${ROS_DOMAIN_ID}"
@@ -60,6 +75,52 @@ set +e
 "${GB10_PYTHON}" -m object_tracking.manual_arm_cli "${client_args[@]}"
 status=$?
 set -e
-g1_log_exit "${status}"
-echo "Saved arm command log: ${G1_ACTIVE_LOG_FILE}"
+summary="$("${GB10_PYTHON}" - "${result_file}" "${command_name}" <<'PY'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+command = sys.argv[2]
+if not path.is_file():
+    print(f"Arm {command} produced no result record")
+    raise SystemExit
+try:
+    result = json.loads(path.read_text(encoding="utf-8"))
+except Exception:
+    print(f"Arm {command} result record is unreadable")
+    raise SystemExit
+if not result.get("ok", False):
+    print(str(result.get("error") or f"arm {command} failed"))
+    raise SystemExit
+bridge = result.get("bridge") if isinstance(result.get("bridge"), dict) else result
+if command == "inspect":
+    print(
+        "Arm bridge is "
+        f"{bridge.get('state', 'unknown')}; mode={bridge.get('motion_mode_name')}; "
+        f"standing={bridge.get('standing')}; motors_healthy={bridge.get('motor_state_healthy')}"
+    )
+elif command in {"move", "ik", "point"}:
+    details = [f"steps={result.get('guarded_steps', 0)}"]
+    if result.get("point_route_kind"):
+        details.append(f"route={result['point_route_kind']}")
+    if result.get("point_stages"):
+        details.append(f"stages={result['point_stages']}")
+    if result.get("ik_position_error_m") is not None:
+        details.append(f"position_error={100 * float(result['ik_position_error_m']):.1f}cm")
+    if result.get("point_angular_error_deg") is not None:
+        details.append(f"ray_error={float(result['point_angular_error_deg']):.1f}deg")
+    details.append(f"returned={result.get('returned')}")
+    print(f"Arm {command} completed (" + ", ".join(details) + ")")
+else:
+    print(f"Arm {command} completed; state={bridge.get('state', 'unknown')}")
+PY
+)"
+if [[ "${status}" == "0" ]]; then
+  g1_console "${summary}"
+else
+  g1_console_error "${summary}"
+fi
+g1_console "Details: ${G1_ACTIVE_LOG_FILE}"
+summary_printed=1
 exit "${status}"

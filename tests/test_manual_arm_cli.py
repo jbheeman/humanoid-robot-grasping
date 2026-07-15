@@ -18,6 +18,7 @@ from object_tracking.manual_arm_cli import (
     _guarded_joint_path,
     _manual_deltas,
     _point_hand_target,
+    _record_result,
     _signed_progress,
     _validate_args,
     _write_motion_trace,
@@ -192,11 +193,19 @@ def test_point_defaults_to_bounded_one_shot_vision_approach() -> None:
 
 
 def test_point_hand_target_lies_on_shoulder_object_ray() -> None:
-    target = _point_hand_target((0.60, 0.02, 0.10), 0.25)
+    target = _point_hand_target((0.45, -0.18, 0.35), 0.25)
     shoulder = np.asarray((0.0, -0.18, 0.35))
-    object_xyz = np.asarray((0.60, 0.02, 0.10))
+    object_xyz = np.asarray((0.45, -0.18, 0.35))
     assert np.linalg.norm(object_xyz - target) == pytest.approx(0.25)
     assert np.linalg.norm(np.cross(target - shoulder, object_xyz - shoulder)) < 1e-9
+
+
+def test_point_hand_target_increases_standoff_when_nominal_target_is_out_of_reach() -> None:
+    target = _point_hand_target((0.65, 0.02, 0.06), 0.25)
+    shoulder = np.asarray((0.0, -0.18, 0.35))
+    object_xyz = np.asarray((0.65, 0.02, 0.06))
+    assert np.linalg.norm(target - shoulder) == pytest.approx(0.40)
+    assert np.linalg.norm(object_xyz - target) > 0.25
 
 
 def test_point_tracking_options_are_guarded() -> None:
@@ -346,3 +355,13 @@ def test_motion_trace_records_failed_trials(tmp_path) -> None:
     payload = path.read_text(encoding="utf-8")
     assert '"ok": false' in payload
     assert '"outward_1"' in payload
+
+
+def test_result_record_writes_detailed_json_to_requested_log(tmp_path, monkeypatch) -> None:
+    path = tmp_path / "result.log"
+    monkeypatch.setenv("G1_RESULT_FILE", str(path))
+    _record_result({"ok": False, "error": "readable failure"})
+    assert json.loads(path.read_text(encoding="utf-8")) == {
+        "ok": False,
+        "error": "readable failure",
+    }

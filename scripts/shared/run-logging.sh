@@ -1,13 +1,26 @@
 #!/usr/bin/env bash
 
-# Persistent terminal logging for launchers and one-shot robot commands.
-# The caller keeps writing to its normal terminal while tee stores the same
-# output under runs/logs/<component> and updates a stable latest.log symlink.
+# Persistent detailed logging for launchers and one-shot robot commands.
+# Quiet mode is the default: stdout/stderr go to ./logs while callers use
+# g1_console helpers for a few readable operator-facing status lines.
+
+g1_console() {
+  printf '%s\n' "$*" >&3
+}
+
+g1_console_error() {
+  printf 'ERROR: %s\n' "$*" >&4
+}
 
 g1_begin_run_log() {
   local root_dir="$1"
   local component="$2"
   local log_root timestamp log_dir log_file
+
+  # Preserve the terminal before redirecting detailed process output. Nested
+  # launchers inherit their parent's log here, which keeps child spam out of
+  # the real terminal while retaining it in the combined parent log.
+  exec 3>&1 4>&2
 
   if [[ "${G1_DISABLE_FILE_LOG:-0}" == "1" ]]; then
     G1_ACTIVE_LOG_FILE=""
@@ -15,7 +28,7 @@ g1_begin_run_log() {
     return 0
   fi
 
-  log_root="${G1_LOG_ROOT:-${root_dir}/runs/logs}"
+  log_root="${G1_LOG_ROOT:-${root_dir}/logs}"
   timestamp="$(date -u +%Y%m%dT%H%M%SZ)"
   log_dir="${log_root}/${component}"
   log_file="${G1_LOG_FILE:-${log_dir}/${timestamp}-$$.log}"
@@ -29,9 +42,14 @@ g1_begin_run_log() {
   G1_ACTIVE_LOG_FILE="${log_file}"
   export G1_ACTIVE_LOG_FILE
 
-  exec > >(tee -a "${log_file}") 2>&1
+  if [[ "${G1_LOG_CONSOLE_MODE:-quiet}" == "full" ]]; then
+    exec > >(tee -a "${log_file}") 2>&1
+  else
+    exec >>"${log_file}" 2>&1
+  fi
   echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] log_started component=${component} pid=$$ host=$(hostname)"
   echo "Log file: ${log_file}"
+  g1_console "Logging ${component}: ${log_file}"
 }
 
 g1_log_command() {

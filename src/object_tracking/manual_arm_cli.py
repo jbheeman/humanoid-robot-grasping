@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import math
+import os
 from pathlib import Path
 import signal
 import threading
@@ -33,6 +34,10 @@ MAX_IK_WAYPOINT_JOINT_DELTA_RAD = 0.35
 MAX_IK_CARTESIAN_OFFSET_M = 0.50
 MAX_VISION_TARGET_AGE_MS = 500.0
 RIGHT_SHOULDER_POSITION_M = (0.0, -0.18, 0.35)
+# The D435 tabletop geometry can place a nominal 25 cm standoff beyond the
+# G1's practical right-arm reach. Keep the hand on the pointing ray but cap
+# its distance from the shoulder, increasing standoff when necessary.
+MAX_POINTING_SHOULDER_DISTANCE_M = 0.40
 
 
 class RemoteArmError(RuntimeError):
@@ -455,7 +460,17 @@ def _validate_args(args: argparse.Namespace) -> None:
             raise RemoteArmError("--reacquire-samples must be between 2 and 10")
 
 
+def _record_result(report: object) -> None:
+    result_path = os.environ.get("G1_RESULT_FILE", "").strip()
+    if not result_path:
+        return
+    path = Path(result_path).expanduser()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+
+
 def _print(report: object) -> None:
+    _record_result(report)
     print(json.dumps(report, indent=2, sort_keys=True))
 
 
@@ -555,7 +570,8 @@ def _point_hand_target(
             "vision object is too close to form the requested "
             f"{standoff_m:.2f} m pointing standoff"
         )
-    return object_point - ray / distance * standoff_m
+    radial_distance = min(distance - standoff_m, MAX_POINTING_SHOULDER_DISTANCE_M)
+    return shoulder + ray / distance * radial_distance
 
 
 def _guarded_offsets(delta: float) -> list[float]:
@@ -725,6 +741,7 @@ def run(args: argparse.Namespace) -> int:
         point_desired_hand_xyz_m = None
         point_route_kind = None
         point_route_knots = None
+        point_stages = 0
         tracking_updates = 0
         target_loss_events = 0
         manual_deltas = None
@@ -756,28 +773,46 @@ def run(args: argparse.Namespace) -> int:
                 desired_hand_xyz = _point_hand_target(pointing_xyz, args.standoff)
                 point_desired_hand_xyz_m = desired_hand_xyz.tolist()
                 cartesian_offset = desired_hand_xyz - ik_start_transform[:3, 3]
-                approach_distance = float(np.linalg.norm(cartesian_offset))
-                if approach_distance > args.max_approach:
-                    cartesian_offset *= args.max_approach / approach_distance
-            ik_target_transform[:3, 3] += cartesian_offset
+            if args.command == "point":
+                ik_target_transform[:3, 3] = desired_hand_xyz
+            else:
+                ik_target_transform[:3, 3] += cartesian_offset
             solution_q = tuple(baseline)
             if args.command == "point":
-                route = ik_solver.solve_with_collision_detour(
-                    ik_target_transform,
-                    solution_q,
-                    enforce_orientation=False,
-                )
-                if not route.ok or route.q_path is None:
-                    raise RemoteArmError(
-                        "IK could not build a collision-free pointing route: "
-                        f"{route.reason}, position_error={route.position_error_m:.4f} m"
+                used_detour = False
+                total_route_knots = 1
+                while True:
+                    current_transform = ik_solver.forward_kinematics(solution_q)
+                    stage_offset = desired_hand_xyz - current_transform[:3, 3]
+                    remaining_distance = float(np.linalg.norm(stage_offset))
+                    if remaining_distance <= 0.008:
+                        break
+                    if point_stages >= 8:
+                        raise RemoteArmError(
+                            "pointing route exceeded eight guarded approach stages"
+                        )
+                    if remaining_distance > args.max_approach:
+                        stage_offset *= args.max_approach / remaining_distance
+                    stage_target = current_transform.copy()
+                    stage_target[:3, 3] += stage_offset
+                    route = ik_solver.solve_with_collision_detour(
+                        stage_target,
+                        solution_q,
+                        enforce_orientation=False,
                     )
-                point_route_kind = (
-                    "direct" if len(route.q_path) == 2 else "collision_aware_detour"
-                )
-                point_route_knots = len(route.q_path)
-                path_knots.extend(route.q_path[1:])
-                solution_q = route.q_path[-1]
+                    if not route.ok or route.q_path is None:
+                        raise RemoteArmError(
+                            "IK could not build a collision-free pointing route "
+                            f"at stage {point_stages + 1}: {route.reason}, "
+                            f"position_error={route.position_error_m:.4f} m"
+                        )
+                    used_detour = used_detour or len(route.q_path) > 2
+                    total_route_knots += len(route.q_path) - 1
+                    path_knots.extend(route.q_path[1:])
+                    solution_q = route.q_path[-1]
+                    point_stages += 1
+                point_route_kind = "collision_aware_detour" if used_detour else "direct"
+                point_route_knots = total_route_knots
             else:
                 waypoint_count = max(
                     1,
@@ -903,10 +938,16 @@ def run(args: argparse.Namespace) -> int:
                     / (np.linalg.norm(expected_ray) * np.linalg.norm(measured_ray))
                 )
                 point_angular_error_deg = math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
-                # Depth/localization error is centimetre-scale, so the first
-                # pointing gate is deliberately looser than relative IK tests.
-                if ik_position_error_m <= 0.025:
+                # Position and ray direction both matter for a point. A hand
+                # that merely leaves the rest pose is not a successful point.
+                if ik_position_error_m <= 0.025 and point_angular_error_deg <= 5.0:
                     validation_error = None
+                else:
+                    validation_error = (
+                        "measured hand does not point at the vision target: "
+                        f"position error {ik_position_error_m:.4f} m, "
+                        f"ray error {point_angular_error_deg:.1f} deg"
+                    )
         if args.stay and args.command == "point" and not stop.is_set():
             assert ik_solver is not None
             stable_samples = 0
@@ -1118,6 +1159,7 @@ def run(args: argparse.Namespace) -> int:
             "point_desired_hand_xyz_m": point_desired_hand_xyz_m,
             "point_route_kind": point_route_kind,
             "point_route_knots": point_route_knots,
+            "point_stages": point_stages,
             "tracking_updates": tracking_updates,
             "target_loss_events": target_loss_events,
             "vision_track_id": (None if vision_target is None else vision_target["track_id"]),
@@ -1164,6 +1206,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
     try:
         return run(build_parser().parse_args(argv))
     except (RemoteArmError, ValueError) as exc:
+        _record_result({"ok": False, "error": str(exc)})
         print(f"manual arm command failed: {exc}")
         return 2
 

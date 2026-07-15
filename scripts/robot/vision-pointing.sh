@@ -17,11 +17,13 @@ g1_log_command "$0" "$@"
 if ! systemctl is-active --quiet g1-highfps-camera.service; then
   echo "The native 60 FPS camera publisher is not running." >&2
   echo "Run: sudo systemctl enable --now g1-highfps-camera.service" >&2
+  g1_console_error "The 60 FPS camera service is not running. See ${G1_ACTIVE_LOG_FILE}"
   exit 1
 fi
 if pgrep -f "${ROOT_DIR}/scripts/robot/ros_node.py" >/dev/null 2>&1; then
   echo "Another project robot node is already running." >&2
   echo "Stop the existing robot/manual-arm launcher with Ctrl+C, then retry." >&2
+  g1_console_error "Another robot bridge is already running. See ${G1_ACTIVE_LOG_FILE}"
   exit 1
 fi
 
@@ -75,7 +77,16 @@ echo "  RGB: native 960x540@60 relay to ${CLIENT_IP}:5600"
 echo "  Depth: isolated CycloneDDS /g1/depth on domain ${DEPTH_ROS_DOMAIN_ID}"
 echo "  Arm: isolated Fast DDS XR manual bridge on domain ${ROS_DOMAIN_ID}"
 echo "  Combined log: ${G1_ACTIVE_LOG_FILE}"
+g1_console "Vision pointing stack starting DISARMED: RGB 60 FPS, depth domain ${DEPTH_ROS_DOMAIN_ID}, arm domain ${ROS_DOMAIN_ID}."
 
+set +e
 wait -n "${pids[@]}"
+status=$?
+set -e
 echo "A vision-pointing process exited; stopping the stack." >&2
-exit 1
+if [[ "${status}" == "0" || "${status}" == "130" ]]; then
+  g1_console "Vision pointing stack stopped."
+else
+  g1_console_error "A vision-pointing process exited (code ${status}). Details: ${G1_ACTIVE_LOG_FILE}"
+fi
+exit "${status:-1}"

@@ -21,6 +21,7 @@ source "${ROOT_DIR}/scripts/shared/run-logging.sh"
 g1_begin_run_log "${ROOT_DIR}" "robot-manual-arm"
 g1_log_command "$0" "$@"
 trap 'status=$?; g1_log_exit "${status}"' EXIT
+g1_console "Manual arm bridge starting DISARMED (mode=${MODE}, profile=${MANUAL_ARM_PROFILE:-sdk2})."
 
 if [[ ! -x "${ROBOT_PYTHON}" ]]; then
   echo "Missing robot environment. Run: uv run g1 setup robot" >&2
@@ -50,4 +51,13 @@ fi
 
 echo "G1 manual arm bridge: mode=${MODE}, profile=${MANUAL_ARM_PROFILE:-sdk2}, ROS domain=${ROS_DOMAIN_ID}, project NIC=${ROBOT_INTERFACE}."
 echo "No camera, depth, calibration, or browser server is started by this command."
+set +e
 "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${args[@]}"
+status=$?
+set -e
+if [[ "${status}" == "0" ]]; then
+  g1_console "Manual arm bridge stopped."
+else
+  g1_console_error "Manual arm bridge exited with code ${status}. Details: ${G1_ACTIVE_LOG_FILE}"
+fi
+exit "${status}"

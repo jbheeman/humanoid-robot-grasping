@@ -85,20 +85,24 @@ The bridge must report motion mode `ai`, stable standing, fresh LowState,
 verified arm ownership, and healthy motor status. `inspect` never enables the
 arm.
 
-Every invocation is automatically copied to a timestamped `.log` file under
-`runs/logs/arm/<command>/`. Movement commands also write a high-rate sibling
+Every invocation writes a timestamped detailed `.log` file under
+`logs/arm/<command>/`. Movement commands also write a high-rate sibling
 `.trace.log` containing sampled bridge state throughout the outward move,
 hold, and return. The newest files are always available as:
 
 ```text
-runs/logs/arm/<command>/latest.log
-runs/logs/arm/<command>/latest-trace.log
+logs/arm/<command>/latest.log
+logs/arm/<command>/latest-trace.log
+logs/arm/<command>/latest-result.log
 ```
 
 The robot vision launcher and GB10 dashboard similarly maintain
-`runs/logs/robot-vision-pointing/latest.log` and
-`runs/logs/gb10-vision-pointing/latest.log`. Set `G1_LOG_ROOT` to relocate all
-logs, or `G1_DISABLE_FILE_LOG=1` for an intentionally unlogged diagnostic run.
+`logs/robot-vision-pointing/latest.log` and
+`logs/gb10-vision-pointing/latest.log`. Detailed child output, DDS warnings,
+JSON state, and trace samples stay in these files; the terminal shows only
+compact human-readable status and errors. Set `G1_LOG_ROOT` to relocate all
+logs, `G1_LOG_CONSOLE_MODE=full` to mirror detailed logs temporarily, or
+`G1_DISABLE_FILE_LOG=1` for an intentionally unlogged diagnostic run.
 
 ## First custom movement test
 
@@ -187,11 +191,14 @@ scripts/gb10/arm-remote.sh point \
 
 This first phase uses the currently better validated predictor, puts the hand
 on the shoulder-to-object pointing ray with a 25 cm standoff, and limits the
-approach to 5 cm. From a hanging rest pose it plans a deterministic
+approach of each stage to 5 cm. If that nominal standoff is outside practical
+arm reach, it preserves the pointing ray and automatically increases standoff
+instead of forcing an unreachable reach. From a hanging rest pose it plans a deterministic
 collision-aware joint-space clearance route around the hip, checks every swept
 segment at 0.04 rad or finer, subdivides commands under the robot's 0.05-rad
-step contract, then returns over the same route and disarms. It rejects missing
-or older-than-500 ms registered depth before movement.
+step contract, repeats those stages until it reaches the pointing ray, then
+returns over the same route and disarms. It rejects missing or older-than-500
+ms registered depth before movement.
 
 After that one-shot route succeeds, continuous slow pointing uses the same
 command with `--stay`:

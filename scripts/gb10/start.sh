@@ -75,7 +75,15 @@ else
 fi
 g1_begin_run_log "${ROOT_DIR}" "${log_component}"
 g1_log_command "$0" "${original_args[@]}"
-trap 'status=$?; g1_log_exit "${status}"' EXIT
+server_launched=0
+finish_log() {
+  local status=$?
+  g1_log_exit "${status}"
+  if [[ "${status}" != "0" && "${server_launched}" == "0" ]]; then
+    g1_console_error "GB10 startup failed. Details: ${G1_ACTIVE_LOG_FILE}"
+  fi
+}
+trap finish_log EXIT
 
 if [[ "${VISION_POINTING}" == "1" && -z "${CALIBRATION}" ]]; then
   CALIBRATION="${ROOT_DIR}/runs/localization/g1-tabletop-calibration.json"
@@ -243,8 +251,11 @@ echo
 echo "The robot exposes no HTTP or WebSocket control ports."
 echo "============================================================"
 echo
+g1_console "GB10 vision dashboard starting at http://${DISPLAY_HOST}:${PORT}/"
 
-exec "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
+server_launched=1
+set +e
+"${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
   --camera-name main \
   --pipeline "${PIPELINE}" \
   --model "${MODEL}" \
@@ -264,3 +275,11 @@ exec "${VENV_DIR}/bin/python" -m object_tracking.yolo_stream_server \
   "${tracking_args[@]}" \
   "${research_args[@]}" \
   "${server_args[@]}"
+status=$?
+set -e
+if [[ "${status}" == "0" || "${status}" == "130" ]]; then
+  g1_console "GB10 vision dashboard stopped."
+else
+  g1_console_error "GB10 vision dashboard exited with code ${status}. Details: ${G1_ACTIVE_LOG_FILE}"
+fi
+exit "${status}"
