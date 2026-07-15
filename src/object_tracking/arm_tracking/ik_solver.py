@@ -13,6 +13,15 @@ XR_TELEOPERATE_REVISION = "7dc9aa1a6edbf4a9f4f887d8ab6fc449ea5135f6"
 UNITREE_ROS_REVISION = "d96d8f63ae17a7108d4f7229c00ef875ba7129c9"
 RIGHT_ARM_JOINTS = RIGHT_ARM_JOINT_NAMES
 
+# These collision meshes overlap at the G1's factory shoulder articulation
+# range.  They are kinematic neighbours, not an arm-through-torso route.  The
+# remaining mesh pairs (hand/hip, forearm/torso, table clearance, joint limits)
+# stay active in every planning query.
+_ADJACENT_G1_COLLISION_PAIRS = {
+    frozenset(("torso_link_0", "right_shoulder_yaw_link_0")),
+    frozenset(("torso_link_0", "right_elbow_link_0")),
+}
+
 
 class IKUnavailable(RuntimeError):
     pass
@@ -385,8 +394,15 @@ class G1RightArmIK:
         return {
             index
             for index, result in enumerate(self.collision_data.collisionResults)
-            if result.isCollision()
+            if result.isCollision() and not self._is_adjacent_g1_pair(index)
         }
+
+    def _is_adjacent_g1_pair(self, pair_index: int) -> bool:
+        assert self.collision_model is not None
+        pair = self.collision_model.collisionPairs[pair_index]
+        first = self.collision_model.geometryObjects[pair.first].name
+        second = self.collision_model.geometryObjects[pair.second].name
+        return frozenset((first, second)) in _ADJACENT_G1_COLLISION_PAIRS
 
     def _collision_pair_label(self, pair_index: int) -> str:
         assert self.collision_model is not None
