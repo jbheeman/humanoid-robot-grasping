@@ -757,6 +757,42 @@ def run(args: argparse.Namespace) -> int:
         tracking_updates = 0
         target_loss_events = 0
         manual_deltas = None
+        guarded_targets: list[tuple[float, ...]] = []
+        step_count = 0
+        sequence = -1
+
+        def execute_targets(targets: Sequence[Sequence[float]], *, phase: str) -> None:
+            """Send one already collision-checked segment before replanning."""
+
+            nonlocal sequence, step_count
+            for target in targets:
+                if stop.is_set():
+                    return
+                sequence += 1
+                step_count += 1
+                client.publish_target(
+                    side=side,
+                    session_id=session_id,
+                    sequence=sequence,
+                    positions=target,
+                    duration_s=args.duration,
+                )
+                client.wait_sequence(side, sequence, session_id, args.timeout)
+                client.pump_heartbeat(
+                    session_id,
+                    args.duration,
+                    stop,
+                    trace=motion_trace,
+                    phase=phase,
+                )
+                status = client.status or {}
+                if status.get("state") != "ARMED":
+                    raise RemoteArmError(
+                        "bridge left ARMED during movement: "
+                        f"state={status.get('state')}, "
+                        f"fault={status.get('fault_reason')}"
+                    )
+
         if args.command == "move":
             manual_deltas = _manual_deltas(args, names)
             # Operator-facing manual deltas intentionally use the opposite sign
@@ -798,29 +834,53 @@ def run(args: argparse.Namespace) -> int:
                     remaining_distance = float(np.linalg.norm(stage_offset))
                     if remaining_distance <= 0.008:
                         break
-                    if point_stages >= 8:
+                    if point_stages >= 16:
                         raise RemoteArmError(
-                            "pointing route exceeded eight guarded approach stages"
+                            "pointing route exceeded sixteen guarded approach stages"
                         )
-                    if remaining_distance > args.max_approach:
-                        stage_offset *= args.max_approach / remaining_distance
-                    stage_target = current_transform.copy()
-                    stage_target[:3, 3] += stage_offset
-                    route = ik_solver.solve_with_collision_detour(
-                        stage_target,
-                        solution_q,
-                        enforce_orientation=False,
-                    )
-                    if not route.ok or route.q_path is None:
+                    maximum_step = min(args.max_approach, remaining_distance)
+                    route = None
+                    last_route_reason = "no IK candidate"
+                    last_route_error = float("inf")
+                    # A full clearance stride can choose an IK branch whose
+                    # endpoint intersects the torso.  Retry shorter strides
+                    # from the *measured/executed* stage instead of abandoning
+                    # the whole point operation.
+                    for scale in (1.0, 0.75, 0.50, 0.30, 0.20):
+                        stage_target = current_transform.copy()
+                        stage_target[:3, 3] += stage_offset * (
+                            maximum_step * scale / remaining_distance
+                        )
+                        candidate_route = ik_solver.solve_with_collision_detour(
+                            stage_target,
+                            solution_q,
+                            enforce_orientation=False,
+                        )
+                        last_route_reason = candidate_route.reason
+                        last_route_error = candidate_route.position_error_m
+                        if candidate_route.ok and candidate_route.q_path is not None:
+                            route = candidate_route
+                            break
+                    if route is None or route.q_path is None:
                         raise RemoteArmError(
                             "IK could not build a collision-free pointing route "
-                            f"at stage {point_stages + 1}: {route.reason}, "
-                            f"position_error={route.position_error_m:.4f} m"
+                            f"at stage {point_stages + 1}: {last_route_reason}, "
+                            f"position_error={last_route_error:.4f} m"
                         )
                     used_detour = used_detour or len(route.q_path) > 2
                     total_route_knots += len(route.q_path) - 1
                     path_knots.extend(route.q_path[1:])
-                    solution_q = route.q_path[-1]
+                    execute_targets(
+                        _guarded_joint_path(route.q_path),
+                        phase=f"outward_stage_{point_stages + 1}",
+                    )
+                    if stop.is_set():
+                        break
+                    post_stage = client.status or {}
+                    measured_stage = post_stage.get("measured_arm_q")
+                    if not isinstance(measured_stage, list) or len(measured_stage) != 14:
+                        raise RemoteArmError("Bridge has no measured pose after a pointing stage")
+                    solution_q = tuple(float(value) for value in measured_stage[-7:])
                     point_stages += 1
                 point_route_kind = "collision_aware_detour" if used_detour else "direct"
                 point_route_knots = total_route_knots
@@ -852,33 +912,9 @@ def run(args: argparse.Namespace) -> int:
             }
             if not sdk_deltas:
                 raise RemoteArmError("IK returned the measured pose without a movement")
-        guarded_targets = _guarded_joint_path(path_knots)
-        step_count = len(guarded_targets)
-        sequence = -1
-        for step, target in enumerate(guarded_targets, start=1):
-            sequence += 1
-            client.publish_target(
-                side=side,
-                session_id=session_id,
-                sequence=sequence,
-                positions=target,
-                duration_s=args.duration,
-            )
-            client.wait_sequence(side, sequence, session_id, args.timeout)
-            client.pump_heartbeat(
-                session_id,
-                args.duration,
-                stop,
-                trace=motion_trace,
-                phase=f"outward_{step}",
-            )
-            status = client.status or {}
-            if status.get("state") != "ARMED":
-                raise RemoteArmError(
-                    "bridge left ARMED during movement: "
-                    f"state={status.get('state')}, "
-                    f"fault={status.get('fault_reason')}"
-                )
+        if args.command != "point":
+            guarded_targets = _guarded_joint_path(path_knots)
+            execute_targets(guarded_targets, phase="outward")
         client.pump_heartbeat(session_id, args.hold, stop, trace=motion_trace, phase="outward_hold")
         outward_status = client.status or {}
         if outward_status.get("state") != "ARMED":
