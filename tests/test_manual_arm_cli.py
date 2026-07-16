@@ -18,6 +18,7 @@ from object_tracking.manual_arm_cli import (
     _bounded_servo_solution,
     _guarded_offsets,
     _guarded_joint_path,
+    _inside_vision_workspace,
     _manual_deltas,
     _point_hand_target,
     _record_result,
@@ -217,6 +218,19 @@ def test_point_hand_target_increases_standoff_when_nominal_target_is_out_of_reac
     object_xyz = np.asarray((0.65, 0.02, 0.06))
     assert np.linalg.norm(target - shoulder) == pytest.approx(0.40)
     assert np.linalg.norm(object_xyz - target) > 0.25
+
+
+def test_pointing_hand_workspace_extends_behind_the_table_near_edge() -> None:
+    target = {
+        "workspace_bounds": {
+            "minimum": [0.37, -0.35, -0.03],
+            "maximum": [0.80, 0.35, 0.25],
+        }
+    }
+
+    assert _inside_vision_workspace((0.33, -0.05, 0.13), target)
+    assert not _inside_vision_workspace((0.19, -0.05, 0.13), target)
+    assert not _inside_vision_workspace((0.33, -0.40, 0.13), target)
 
 
 def test_point_tracking_options_are_guarded() -> None:

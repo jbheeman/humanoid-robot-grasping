@@ -45,6 +45,10 @@ MAX_VISION_TARGET_AGE_MS = 750.0
 # G1's practical right-arm reach. Keep the hand on the pointing ray but cap
 # its distance from the shoulder, increasing standoff when necessary.
 MAX_POINTING_SHOULDER_DISTANCE_M = 0.40
+# The calibrated object workspace begins at the physical tabletop, while a
+# pointing hand intentionally remains on the robot side of that near edge.
+# Table/mesh collision gates still apply; this is only the outer hand corridor.
+MIN_POINTING_HAND_X_M = 0.20
 
 
 class RemoteArmError(RuntimeError):
@@ -633,6 +637,8 @@ def _inside_vision_workspace(point: Sequence[float], target: dict[str, Any]) -> 
         candidate = np.asarray(point, dtype=float)
     except (KeyError, TypeError, ValueError):
         return False
+    minimum = minimum.copy()
+    minimum[0] = min(minimum[0], MIN_POINTING_HAND_X_M)
     return bool(
         candidate.shape == minimum.shape == maximum.shape == (3,)
         and np.all(np.isfinite(np.concatenate((candidate, minimum, maximum))))
