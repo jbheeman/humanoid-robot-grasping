@@ -195,6 +195,112 @@ def test_oversized_target_is_clamped_instead_of_rejected() -> None:
     assert report["desired_arm_q"][7] == pytest.approx(0.10)
 
 
+def test_replacement_target_is_bounded_from_current_command_not_old_endpoint() -> None:
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    target(
+        controller,
+        clock,
+        side="right",
+        sequence=0,
+        positions=(0.10,) + (0.0,) * 6,
+        duration=1.0,
+    )
+    clock.advance(0.5)
+    hardware.refresh()
+    controller.heartbeat("session-a")
+    controller.tick()
+    current = controller.state_report()["commanded_arm_q"][7]
+    assert current == pytest.approx(0.05)
+
+    report = controller.set_side_target(
+        side="right",
+        session_id="session-a",
+        sequence=1,
+        joint_names=RIGHT_ARM_JOINT_NAMES,
+        position_rad=(0.20,) + (0.0,) * 6,
+        duration_s=1.0,
+        sent_time_ns=clock.wall_ns,
+    )
+    assert report["last_clamp"]["maximum_requested_delta_rad"] == pytest.approx(0.15)
+    assert report["desired_arm_q"][7] == pytest.approx(0.15)
+    assert controller._trajectories["right"].coefficients[0][0] == pytest.approx(0.05)
+
+
+def test_latest_target_rebase_preserves_derivatives_and_makes_progress() -> None:
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    target(
+        controller,
+        clock,
+        side="right",
+        sequence=0,
+        positions=(0.05,) + (0.0,) * 6,
+        duration=0.5,
+    )
+    clock.advance(0.05)
+    hardware.refresh()
+    controller.heartbeat("session-a")
+    controller.tick()
+    previous_velocity = controller._commanded_velocity[7]
+    previous_acceleration = controller._commanded_acceleration[7]
+    assert previous_velocity > 0.0
+
+    for sequence in range(1, 11):
+        current = controller.state_report()["commanded_arm_q"][7]
+        target(
+            controller,
+            clock,
+            side="right",
+            sequence=sequence,
+            positions=(current + 0.02,) + (0.0,) * 6,
+            duration=0.35,
+        )
+        trajectory = controller._trajectories["right"]
+        if sequence == 1:
+            assert trajectory.coefficients[0][1] == pytest.approx(previous_velocity)
+            assert 2.0 * trajectory.coefficients[0][2] == pytest.approx(
+                previous_acceleration
+            )
+        clock.advance(0.05)
+        hardware.refresh()
+        controller.heartbeat("session-a")
+        controller.tick()
+
+    # A zero-derivative restart on every frame barely moves over this interval.
+    # Carrying the current derivatives produces a responsive but still bounded command.
+    assert controller.state_report()["commanded_arm_q"][7] > 0.03
+
+
+def test_latest_target_hold_zeros_rebase_derivatives() -> None:
+    clock, hardware, controller = setup()
+    arm(clock, hardware, controller)
+    target(
+        controller,
+        clock,
+        side="right",
+        sequence=0,
+        positions=(0.05,) + (0.0,) * 6,
+        duration=0.5,
+    )
+    clock.advance(0.1)
+    hardware.refresh()
+    controller.heartbeat("session-a")
+    controller.tick()
+    current = controller.state_report()["commanded_arm_q"][7]
+    target(
+        controller,
+        clock,
+        side="right",
+        sequence=1,
+        positions=(current,) + (0.0,) * 6,
+        duration=0.1,
+    )
+    coefficients = controller._trajectories["right"].coefficients[0]
+    assert coefficients[1] == 0.0
+    assert coefficients[2] == 0.0
+
+
 def test_heartbeat_timeout_ramps_to_zero_and_stop_resets_fault() -> None:
     clock, hardware, controller = setup()
     arm(clock, hardware, controller)

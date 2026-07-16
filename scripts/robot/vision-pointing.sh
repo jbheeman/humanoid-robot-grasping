@@ -80,7 +80,7 @@ pids+=("$!")
 
 echo "Vision pointing stack started initially DISARMED."
 echo "  RGB: native 960x540@60 relay to ${CLIENT_IP}:5600"
-echo "  Depth: isolated CycloneDDS /g1/depth on domain ${DEPTH_ROS_DOMAIN_ID}"
+echo "  Depth: isolated Fast DDS /g1/depth on domain ${DEPTH_ROS_DOMAIN_ID}"
 echo "  Arm: isolated Fast DDS XR manual bridge on domain ${ROS_DOMAIN_ID} (non-critical)"
 echo "  Combined log: ${G1_ACTIVE_LOG_FILE}"
 g1_console "Vision pointing stack starting DISARMED: RGB 60 FPS, depth domain ${DEPTH_ROS_DOMAIN_ID}, arm domain ${ROS_DOMAIN_ID}."

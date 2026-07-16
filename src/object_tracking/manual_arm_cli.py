@@ -30,7 +30,8 @@ STATUS_TOPIC = f"{BASE}/status"
 MAX_ROBOT_STEP_RAD = 0.10
 # Keep a small numerical margin only for generated IK routes. Manual jogs
 # retain their documented 0.050-rad increments.
-SAFE_IK_PUBLISHED_STEP_RAD = 0.09
+SAFE_IK_PUBLISHED_STEP_RAD = 0.04
+SERVO_MAX_JOINT_STEP_RAD = 0.02
 MAX_MANUAL_TOTAL_DELTA_RAD = 0.20
 MAX_IK_WAYPOINT_DISTANCE_M = 0.01
 MAX_IK_WAYPOINT_JOINT_DELTA_RAD = 0.35
@@ -153,9 +154,15 @@ class ManualArmClient:
         )
         self.request_publisher = self.node.create_publisher(ArmManualRequest, REQUEST_TOPIC, qos)
         self.heartbeat_publisher = self.node.create_publisher(String, HEARTBEAT_TOPIC, qos)
+        latest_target_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.RELIABLE,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self.target_publishers = {
-            "left": self.node.create_publisher(ArmSideTarget, LEFT_TOPIC, qos),
-            "right": self.node.create_publisher(ArmSideTarget, RIGHT_TOPIC, qos),
+            "left": self.node.create_publisher(ArmSideTarget, LEFT_TOPIC, latest_target_qos),
+            "right": self.node.create_publisher(ArmSideTarget, RIGHT_TOPIC, latest_target_qos),
         }
         self.responses: dict[str, object] = {}
         self.status: Optional[dict[str, Any]] = None
@@ -388,7 +395,7 @@ def build_parser() -> argparse.ArgumentParser:
     point.add_argument(
         "--tracking-step",
         type=float,
-        default=0.07,
+        default=0.02,
         help="maximum Cartesian correction per update while --stay is active",
     )
     point.add_argument(
@@ -511,7 +518,12 @@ def _write_motion_trace(path: Path, result: dict[str, Any], samples: list[dict[s
     return trace_path
 
 
-def _fetch_vision_target(server: str, timeout_s: float = 1.0) -> dict[str, Any]:
+def _fetch_vision_target(
+    server: str,
+    timeout_s: float = 1.0,
+    *,
+    maximum_age_ms: float = MAX_VISION_TARGET_AGE_MS,
+) -> dict[str, Any]:
     """Read one fresh, depth-backed plush localization without mutating state."""
 
     url = f"{server.rstrip('/')}/arm-tracking"
@@ -529,10 +541,10 @@ def _fetch_vision_target(server: str, timeout_s: float = 1.0) -> dict[str, Any]:
         target_age_ms = float(payload["target_age_ms"])
     except (KeyError, TypeError, ValueError) as exc:
         raise RemoteArmError("vision target has no valid target_age_ms") from exc
-    if not math.isfinite(target_age_ms) or target_age_ms > MAX_VISION_TARGET_AGE_MS:
+    if not math.isfinite(target_age_ms) or target_age_ms > maximum_age_ms:
         raise RemoteArmError(
             f"vision target is stale: {target_age_ms:.1f} ms "
-            f"(maximum {MAX_VISION_TARGET_AGE_MS:.0f} ms)"
+            f"(maximum {maximum_age_ms:.0f} ms)"
         )
 
     normalized: dict[str, Any] = {
@@ -541,6 +553,12 @@ def _fetch_vision_target(server: str, timeout_s: float = 1.0) -> dict[str, Any]:
         "detector_confidence": payload.get("detector_confidence"),
         "prediction_source": payload.get("prediction_source"),
     }
+    visualization = payload.get("visualization")
+    visualization = visualization if isinstance(visualization, dict) else {}
+    workspace = visualization.get("workspace_bounds")
+    normalized["workspace_bounds"] = workspace if isinstance(workspace, dict) else None
+    support_plane = visualization.get("support_plane")
+    normalized["support_plane"] = support_plane if isinstance(support_plane, dict) else None
     for field in ("object_xyz_m", "predicted_xyz_m"):
         value = payload.get(field)
         if not isinstance(value, list) or len(value) != 3:
@@ -567,6 +585,72 @@ def _fetch_vision_target(server: str, timeout_s: float = 1.0) -> dict[str, Any]:
             normalized["predicted_xyz_m"] = fallback_point
             normalized["prediction_source"] = "alpha_beta_fallback_selected"
     return normalized
+
+
+def _vision_support_plane(target: dict[str, Any]) -> Any | None:
+    value = target.get("support_plane")
+    if not isinstance(value, dict):
+        return None
+    try:
+        from object_tracking.arm_tracking.geometry import Plane
+
+        return Plane(value["normal"], float(value["offset"]))
+    except (KeyError, TypeError, ValueError):
+        return None
+
+
+def _inside_vision_workspace(point: Sequence[float], target: dict[str, Any]) -> bool:
+    import numpy as np
+
+    bounds = target.get("workspace_bounds")
+    if not isinstance(bounds, dict):
+        return False
+    try:
+        minimum = np.asarray(bounds["minimum"], dtype=float)
+        maximum = np.asarray(bounds["maximum"], dtype=float)
+        candidate = np.asarray(point, dtype=float)
+    except (KeyError, TypeError, ValueError):
+        return False
+    return bool(
+        candidate.shape == minimum.shape == maximum.shape == (3,)
+        and np.all(np.isfinite(np.concatenate((candidate, minimum, maximum))))
+        and np.all(candidate >= minimum)
+        and np.all(candidate <= maximum)
+    )
+
+
+def _bounded_servo_solution(
+    ik_solver: Any,
+    target_transform: Any,
+    seed_q: Sequence[float],
+    *,
+    support_plane: Any | None,
+    maximum_joint_step_rad: float = SERVO_MAX_JOINT_STEP_RAD,
+) -> tuple[tuple[float, ...] | None, str | None, float]:
+    """Solve and validate one local step; never invoke collision RRT."""
+
+    import numpy as np
+
+    result = ik_solver.solve(target_transform, seed_q, support_plane=support_plane)
+    if not result.ok or result.q_rad is None:
+        return None, result.reason or "ik_failed", result.position_error_m
+    seed = np.asarray(seed_q, dtype=float)
+    solution = np.asarray(result.q_rad, dtype=float)
+    maximum_delta = float(np.max(np.abs(solution - seed)))
+    if maximum_delta > maximum_joint_step_rad + 1e-9:
+        return (
+            None,
+            f"joint_step:{maximum_delta:.4f}>{maximum_joint_step_rad:.4f}",
+            result.position_error_m,
+        )
+    candidate = tuple(float(value) for value in solution)
+    path_error = ik_solver.validate_joint_path(
+        (tuple(float(value) for value in seed), candidate),
+        support_plane=support_plane,
+    )
+    if path_error:
+        return None, path_error, result.position_error_m
+    return candidate, None, result.position_error_m
 
 
 def _signed_progress(start: float, actual: float, requested_delta: float) -> float:
@@ -699,6 +783,7 @@ def run(args: argparse.Namespace) -> int:
 
         ik_solver = None
         vision_target = None
+        preplanned_clearance_path: tuple[tuple[float, ...], ...] | None = None
         if args.command in ("ik", "point"):
             import numpy as np
 
@@ -727,6 +812,33 @@ def run(args: argparse.Namespace) -> int:
         # currently producing a fresh, depth-backed 3D target.
         if args.command == "point":
             vision_target = _fetch_vision_target(args.server)
+            assert ik_solver is not None
+            measured = status.get("measured_arm_q")
+            if not isinstance(measured, list) or len(measured) != 14:
+                raise RemoteArmError("Bridge has no measured pose for clearance preplanning")
+            preplan_start = tuple(float(value) for value in measured[-7:])
+            clearance_transform = ik_solver.forward_kinematics(preplan_start)
+            clearance_transform[:3, 3] += np.asarray((0.06, 0.0, 0.12))
+            print("Planning collision-aware hip clearance…", flush=True)
+            clearance_route = ik_solver.solve_with_collision_detour(
+                clearance_transform,
+                preplan_start,
+                enforce_orientation=False,
+            )
+            if not clearance_route.ok or clearance_route.q_path is None:
+                raise RemoteArmError(
+                    "IK could not preplan the hip-clearance route while disarmed: "
+                    f"{clearance_route.reason}"
+                )
+            preplanned_clearance_path = clearance_route.q_path
+            motion_trace.append(
+                {
+                    "phase": "preplan_clearance",
+                    "kind": "hip_clearance",
+                    "path_knots": len(preplanned_clearance_path),
+                    "planned_while_disarmed": True,
+                }
+            )
 
         enabled = client.request("enable", timeout_s=args.timeout)
         session_id = str(enabled.get("session_id") or "")
@@ -823,160 +935,26 @@ def run(args: argparse.Namespace) -> int:
                 ik_target_transform[:3, 3] += cartesian_offset
             solution_q = tuple(baseline)
             if args.command == "point":
-                used_detour = False
-                total_route_knots = 1
-                print("Planning collision-aware pointing route…", flush=True)
-                # Freeze one fresh predicted target for the initial approach.
-                # No arm target is published until every stage below has a
-                # collision-free joint-space route.
-                vision_target = _fetch_vision_target(args.server)
-                pointing_xyz = (
-                    vision_target["predicted_xyz_m"]
-                    if vision_target["predicted_xyz_m"] is not None
-                    else vision_target["object_xyz_m"]
+                assert preplanned_clearance_path is not None
+                # Ownership transfer can settle the arm slightly. Rebase the
+                # disarmed preplan on that settled command and run a fast swept
+                # validation; never launch RRT while the session is armed.
+                clearance_path = (solution_q, *preplanned_clearance_path[1:])
+                clearance_error = ik_solver.validate_joint_path(clearance_path)
+                if clearance_error:
+                    raise RemoteArmError(
+                        "settled arm pose invalidated the preplanned hip clearance: "
+                        f"{clearance_error}"
+                    )
+                preplanned_targets = _guarded_joint_path(
+                    clearance_path,
+                    maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD,
                 )
-                shoulder_xyz = ik_solver.shoulder_position(solution_q)
-                desired_hand_xyz = _point_hand_target(
-                    pointing_xyz, args.standoff, shoulder_xyz
-                )
-                point_desired_hand_xyz_m = desired_hand_xyz.tolist()
-                ik_target_transform[:3, 3] = desired_hand_xyz
-                preplanned_targets: list[tuple[float, ...]] = []
-                # The parked right hand can begin beside the hip.  Establish
-                # an arm-up/forward clearance posture before turning toward a
-                # tabletop target, rather than asking IK for a direct branch
-                # that folds the thumb through the right hip.
-                clearance_transform = ik_solver.forward_kinematics(solution_q)
-                clearance_transform[:3, 3] += np.asarray((0.06, 0.0, 0.12))
-                clearance_route = ik_solver.solve_with_collision_detour(
-                    clearance_transform,
-                    solution_q,
-                    enforce_orientation=False,
-                )
-                if clearance_route.ok and clearance_route.q_path is not None:
-                    clearance_q_path = clearance_route.q_path
-                    preplanned_targets.extend(
-                        _guarded_joint_path(
-                            (solution_q, *clearance_q_path[1:]),
-                            maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD,
-                        )
-                    )
-                    path_knots.extend(clearance_q_path[1:])
-                    total_route_knots += len(clearance_q_path) - 1
-                    used_detour = used_detour or len(clearance_q_path) > 2
-                    solution_q = clearance_q_path[-1]
-                    motion_trace.append(
-                        {
-                            "phase": "preplan_clearance",
-                            "kind": "hip_clearance",
-                            "path_knots": len(clearance_q_path),
-                        }
-                    )
-                else:
-                    motion_trace.append(
-                        {
-                            "phase": "preplan_clearance",
-                            "kind": "hip_clearance_unavailable",
-                            "reason": clearance_route.reason,
-                        }
-                    )
-                while True:
-                    current_transform = ik_solver.forward_kinematics(solution_q)
-                    stage_offset = desired_hand_xyz - current_transform[:3, 3]
-                    remaining_distance = float(np.linalg.norm(stage_offset))
-                    if remaining_distance <= 0.008:
-                        break
-                    if point_stages >= 24:
-                        raise RemoteArmError(
-                            "pointing route did not make enough Cartesian progress after "
-                            "twenty-four preplanned stages"
-                        )
-                    maximum_step = min(args.max_approach, remaining_distance)
-                    route = None
-                    selected_progress = 0.0
-                    last_route_reason = "no IK candidate"
-                    last_route_error = float("inf")
-                    attempts: list[dict[str, Any]] = []
-                    # A full clearance stride can choose an IK branch whose
-                    # endpoint intersects the torso. Retry shorter planned
-                    # strides instead of abandoning the whole route.
-                    for scale in (1.0, 0.75, 0.50, 0.30, 0.20):
-                        stage_target = current_transform.copy()
-                        stage_target[:3, 3] += stage_offset * (
-                            maximum_step * scale / remaining_distance
-                        )
-                        candidate_route = ik_solver.solve_with_collision_detour(
-                            stage_target,
-                            solution_q,
-                            enforce_orientation=False,
-                        )
-                        last_route_reason = candidate_route.reason
-                        last_route_error = candidate_route.position_error_m
-                        if candidate_route.ok and candidate_route.q_path is not None:
-                            planned_xyz = ik_solver.forward_kinematics(
-                                candidate_route.q_path[-1]
-                            )[:3, 3]
-                            progress = remaining_distance - float(
-                                np.linalg.norm(desired_hand_xyz - planned_xyz)
-                            )
-                            attempts.append(
-                                {
-                                    "scale": scale,
-                                    "reason": candidate_route.reason,
-                                    "position_error_m": candidate_route.position_error_m,
-                                    "path_knots": len(candidate_route.q_path),
-                                    "progress_m": progress,
-                                }
-                            )
-                            # A collision-free IK branch that barely reduces
-                            # the Cartesian error would burn through stage
-                            # budget and look like a routing loop.  Reject it
-                            # during GB10 preflight; no robot target is sent.
-                            if progress < min(0.005, maximum_step * scale * 0.25):
-                                last_route_reason = "insufficient_cartesian_progress"
-                                continue
-                            route = candidate_route
-                            selected_progress = progress
-                            break
-                        attempts.append(
-                            {
-                                "scale": scale,
-                                "reason": candidate_route.reason,
-                                "position_error_m": candidate_route.position_error_m,
-                            }
-                        )
-                    motion_trace.append(
-                        {
-                            "phase": "preplan",
-                            "stage": point_stages + 1,
-                            "remaining_distance_m": remaining_distance,
-                            "requested_stride_m": maximum_step,
-                            "attempts": attempts,
-                            "selected_progress_m": selected_progress,
-                        }
-                    )
-                    if route is None or route.q_path is None:
-                        raise RemoteArmError(
-                            "IK could not build a collision-free pointing route "
-                            f"at stage {point_stages + 1}: {last_route_reason}, "
-                            f"position_error={last_route_error:.4f} m"
-                        )
-                    used_detour = used_detour or len(route.q_path) > 2
-                    total_route_knots += len(route.q_path) - 1
-                    path_knots.extend(route.q_path[1:])
-                    # Re-split the complete transition from the exact prior
-                    # desired command.  This makes the ROS 0.050-rad contract
-                    # explicit even when an RRT detour has multiple knots.
-                    preplanned_targets.extend(
-                        _guarded_joint_path(
-                            (solution_q, *route.q_path[1:]),
-                            maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD,
-                        )
-                    )
-                    solution_q = route.q_path[-1]
-                    point_stages += 1
-                point_route_kind = "collision_aware_detour" if used_detour else "direct"
-                point_route_knots = total_route_knots
+                path_knots.extend(preplanned_clearance_path[1:])
+                solution_q = preplanned_clearance_path[-1]
+                ik_target_transform = ik_solver.forward_kinematics(solution_q)
+                point_route_kind = "hip_clearance_only"
+                point_route_knots = len(preplanned_clearance_path)
             else:
                 waypoint_count = max(
                     1,
@@ -1090,20 +1068,51 @@ def run(args: argparse.Namespace) -> int:
                 if ik_position_error_m <= 0.025 and point_angular_error_deg <= 5.0:
                     validation_error = None
                 else:
-                    validation_error = (
-                        "measured hand does not point at the vision target: "
-                        f"position error {ik_position_error_m:.4f} m, "
-                        f"ray error {point_angular_error_deg:.1f} deg"
-                    )
-        if args.stay and args.command == "point" and not stop.is_set():
+                    # This sample is taken immediately after the intentional
+                    # hip-clearance phase. The realtime loop below, rather
+                    # than the clearance endpoint, is responsible for
+                    # converging onto the pointing ray.
+                    validation_error = None
+        if args.command == "point" and not stop.is_set():
             assert ik_solver is not None
             stable_samples = 0
             previous_track_id: object = None
             previous_object_xyz = None
             target_was_lost = False
+            safety_hold_active = False
+
+            def freeze_active_trajectory(reason: str) -> None:
+                """Replace an in-flight segment with the current safe command."""
+
+                nonlocal sequence, safety_hold_active
+                if safety_hold_active:
+                    return
+                status_now = client.status or {}
+                commanded = status_now.get("commanded_arm_q")
+                if not isinstance(commanded, list) or len(commanded) != 14:
+                    raise RemoteArmError("Bridge has no commanded pose for safety hold")
+                sequence += 1
+                client.publish_target(
+                    side=side,
+                    session_id=session_id,
+                    sequence=sequence,
+                    positions=tuple(float(value) for value in commanded[-7:]),
+                    duration_s=max(0.1, args.tracking_poll),
+                )
+                client.wait_sequence(side, sequence, session_id, args.timeout)
+                safety_hold_active = True
+                motion_trace.append(
+                    {"phase": "tracking_hold", "event": "trajectory_frozen", "reason": reason}
+                )
+
             while not stop.is_set():
+                cycle_started = time.monotonic()
                 try:
-                    candidate = _fetch_vision_target(args.server)
+                    candidate = _fetch_vision_target(
+                        args.server,
+                        timeout_s=max(0.02, min(0.10, args.tracking_poll)),
+                        maximum_age_ms=250.0,
+                    )
                 except RemoteArmError as exc:
                     if not target_was_lost:
                         target_loss_events += 1
@@ -1121,9 +1130,10 @@ def run(args: argparse.Namespace) -> int:
                             "commanded_arm_q": (client.status or {}).get("commanded_arm_q"),
                         }
                     )
+                    freeze_active_trajectory("target_lost")
                     client.pump_heartbeat(
                         session_id,
-                        args.tracking_poll,
+                        max(0.0, args.tracking_poll - (time.monotonic() - cycle_started)),
                         stop,
                         trace=motion_trace,
                         phase="vision_hold",
@@ -1141,9 +1151,10 @@ def run(args: argparse.Namespace) -> int:
                 previous_object_xyz = candidate_object
                 vision_target = candidate
                 if stable_samples < args.reacquire_samples:
+                    freeze_active_trajectory("target_reacquiring")
                     client.pump_heartbeat(
                         session_id,
-                        args.tracking_poll,
+                        max(0.0, args.tracking_poll - (time.monotonic() - cycle_started)),
                         stop,
                         trace=motion_trace,
                         phase="vision_reacquiring",
@@ -1160,6 +1171,17 @@ def run(args: argparse.Namespace) -> int:
                     )
                 target_was_lost = False
 
+                status_now = client.status or {}
+                if status_now.get("state") != "ARMED":
+                    raise RemoteArmError(
+                        "bridge left ARMED during tracking: "
+                        f"state={status_now.get('state')}, "
+                        f"fault={status_now.get('fault_reason')}"
+                    )
+                commanded_arm = status_now.get("commanded_arm_q")
+                if not isinstance(commanded_arm, list) or len(commanded_arm) != 14:
+                    raise RemoteArmError("Bridge has no current commanded pose during tracking")
+                solution_q = tuple(float(value) for value in commanded_arm[-7:])
                 pointing_xyz = (
                     candidate["predicted_xyz_m"]
                     if candidate["predicted_xyz_m"] is not None
@@ -1170,13 +1192,36 @@ def run(args: argparse.Namespace) -> int:
                     args.standoff,
                     ik_solver.shoulder_position(solution_q),
                 )
+                if not _inside_vision_workspace(desired_xyz, candidate):
+                    freeze_active_trajectory("workspace_violation")
+                    client.pump_heartbeat(
+                        session_id,
+                        max(0.0, args.tracking_poll - (time.monotonic() - cycle_started)),
+                        stop,
+                        trace=motion_trace,
+                        phase="tracking_hold",
+                    )
+                    continue
+                support_plane = _vision_support_plane(candidate)
+                if support_plane is None:
+                    freeze_active_trajectory("support_plane_unavailable")
+                    client.pump_heartbeat(
+                        session_id,
+                        max(0.0, args.tracking_poll - (time.monotonic() - cycle_started)),
+                        stop,
+                        trace=motion_trace,
+                        phase="tracking_hold",
+                    )
+                    continue
                 current_transform = ik_solver.forward_kinematics(solution_q)
                 correction = desired_xyz - current_transform[:3, 3]
                 correction_distance = float(np.linalg.norm(correction))
                 if correction_distance < 0.005:
+                    if not args.stay:
+                        break
                     client.pump_heartbeat(
                         session_id,
-                        args.tracking_poll,
+                        max(0.0, args.tracking_poll - (time.monotonic() - cycle_started)),
                         stop,
                         trace=motion_trace,
                         phase="tracking_deadband_hold",
@@ -1185,91 +1230,84 @@ def run(args: argparse.Namespace) -> int:
                 if correction_distance > args.tracking_step:
                     correction *= args.tracking_step / correction_distance
                 tracking_target = current_transform.copy()
-                tracking_target[:3, 3] += correction
-                route = ik_solver.solve_with_collision_detour(
-                    tracking_target,
-                    solution_q,
-                    enforce_orientation=False,
-                )
-                if not route.ok or route.q_path is None:
+                servo_target = None
+                servo_reason = "local_ik_failed"
+                servo_error = float("inf")
+                for scale in (1.0, 0.5, 0.25):
+                    tracking_target[:3, 3] = current_transform[:3, 3] + correction * scale
+                    servo_target, servo_reason, servo_error = _bounded_servo_solution(
+                        ik_solver,
+                        tracking_target,
+                        solution_q,
+                        support_plane=support_plane,
+                    )
+                    if servo_target is not None:
+                        break
+                if servo_target is None:
                     motion_trace.append(
                         {
                             "phase": "tracking_hold",
-                            "event": "tracking_route_rejected",
-                            "reason": route.reason,
-                            "position_error_m": route.position_error_m,
+                            "event": "local_servo_rejected",
+                            "reason": servo_reason,
+                            "position_error_m": servo_error,
                         }
                     )
+                    freeze_active_trajectory(str(servo_reason))
                     client.pump_heartbeat(
                         session_id,
-                        args.tracking_poll,
+                        max(0.0, args.tracking_poll - (time.monotonic() - cycle_started)),
                         stop,
                         trace=motion_trace,
                         phase="tracking_hold",
                     )
                     continue
-                # The collision planner normally returns solution_q as its
-                # first knot. Make that continuity explicit anyway: a route
-                # that comes back from an alternate RRT branch must still be
-                # bridged from the exact last command the robot accepted.
-                # This is the authoritative source for the bounded target-step guard.
-                tracking_targets = _guarded_joint_path(
-                    (solution_q, *route.q_path[1:]),
-                    maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD,
+                sequence += 1
+                client.publish_target(
+                    side=side,
+                    session_id=session_id,
+                    sequence=sequence,
+                    positions=servo_target,
+                    duration_s=args.duration,
                 )
-                accepted_target = solution_q
-                for target in tracking_targets:
-                    if stop.is_set():
-                        break
-                    sequence += 1
-                    client.publish_target(
-                        side=side,
-                        session_id=session_id,
-                        sequence=sequence,
-                        positions=target,
-                        duration_s=args.duration,
-                    )
-                    client.wait_sequence(side, sequence, session_id, args.timeout)
-                    client.pump_heartbeat(
-                        session_id,
-                        args.duration,
-                        stop,
-                        trace=motion_trace,
-                        phase=f"tracking_{tracking_updates}",
-                    )
-                    status = client.status or {}
-                    if status.get("state") != "ARMED":
-                        raise RemoteArmError(
-                            "bridge left ARMED during tracking: "
-                            f"state={status.get('state')}, "
-                            f"fault={status.get('fault_reason')}"
-                        )
-                    desired_arm_q = status.get("desired_arm_q")
-                    if isinstance(desired_arm_q, list) and len(desired_arm_q) == 14:
-                        accepted_target = tuple(float(value) for value in desired_arm_q[-7:])
+                client.wait_sequence(side, sequence, session_id, args.timeout)
+                safety_hold_active = False
                 measured_tracking = (client.status or {}).get("measured_arm_q")
                 if not isinstance(measured_tracking, list) or len(measured_tracking) != 14:
                     raise RemoteArmError("Bridge has no measured pose after a tracking update")
                 measured_q = tuple(float(value) for value in measured_tracking[-7:])
-                commanded_q = accepted_target
                 tracking_lag = max(
                     abs(measured - commanded)
-                    for measured, commanded in zip(measured_q, commanded_q)
+                    for measured, commanded in zip(measured_q, solution_q)
                 )
                 motion_trace.append(
                     {
                         "phase": f"tracking_{tracking_updates}",
-                        "event": "tracking_segment_complete",
+                        "event": "servo_target_accepted",
                         "max_command_tracking_lag_rad": tracking_lag,
+                        "maximum_joint_step_rad": max(
+                            abs(target - start)
+                            for target, start in zip(servo_target, solution_q)
+                        ),
+                        "target_age_ms": candidate["target_age_ms"],
+                        "track_id": candidate.get("track_id"),
+                        "prediction_source": candidate.get("prediction_source"),
+                        "pointing_xyz_m": list(pointing_xyz),
+                        "desired_hand_xyz_m": desired_xyz.tolist(),
+                        "seed_command_q": list(solution_q),
+                        "servo_target_q": list(servo_target),
+                        "cycle_compute_ms": round(
+                            (time.monotonic() - cycle_started) * 1000.0, 3
+                        ),
                     }
                 )
-                # Plan the *next command* from the last desired waypoint,
-                # not the delayed encoder sample.  The arm bridge enforces
-                # its step contract against desired_arm_q, and using the
-                # encoder here could create a discontinuity even
-                # though both individual IK routes were guarded.
-                solution_q = commanded_q
                 tracking_updates += 1
+                client.pump_heartbeat(
+                    session_id,
+                    max(0.0, args.tracking_poll - (time.monotonic() - cycle_started)),
+                    stop,
+                    trace=motion_trace,
+                    phase=f"tracking_{tracking_updates}",
+                )
         elif args.stay and not stop.is_set():
             while not stop.is_set():
                 client.pump_heartbeat(
@@ -1286,6 +1324,34 @@ def run(args: argparse.Namespace) -> int:
                         f"state={status.get('state')}, "
                         f"fault={status.get('fault_reason')}"
                     )
+        if args.command == "point" and tracking_updates > 0 and vision_target is not None:
+            final_measured = (client.status or {}).get("measured_arm_q")
+            if isinstance(final_measured, list) and len(final_measured) == 14:
+                measured_right = tuple(float(value) for value in final_measured[-7:])
+                measured_transform = ik_solver.forward_kinematics(measured_right)
+                pointing_xyz = (
+                    vision_target["predicted_xyz_m"]
+                    if vision_target["predicted_xyz_m"] is not None
+                    else vision_target["object_xyz_m"]
+                )
+                shoulder_xyz = ik_solver.shoulder_position(measured_right)
+                desired_xyz = _point_hand_target(pointing_xyz, args.standoff, shoulder_xyz)
+                point_desired_hand_xyz_m = desired_xyz.tolist()
+                ik_target_transform = measured_transform.copy()
+                ik_target_transform[:3, 3] = desired_xyz
+                ik_measured_xyz_m = measured_transform[:3, 3].tolist()
+                ik_position_error_m = float(
+                    np.linalg.norm(measured_transform[:3, 3] - desired_xyz)
+                )
+                expected_ray = np.asarray(vision_target["object_xyz_m"]) - shoulder_xyz
+                measured_ray = measured_transform[:3, 3] - shoulder_xyz
+                cosine = float(
+                    np.dot(expected_ray, measured_ray)
+                    / (np.linalg.norm(expected_ray) * np.linalg.norm(measured_ray))
+                )
+                point_angular_error_deg = math.degrees(
+                    math.acos(max(-1.0, min(1.0, cosine)))
+                )
         # Pointing is intentionally a terminal pose, not an out-and-back demo.
         # A SIGINT (or the explicit stop command) remains the single release
         # path.  Manual joint and Cartesian test motions retain their optional

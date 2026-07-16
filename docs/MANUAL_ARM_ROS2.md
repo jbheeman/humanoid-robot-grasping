@@ -179,47 +179,34 @@ curl -s http://127.0.0.1:8000/arm-tracking | python3 -m json.tool
 
 The report must show `depth_valid: true`, a fresh `target_age_ms`, and a
 plausible `object_xyz_m`. With a clear workspace and spotter, the operator can
-request one bounded test from a separate GB10 terminal:
-
-```bash
-scripts/gb10/arm-remote.sh point \
-  --max-approach 0.05 \
-  --duration 0.6 \
-  --hold 3 \
-  --trace-output runs/arm/vision-point-xr.json
-```
-
-This first phase uses the currently better validated predictor, puts the hand
-on the shoulder-to-object pointing ray with a 25 cm standoff, and limits the
-approach of each stage to 5 cm. If that nominal standoff is outside practical
-arm reach, it preserves the pointing ray and automatically increases standoff
-instead of forcing an unreachable reach. From a hanging rest pose it plans a deterministic
-collision-aware joint-space clearance route around the hip, checks every swept
-segment at 0.04 rad or finer, subdivides commands under the robot's 0.05-rad
-step contract, repeats those stages until it reaches the pointing ray, then
-returns over the same route and disarms. It rejects missing or older-than-500
-ms registered depth before movement.
-
-After that one-shot route succeeds, continuous slow pointing uses the same
-command with `--stay`:
+request continuous pointing from a separate GB10 terminal:
 
 ```bash
 scripts/gb10/arm-remote.sh point \
   --max-approach 0.10 \
   --standoff 0.25 \
-  --duration 1 \
-  --tracking-step 0.03 \
-  --tracking-poll 0.25 \
-  --reacquire-samples 3 \
-  --stay
+  --duration 0.55 \
+  --tracking-step 0.05 \
+  --tracking-poll 0.05 \
+  --hold 0 \
+  --trace-output runs/arm/vision-point-xr.json
 ```
 
-Tracking keeps the manual session heartbeat alive but publishes no new target
-while vision is stale or absent, leaving the arm frozen at its last commanded
-pose. Three fresh, spatially consistent detections are required before motion
-resumes. `Ctrl-C` stops the session and releases arm ownership. If the online
-prediction evaluator reports `fallback_better_or_equal`, pointing uses its
-alpha-beta prediction instead of the learned GRU until the evaluation changes.
+Before taking arm ownership, the client plans the deterministic collision-aware
+hip-clearance route. After ownership settles it quickly revalidates and executes
+that route once. It then switches to a 15–20 Hz latest-target-wins servo: each
+cycle seeds local IK from the current commanded pose, checks the calibrated
+workspace, support-plane clearance, joint limits, and swept self-collision, and
+publishes at most 0.02 rad per joint. No RRT runs in this steady-state loop.
+
+Missing, invalid, or older-than-250 ms tracking data immediately rebases the
+active trajectory to the current safe command. Three fresh, spatially
+consistent detections are required before motion resumes. `Ctrl-C` stops the
+session and releases arm ownership. If the online prediction evaluator reports
+`fallback_better_or_equal`, pointing uses its alpha-beta prediction instead of
+the learned GRU until the evaluation changes. If the nominal 25 cm standoff is
+outside practical reach, the pointing ray is preserved and standoff increases;
+the command never requests reach, contact, or grasp.
 
 ## Compare the two Unitree controller profiles
 

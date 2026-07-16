@@ -71,16 +71,53 @@ class ManualArmConfig:
 
 @dataclass(frozen=True)
 class _Trajectory:
-    start_q: tuple[float, ...]
     target_q: tuple[float, ...]
     started_at: float
     duration_s: float
+    coefficients: tuple[tuple[float, float, float, float, float, float], ...]
 
 
 def _smoothstep(value: float) -> float:
     """Quintic time scaling: zero velocity and acceleration at both ends."""
     bounded = min(max(value, 0.0), 1.0)
     return bounded**3 * (10.0 + bounded * (-15.0 + 6.0 * bounded))
+
+
+def _quintic_coefficients(
+    start: float,
+    target: float,
+    velocity: float,
+    acceleration: float,
+    duration_s: float,
+) -> tuple[float, float, float, float, float, float]:
+    """Quintic coefficients with continuous start state and zero end derivatives."""
+
+    duration = float(duration_s)
+    displacement = float(target) - float(start)
+    c0 = float(start)
+    c1 = float(velocity)
+    c2 = 0.5 * float(acceleration)
+    c3 = (20.0 * displacement - 12.0 * c1 * duration - 6.0 * c2 * duration**2) / (
+        2.0 * duration**3
+    )
+    c4 = (-30.0 * displacement + 16.0 * c1 * duration + 6.0 * c2 * duration**2) / (
+        2.0 * duration**4
+    )
+    c5 = (12.0 * displacement - 6.0 * c1 * duration - 2.0 * c2 * duration**2) / (
+        2.0 * duration**5
+    )
+    return c0, c1, c2, c3, c4, c5
+
+
+def _quintic_state(
+    coefficients: Sequence[float], elapsed_s: float
+) -> tuple[float, float, float]:
+    c0, c1, c2, c3, c4, c5 = coefficients
+    t = float(elapsed_s)
+    position = c0 + c1 * t + c2 * t**2 + c3 * t**3 + c4 * t**4 + c5 * t**5
+    velocity = c1 + 2.0 * c2 * t + 3.0 * c3 * t**2 + 4.0 * c4 * t**3 + 5.0 * c5 * t**4
+    acceleration = 2.0 * c2 + 6.0 * c3 * t + 12.0 * c4 * t**2 + 20.0 * c5 * t**3
+    return position, velocity, acceleration
 
 
 class ManualArmController:
@@ -110,6 +147,8 @@ class ManualArmController:
         self._last_target_at: Optional[float] = None
         self._desired_q: Optional[tuple[float, ...]] = None
         self._commanded_q: Optional[tuple[float, ...]] = None
+        self._commanded_velocity = [0.0] * 14
+        self._commanded_acceleration = [0.0] * 14
         self._trajectories: dict[str, Optional[_Trajectory]] = {
             "left": None,
             "right": None,
@@ -235,6 +274,8 @@ class ManualArmController:
             self._last_target_at = None
             self._desired_q = tuple(robot.arm_q)
             self._commanded_q = tuple(robot.arm_q)
+            self._commanded_velocity = [0.0] * 14
+            self._commanded_acceleration = [0.0] * 14
             self._baseline_q = tuple(robot.arm_q)
             self._maximum_measured_displacement = [0.0] * 14
             self._trajectories = {"left": None, "right": None}
@@ -314,8 +355,13 @@ class ManualArmController:
             if int(sequence) <= self._last_sequences[side]:
                 raise ArmBridgeError("Command sequence must increase", code="stale_sequence")
             assert self._desired_q is not None
+            assert self._commanded_q is not None
             offset = 0 if side == "left" else 7
-            current = self._desired_q[offset : offset + 7]
+            # Latest-target-wins commands replace an in-flight trajectory.
+            # Bound and retime the replacement from the pose the 250 Hz loop
+            # is actually commanding now, not from an older desired endpoint
+            # that the arm may never have approached.
+            current = self._commanded_q[offset : offset + 7]
             requested_positions = positions
             raw_deltas = tuple(target - start for target, start in zip(positions, current))
             if max((abs(delta) for delta in raw_deltas), default=0.0) > (
@@ -362,14 +408,69 @@ class ManualArmController:
             target = list(self._desired_q)
             target[offset : offset + 7] = positions
             now = self._monotonic()
-            start_q = self._commanded_q or self._desired_q
-            self._desired_q = tuple(target)
-            self._trajectories[side] = _Trajectory(
-                tuple(start_q[offset : offset + 7]),
-                tuple(positions),
-                now,
-                applied_duration_s,
+            start_velocity = tuple(self._commanded_velocity[offset : offset + 7])
+            start_acceleration = tuple(self._commanded_acceleration[offset : offset + 7])
+            # A safety hold or direction reversal must not coast through the
+            # new target. Normal same-direction updates retain derivatives so
+            # a 20 Hz servo does not restart from rest on every frame.
+            start_velocity = tuple(
+                0.0 if abs(delta) < 1e-9 or delta * velocity < 0.0 else velocity
+                for delta, velocity in zip(
+                    (target - start for target, start in zip(positions, current)),
+                    start_velocity,
+                )
             )
+            start_acceleration = tuple(
+                0.0 if abs(delta) < 1e-9 or delta * velocity <= 0.0 else acceleration
+                for delta, velocity, acceleration in zip(
+                    (target - start for target, start in zip(positions, current)),
+                    start_velocity,
+                    start_acceleration,
+                )
+            )
+
+            def build_trajectory(duration: float) -> _Trajectory:
+                coefficients = tuple(
+                    _quintic_coefficients(start, target, velocity, acceleration, duration)
+                    for start, target, velocity, acceleration in zip(
+                        current, positions, start_velocity, start_acceleration
+                    )
+                )
+                return _Trajectory(tuple(positions), now, duration, coefficients)
+
+            trajectory = build_trajectory(applied_duration_s)
+            # Retain the existing hard velocity/acceleration policy for a
+            # derivative-continuous replacement. Sampling is deterministic,
+            # local, and bounded; it never delays on perception or planning.
+            trajectory_is_valid = False
+            for _ in range(16):
+                trajectory_is_valid = True
+                for coefficients, (lower, upper) in zip(trajectory.coefficients, limits):
+                    margin = self.config.joint_limit_margin_rad
+                    for index in range(33):
+                        position, velocity, acceleration = _quintic_state(
+                            coefficients, applied_duration_s * index / 32.0
+                        )
+                        if (
+                            not lower + margin <= position <= upper - margin
+                            or abs(velocity) > self.config.max_velocity_rad_s + 1e-9
+                            or abs(acceleration) > self.config.max_acceleration_rad_s2 + 1e-9
+                        ):
+                            trajectory_is_valid = False
+                            break
+                    if not trajectory_is_valid:
+                        break
+                if trajectory_is_valid:
+                    break
+                applied_duration_s *= 1.25
+                trajectory = build_trajectory(applied_duration_s)
+            if not trajectory_is_valid:
+                raise ArmBridgeError(
+                    "Latest target cannot be smoothly rebased within trajectory limits",
+                    code="trajectory_limits",
+                )
+            self._desired_q = tuple(target)
+            self._trajectories[side] = trajectory
             self._last_sequences[side] = int(sequence)
             self._last_target_at = now
             self._last_rejection = None
@@ -466,6 +567,8 @@ class ManualArmController:
                     settled = tuple(robot.arm_q)
                     self._baseline_q = settled
                     self._commanded_q = settled
+                    self._commanded_velocity = [0.0] * 14
+                    self._commanded_acceleration = [0.0] * 14
                     self._desired_q = settled
                     self._maximum_measured_displacement = [0.0] * 14
                     self._state = ArmState.ARMED
@@ -476,14 +579,23 @@ class ManualArmController:
                     trajectory = self._trajectories[side]
                     if trajectory is None:
                         continue
-                    ratio = (now - trajectory.started_at) / trajectory.duration_s
-                    blend = _smoothstep(ratio)
-                    commanded[offset : offset + 7] = [
-                        (1.0 - blend) * start + blend * target
-                        for start, target in zip(trajectory.start_q, trajectory.target_q)
+                    elapsed = max(0.0, now - trajectory.started_at)
+                    states = [
+                        _quintic_state(coefficients, min(elapsed, trajectory.duration_s))
+                        for coefficients in trajectory.coefficients
                     ]
+                    commanded[offset : offset + 7] = [state[0] for state in states]
+                    self._commanded_velocity[offset : offset + 7] = [
+                        state[1] for state in states
+                    ]
+                    self._commanded_acceleration[offset : offset + 7] = [
+                        state[2] for state in states
+                    ]
+                    ratio = elapsed / trajectory.duration_s
                     if ratio >= 1.0:
                         commanded[offset : offset + 7] = trajectory.target_q
+                        self._commanded_velocity[offset : offset + 7] = [0.0] * 7
+                        self._commanded_acceleration[offset : offset + 7] = [0.0] * 7
                         self._trajectories[side] = None
                 self._commanded_q = tuple(commanded)
             elif self._state is ArmState.HOLDING:

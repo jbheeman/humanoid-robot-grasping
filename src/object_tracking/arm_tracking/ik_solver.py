@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import math
 from pathlib import Path
 import time
 from typing import Any, Callable, Sequence
@@ -629,3 +630,50 @@ class G1RightArmIK:
         ):
             return IKResult(False, None, position_error, orientation_error, "orientation_error")
         return IKResult(True, tuple(float(value) for value in q), position_error, orientation_error)
+
+    def validate_joint_path(
+        self,
+        knots: Sequence[Sequence[float]],
+        *,
+        support_plane: Any | None = None,
+        edge_step_rad: float = 0.02,
+    ) -> str | None:
+        """Validate a short, already-planned path without invoking RRT or IK.
+
+        The first knot defines the allowed collision baseline.  This is used
+        to revalidate a preplanned clearance path after arm ownership settles,
+        and to vet bounded visual-servo steps before publishing them.
+        """
+
+        if len(knots) < 2 or not math.isfinite(edge_step_rad) or edge_step_rad <= 0.0:
+            return "invalid_joint_path"
+        path = tuple(np.asarray(knot, dtype=float) for knot in knots)
+        if any(knot.shape != (7,) or not np.all(np.isfinite(knot)) for knot in path):
+            return "invalid_joint_path"
+        if self.collision_model is None or self.collision_data is None:
+            return "collision_model_unavailable"
+        if any(np.any(knot < self.lower) or np.any(knot > self.upper) for knot in path):
+            return "joint_limit"
+
+        allowed_collisions = self._collision_pairs(path[0])
+        for begin, end in zip(path, path[1:]):
+            steps = max(1, int(np.ceil(np.max(np.abs(end - begin)) / edge_step_rad)))
+            for alpha in np.linspace(0.0, 1.0, steps + 1)[1:]:
+                q = (1.0 - alpha) * begin + alpha * end
+                introduced = self._collision_pairs(q) - allowed_collisions
+                if introduced:
+                    labels = ",".join(
+                        self._collision_pair_label(index) for index in sorted(introduced)
+                    )
+                    return f"self_collision:{labels}:path_fraction={alpha:.3f}"
+                hand_xyz = self.forward_kinematics(q)[:3, 3]
+                if not -0.48 <= hand_xyz[1] <= 0.15:
+                    return "safe_corridor"
+                if support_plane is not None:
+                    self.pin.framesForwardKinematics(self.model, self.data, q)
+                    for joint_name in RIGHT_ARM_JOINTS:
+                        joint_id = self.model.getJointId(joint_name)
+                        point = self.data.oMi[joint_id].translation
+                        if float(support_plane.signed_distance(point)) < 0.05:
+                            return "link_plane_clearance"
+        return None

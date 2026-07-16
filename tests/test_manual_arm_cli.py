@@ -1,5 +1,6 @@
 import json
 import math
+from types import SimpleNamespace
 
 import numpy as np
 import pytest
@@ -14,6 +15,7 @@ from object_tracking.manual_arm_cli import (
     _arming_failure,
     _arming_status_summary,
     _fetch_vision_target,
+    _bounded_servo_solution,
     _guarded_offsets,
     _guarded_joint_path,
     _manual_deltas,
@@ -188,7 +190,7 @@ def test_point_defaults_to_continuous_vision_tracking_without_return() -> None:
     assert args.duration == pytest.approx(0.35)
     assert args.no_return is False
     assert args.stay is True
-    assert args.tracking_step == pytest.approx(0.07)
+    assert args.tracking_step == pytest.approx(0.02)
     assert args.tracking_poll == pytest.approx(0.05)
     assert args.reacquire_samples == 3
 
@@ -220,6 +222,41 @@ def test_point_tracking_options_are_guarded() -> None:
         _validate_args(build_parser().parse_args(["point", "--tracking-step", "0.10"]))
     with pytest.raises(RemoteArmError, match="reacquire-samples"):
         _validate_args(build_parser().parse_args(["point", "--reacquire-samples", "1"]))
+
+
+def test_servo_solution_enforces_small_joint_step_and_fast_path_validation() -> None:
+    class Solver:
+        def __init__(self, delta):
+            self.delta = delta
+            self.validated = False
+
+        def solve(self, transform, seed, *, support_plane):
+            del transform, support_plane
+            return SimpleNamespace(
+                ok=True,
+                q_rad=tuple(value + self.delta for value in seed),
+                reason=None,
+                position_error_m=0.001,
+            )
+
+        def validate_joint_path(self, path, *, support_plane):
+            del path, support_plane
+            self.validated = True
+            return None
+
+    accepted_solver = Solver(0.02)
+    accepted, reason, _ = _bounded_servo_solution(
+        accepted_solver, np.eye(4), (0.0,) * 7, support_plane=object()
+    )
+    assert accepted == pytest.approx((0.02,) * 7)
+    assert reason is None
+    assert accepted_solver.validated is True
+
+    rejected, reason, _ = _bounded_servo_solution(
+        Solver(0.0201), np.eye(4), (0.0,) * 7, support_plane=object()
+    )
+    assert rejected is None
+    assert reason.startswith("joint_step:")
 
 
 def test_fetch_vision_target_requires_fresh_registered_xyz(monkeypatch) -> None:
