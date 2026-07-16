@@ -3,8 +3,23 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 VENV_DIR="${ROOT_DIR}/.venv"
-ROS_SETUP="/opt/ros/jazzy/setup.bash"
+GB10_ROS_DISTRO="${GB10_ROS_DISTRO:-}"
+if [[ -z "${GB10_ROS_DISTRO}" ]]; then
+  if [[ -r /opt/ros/jazzy/setup.bash ]]; then
+    GB10_ROS_DISTRO="jazzy"
+  elif [[ -r /opt/ros/humble/setup.bash ]]; then
+    GB10_ROS_DISTRO="humble"
+  else
+    GB10_ROS_DISTRO="jazzy"
+  fi
+fi
+if [[ "${GB10_ROS_DISTRO}" != "jazzy" && "${GB10_ROS_DISTRO}" != "humble" ]]; then
+  echo "GB10_ROS_DISTRO must be jazzy or humble." >&2
+  exit 2
+fi
+ROS_SETUP="/opt/ros/${GB10_ROS_DISTRO}/setup.bash"
 SYSTEM_PYTHON="/usr/bin/python3"
+EXPECTED_PYTHON="$([[ "${GB10_ROS_DISTRO}" == "jazzy" ]] && echo 3.12 || echo 3.10)"
 
 cd "${ROOT_DIR}"
 
@@ -20,13 +35,13 @@ if ! command -v gst-launch-1.0 >/dev/null 2>&1; then
   exit 1
 fi
 if [[ ! -r "${ROS_SETUP}" ]]; then
-  echo "ROS 2 Jazzy is required on the GB10: missing ${ROS_SETUP}"
-  echo "Install ros-jazzy-ros-base, ros-jazzy-rmw-cyclonedds-cpp,"
-  echo "ros-jazzy-rosidl-generator-dds-idl, and python3-colcon-common-extensions."
+  echo "ROS 2 ${GB10_ROS_DISTRO} is required: missing ${ROS_SETUP}"
+  echo "Install ros-${GB10_ROS_DISTRO}-ros-base, ros-${GB10_ROS_DISTRO}-rmw-cyclonedds-cpp,"
+  echo "ros-${GB10_ROS_DISTRO}-rosidl-generator-dds-idl, and python3-colcon-common-extensions."
   exit 1
 fi
-if [[ "$("${SYSTEM_PYTHON}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" != "3.12" ]]; then
-  echo "The Jazzy GB10 runtime requires /usr/bin/python3 to be Python 3.12."
+if [[ "$("${SYSTEM_PYTHON}" -c 'import sys; print(f"{sys.version_info.major}.{sys.version_info.minor}")')" != "${EXPECTED_PYTHON}" ]]; then
+  echo "ROS 2 ${GB10_ROS_DISTRO} requires /usr/bin/python3 ${EXPECTED_PYTHON}."
   exit 1
 fi
 
@@ -35,21 +50,33 @@ source "${ROS_SETUP}"
 set -u
 if ! ros2 pkg prefix rmw_fastrtps_cpp >/dev/null 2>&1; then
   echo "Install the Fast DDS RMW used by cross-version manual arm control:"
-  echo "  sudo apt-get install ros-jazzy-rmw-fastrtps-cpp"
+  echo "  sudo apt-get install ros-${GB10_ROS_DISTRO}-rmw-fastrtps-cpp"
   exit 1
 fi
 bash "${ROOT_DIR}/scripts/shared/build-ros-workspaces.sh"
 set +u
-source "${ROOT_DIR}/.ros/jazzy/unitree/setup.bash"
-source "${ROOT_DIR}/.ros/jazzy/project/setup.bash"
+source "${ROOT_DIR}/.ros/${GB10_ROS_DISTRO}/unitree/setup.bash"
+source "${ROOT_DIR}/.ros/${GB10_ROS_DISTRO}/project/setup.bash"
 set -u
 
-echo "Creating GB10 ROS 2 Jazzy/Python 3.12 vision environment"
+echo "Creating GB10 ROS 2 ${GB10_ROS_DISTRO}/Python ${EXPECTED_PYTHON} vision environment"
 uv venv --clear --system-site-packages --python "${SYSTEM_PYTHON}" "${VENV_DIR}"
 
 echo "Installing FastAPI, YOLO/CUDA, calibration, and G1 IK runtime"
-UV_PROJECT_ENVIRONMENT="${VENV_DIR}" uv sync \
-  --only-group vision --only-group train --only-group arm --locked
+if [[ "${GB10_ROS_DISTRO}" == "humble" ]]; then
+  # Ubuntu 22.04 workstations commonly have CUDA 12-capable drivers. Avoid the
+  # GB10's locked CUDA 13 stack and install a stable Ampere-compatible profile.
+  UV_PROJECT_ENVIRONMENT="${VENV_DIR}" uv sync \
+    --only-group vision --only-group arm --locked
+  uv pip install --python "${VENV_DIR}/bin/python" \
+    "torch==2.6.0" "torchvision==0.21.0" \
+    --index-url https://download.pytorch.org/whl/cu124
+  uv pip install --python "${VENV_DIR}/bin/python" \
+    "ultralytics>=8.2,<9" "opencv-python>=4.9" "tensorrt-cu12>=10,<11"
+else
+  UV_PROJECT_ENVIRONMENT="${VENV_DIR}" uv sync \
+    --only-group vision --only-group train --only-group arm --locked
+fi
 
 "${ROOT_DIR}/scripts/dev/fetch-arm-assets.sh"
 "${VENV_DIR}/bin/g1" assets build --target gb10

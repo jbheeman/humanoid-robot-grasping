@@ -153,7 +153,8 @@ for plugin in "${required_plugins[@]}"; do
 done
 
 source "${ROOT_DIR}/scripts/shared/ros-env.sh"
-g1_source_ros "${ROOT_DIR}" jazzy
+GB10_ROS_DISTRO="${GB10_ROS_DISTRO:-$([[ -r /opt/ros/jazzy/setup.bash ]] && echo jazzy || echo humble)}"
+g1_source_ros "${ROOT_DIR}" "${GB10_ROS_DISTRO}"
 g1_configure_cyclonedds gb10 "${ROS_INTERFACE}" "${ROBOT_HOST}" "${ROS_DOMAIN_ID}"
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 

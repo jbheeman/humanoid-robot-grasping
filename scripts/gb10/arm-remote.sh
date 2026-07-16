@@ -30,14 +30,15 @@ ln -sfn "$(basename "${result_file}")" \
   "$(dirname "${result_file}")/latest-result.log"
 
 source "${ROOT_DIR}/scripts/shared/ros-env.sh"
-# Foxy Fast DDS repeatedly crashes while parsing Jazzy/Cyclone discovery data
-# on the stock G1 image. Keep this arm-only path Fast DDS on both hosts.
+# Foxy Fast DDS repeatedly crashes while parsing newer-host Cyclone discovery
+# data on the stock G1 image. Keep this arm-only path Fast DDS on both hosts.
 export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-g1_source_ros "${ROOT_DIR}" jazzy
+GB10_ROS_DISTRO="${GB10_ROS_DISTRO:-$([[ -r /opt/ros/jazzy/setup.bash ]] && echo jazzy || echo humble)}"
+g1_source_ros "${ROOT_DIR}" "${GB10_ROS_DISTRO}"
 if ! ros2 pkg prefix rmw_fastrtps_cpp >/dev/null 2>&1; then
-  echo "Missing ros-jazzy-rmw-fastrtps-cpp on the GB10." >&2
-  echo "Install it once: sudo apt-get install ros-jazzy-rmw-fastrtps-cpp" >&2
-  g1_console_error "Missing ros-jazzy-rmw-fastrtps-cpp. See ${G1_ACTIVE_LOG_FILE}"
+  echo "Missing ros-${GB10_ROS_DISTRO}-rmw-fastrtps-cpp on the GB10." >&2
+  echo "Install it once: sudo apt-get install ros-${GB10_ROS_DISTRO}-rmw-fastrtps-cpp" >&2
+  g1_console_error "Missing ros-${GB10_ROS_DISTRO}-rmw-fastrtps-cpp. See ${G1_ACTIVE_LOG_FILE}"
   exit 1
 fi
 if [[ "${ROS_INTERFACE}" == "auto" ]]; then

@@ -39,12 +39,10 @@ Robot prerequisites:
 - `ros-foxy-rosidl-generator-dds-idl`
 - `python3-colcon-common-extensions`, Git, `uv`, GStreamer, and the depth driver
 
-GB10 prerequisites:
+GB10/replacement workstation prerequisites:
 
-- Ubuntu 24.04 with `/usr/bin/python3` 3.12
-- ROS 2 Jazzy at `/opt/ros/jazzy`
-- `ros-jazzy-rmw-cyclonedds-cpp`
-- `ros-jazzy-rosidl-generator-dds-idl`
+- Ubuntu 24.04/Python 3.12 with ROS 2 Jazzy, or Ubuntu 22.04/Python 3.10 with ROS 2 Humble
+- `rmw-cyclonedds-cpp`, `rmw-fastrtps-cpp`, and `rosidl-generator-dds-idl` for that distro
 - `python3-colcon-common-extensions`, Git, `uv`, GStreamer, and NVIDIA support
 
 Run on the matching host:
