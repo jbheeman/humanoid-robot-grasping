@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from math import cos, sin
-from typing import Iterable
+from typing import Iterable, Sequence
 
 import numpy as np
 
@@ -146,6 +146,226 @@ class Plane:
     def signed_distance(self, points: Iterable[float] | np.ndarray) -> np.ndarray:
         value = np.asarray(points, dtype=np.float64)
         return value @ self.normal + self.offset
+
+
+_SUPPORT_EDGE_NAMES = frozenset(("u_min", "u_max", "v_min", "v_max"))
+
+
+@dataclass(frozen=True)
+class SupportRegion:
+    """A live tabletop plane with explicitly certified physical boundaries.
+
+    An uncertified boundary is deliberately treated as extending forever.  A
+    point may therefore bypass the plane-height constraint only by crossing an
+    edge whose physical location was calibrated.  For the G1 tabletop setup we
+    initially certify only the robot-facing edge; that lets the hand safely
+    rise from beside the hip without claiming that unseen table sides are free.
+    """
+
+    plane: Plane
+    origin: np.ndarray
+    axis_u: np.ndarray
+    axis_v: np.ndarray
+    minimum_uv: np.ndarray
+    maximum_uv: np.ndarray
+    certified_edges: tuple[str, ...] = ()
+    lateral_margin_m: float = 0.07
+    source: str = "unknown"
+
+    def __post_init__(self) -> None:
+        origin = _vector3(self.origin, "origin")
+        axis_u = _vector3(self.axis_u, "axis_u")
+        axis_v = _vector3(self.axis_v, "axis_v")
+        minimum_uv = np.asarray(self.minimum_uv, dtype=np.float64)
+        maximum_uv = np.asarray(self.maximum_uv, dtype=np.float64)
+        if minimum_uv.shape != (2,) or maximum_uv.shape != (2,):
+            raise ValueError("support bounds must contain two values")
+        if not np.all(np.isfinite(np.concatenate((minimum_uv, maximum_uv)))):
+            raise ValueError("support bounds must be finite")
+        if np.any(maximum_uv <= minimum_uv):
+            raise ValueError("support maximum must exceed minimum")
+        if not np.isfinite(self.lateral_margin_m) or self.lateral_margin_m < 0.0:
+            raise ValueError("support lateral margin must be finite and non-negative")
+        if float(np.dot(self.plane.normal, (0.0, 0.0, 1.0))) < np.cos(np.deg2rad(15.0)):
+            raise ValueError("support plane is not a tabletop-like upward plane")
+        if not np.isclose(np.linalg.norm(axis_u), 1.0, atol=1e-6) or not np.isclose(
+            np.linalg.norm(axis_v), 1.0, atol=1e-6
+        ):
+            raise ValueError("support axes must be unit length")
+        if (
+            abs(float(np.dot(axis_u, axis_v))) > 1e-6
+            or abs(float(np.dot(axis_u, self.plane.normal))) > 1e-6
+            or abs(float(np.dot(axis_v, self.plane.normal))) > 1e-6
+        ):
+            raise ValueError("support axes must form an orthogonal plane basis")
+        certified = tuple(dict.fromkeys(str(edge) for edge in self.certified_edges))
+        if any(edge not in _SUPPORT_EDGE_NAMES for edge in certified):
+            raise ValueError("support region contains an unknown certified edge")
+        object.__setattr__(self, "origin", origin)
+        object.__setattr__(self, "axis_u", axis_u)
+        object.__setattr__(self, "axis_v", axis_v)
+        object.__setattr__(self, "minimum_uv", minimum_uv)
+        object.__setattr__(self, "maximum_uv", maximum_uv)
+        object.__setattr__(self, "certified_edges", certified)
+        object.__setattr__(self, "lateral_margin_m", float(self.lateral_margin_m))
+        object.__setattr__(self, "source", str(self.source))
+
+    @classmethod
+    def from_xy_bounds(
+        cls,
+        plane: Plane,
+        minimum_xy: Iterable[float],
+        maximum_xy: Iterable[float],
+        *,
+        certified_edges: tuple[str, ...] = ("u_min",),
+        lateral_margin_m: float = 0.07,
+        source: str = "calibrated_workspace",
+    ) -> "SupportRegion":
+        minimum = np.asarray(tuple(minimum_xy), dtype=np.float64)
+        maximum = np.asarray(tuple(maximum_xy), dtype=np.float64)
+        if minimum.shape != (2,) or maximum.shape != (2,):
+            raise ValueError("XY support bounds must contain two values")
+        if float(np.dot(plane.normal, (0.0, 0.0, 1.0))) < np.cos(np.deg2rad(15.0)):
+            raise ValueError("support plane is not a tabletop-like upward plane")
+        axis_u = np.asarray((1.0, 0.0, 0.0), dtype=np.float64)
+        axis_u -= float(np.dot(axis_u, plane.normal)) * plane.normal
+        magnitude = float(np.linalg.norm(axis_u))
+        if magnitude <= 1e-9:
+            raise ValueError("support plane cannot define a forward tangent axis")
+        axis_u /= magnitude
+        axis_v = np.cross(plane.normal, axis_u)
+        axis_v /= np.linalg.norm(axis_v)
+        origin = -plane.offset * plane.normal
+        corners = []
+        for x in (minimum[0], maximum[0]):
+            for y in (minimum[1], maximum[1]):
+                z = -(plane.offset + plane.normal[0] * x + plane.normal[1] * y) / plane.normal[2]
+                corners.append((x, y, z))
+        relative = np.asarray(corners, dtype=np.float64) - origin
+        uv = np.column_stack((relative @ axis_u, relative @ axis_v))
+        return cls(
+            plane=plane,
+            origin=origin,
+            axis_u=axis_u,
+            axis_v=axis_v,
+            minimum_uv=uv.min(axis=0),
+            maximum_uv=uv.max(axis=0),
+            certified_edges=certified_edges,
+            lateral_margin_m=lateral_margin_m,
+            source=source,
+        )
+
+    @classmethod
+    def from_ordered_corners(
+        cls,
+        plane: Plane,
+        corners_xyz: Sequence[Iterable[float]],
+        *,
+        certified_edges: tuple[str, ...] = ("u_min", "u_max", "v_min", "v_max"),
+        lateral_margin_m: float = 0.07,
+        source: str = "calibrated_tabletop_corners",
+    ) -> "SupportRegion":
+        """Build a tabletop region from near-left/right then far-right/left corners."""
+
+        corners = np.asarray([_vector3(point, "corner") for point in corners_xyz])
+        if corners.shape != (4, 3):
+            raise ValueError("support region requires four ordered corners")
+        if np.max(np.abs(plane.signed_distance(corners))) > 0.01:
+            raise ValueError("support corners are not on the live tabletop plane")
+        near_midpoint = 0.5 * (corners[0] + corners[1])
+        far_midpoint = 0.5 * (corners[2] + corners[3])
+        axis_v = corners[1] - corners[0]
+        axis_v -= float(np.dot(axis_v, plane.normal)) * plane.normal
+        axis_v_norm = float(np.linalg.norm(axis_v))
+        if axis_v_norm <= 0.05:
+            raise ValueError("tabletop near edge is too short")
+        axis_v /= axis_v_norm
+        axis_u = far_midpoint - near_midpoint
+        axis_u -= float(np.dot(axis_u, plane.normal)) * plane.normal
+        axis_u -= float(np.dot(axis_u, axis_v)) * axis_v
+        axis_u_norm = float(np.linalg.norm(axis_u))
+        if axis_u_norm <= 0.05:
+            raise ValueError("tabletop depth is too short")
+        axis_u /= axis_u_norm
+        origin = near_midpoint - float(plane.signed_distance(near_midpoint)) * plane.normal
+        relative = corners - origin
+        uv = np.column_stack((relative @ axis_u, relative @ axis_v))
+        minimum_uv = uv.min(axis=0)
+        maximum_uv = uv.max(axis=0)
+        if np.any(maximum_uv - minimum_uv < 0.05):
+            raise ValueError("tabletop footprint is degenerate")
+        return cls(
+            plane=plane,
+            origin=origin,
+            axis_u=axis_u,
+            axis_v=axis_v,
+            minimum_uv=minimum_uv,
+            maximum_uv=maximum_uv,
+            certified_edges=certified_edges,
+            lateral_margin_m=lateral_margin_m,
+            source=source,
+        )
+
+    def signed_distance(self, points: Iterable[float] | np.ndarray) -> np.ndarray:
+        return self.plane.signed_distance(points)
+
+    def projection_uv(self, point: Iterable[float]) -> np.ndarray:
+        relative = _vector3(point, "point") - self.origin
+        return np.asarray(
+            (float(np.dot(relative, self.axis_u)), float(np.dot(relative, self.axis_v))),
+            dtype=np.float64,
+        )
+
+    def requires_clearance(self, point: Iterable[float]) -> bool:
+        u, v = self.projection_uv(point)
+        margin = self.lateral_margin_m
+        outside = {
+            "u_min": u < self.minimum_uv[0] - margin,
+            "u_max": u > self.maximum_uv[0] + margin,
+            "v_min": v < self.minimum_uv[1] - margin,
+            "v_max": v > self.maximum_uv[1] + margin,
+        }
+        return not any(outside[edge] for edge in self.certified_edges)
+
+    def has_clearance(self, point: Iterable[float], *, minimum_clearance_m: float) -> bool:
+        if minimum_clearance_m < 0.0 or not np.isfinite(minimum_clearance_m):
+            raise ValueError("minimum clearance must be finite and non-negative")
+        if not self.requires_clearance(point):
+            return True
+        return bool(float(self.signed_distance(point)) >= minimum_clearance_m)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "normal": self.plane.normal.tolist(),
+            "offset": float(self.plane.offset),
+            "footprint": {
+                "origin": self.origin.tolist(),
+                "axis_u": self.axis_u.tolist(),
+                "axis_v": self.axis_v.tolist(),
+                "minimum_uv": self.minimum_uv.tolist(),
+                "maximum_uv": self.maximum_uv.tolist(),
+                "certified_edges": list(self.certified_edges),
+                "lateral_margin_m": self.lateral_margin_m,
+                "source": self.source,
+            },
+        }
+
+    @classmethod
+    def from_dict(cls, value: dict[str, object]) -> "SupportRegion":
+        footprint = value.get("footprint")
+        if not isinstance(footprint, dict):
+            raise ValueError("support region has no bounded footprint")
+        return cls(
+            plane=Plane(value["normal"], float(value["offset"])),
+            origin=footprint["origin"],
+            axis_u=footprint["axis_u"],
+            axis_v=footprint["axis_v"],
+            minimum_uv=footprint["minimum_uv"],
+            maximum_uv=footprint["maximum_uv"],
+            certified_edges=tuple(footprint.get("certified_edges", ())),
+            lateral_margin_m=float(footprint.get("lateral_margin_m", 0.07)),
+            source=str(footprint.get("source", "unknown")),
+        )
 
 
 @dataclass(frozen=True)
@@ -397,3 +617,14 @@ def has_plane_clearance(
     if minimum_clearance_m < 0:
         raise ValueError("minimum_clearance_m must be non-negative")
     return bool(plane.signed_distance(_vector3(point, "point")) >= minimum_clearance_m)
+
+
+def has_support_clearance(
+    point: Iterable[float],
+    support: Plane | SupportRegion,
+    *,
+    minimum_clearance_m: float = 0.10,
+) -> bool:
+    if isinstance(support, SupportRegion):
+        return support.has_clearance(point, minimum_clearance_m=minimum_clearance_m)
+    return has_plane_clearance(point, support, minimum_clearance_m=minimum_clearance_m)

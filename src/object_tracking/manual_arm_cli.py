@@ -593,11 +593,32 @@ def _vision_support_plane(target: dict[str, Any]) -> Any | None:
     if not isinstance(value, dict):
         return None
     try:
-        from object_tracking.arm_tracking.geometry import Plane
+        from object_tracking.arm_tracking.geometry import SupportRegion
 
-        return Plane(value["normal"], float(value["offset"]))
+        support = SupportRegion.from_dict(value)
+        if set(support.certified_edges) != {"u_min", "u_max", "v_min", "v_max"}:
+            return None
+        return support
     except (KeyError, TypeError, ValueError):
         return None
+
+
+def _support_regions_equivalent(first: Any, second: Any) -> bool:
+    """Accept only small live-plane drift against the same calibrated footprint."""
+
+    import numpy as np
+
+    if first.certified_edges != second.certified_edges or first.source != second.source:
+        return False
+    if float(np.dot(first.plane.normal, second.plane.normal)) < math.cos(math.radians(2.0)):
+        return False
+    if abs(float(first.plane.offset - second.plane.offset)) > 0.015:
+        return False
+    return bool(
+        np.linalg.norm(first.origin - second.origin) <= 0.03
+        and np.max(np.abs(first.minimum_uv - second.minimum_uv)) <= 0.03
+        and np.max(np.abs(first.maximum_uv - second.maximum_uv)) <= 0.03
+    )
 
 
 def _inside_vision_workspace(point: Sequence[float], target: dict[str, Any]) -> bool:
@@ -645,12 +666,6 @@ def _bounded_servo_solution(
             result.position_error_m,
         )
     candidate = tuple(float(value) for value in solution)
-    path_error = ik_solver.validate_joint_path(
-        (tuple(float(value) for value in seed), candidate),
-        support_plane=support_plane,
-    )
-    if path_error:
-        return None, path_error, result.position_error_m
     return candidate, None, result.position_error_m
 
 
@@ -829,10 +844,12 @@ def run(args: argparse.Namespace) -> int:
             clearance_transform = ik_solver.forward_kinematics(preplan_start)
             clearance_transform[:3, 3] += np.asarray((0.06, 0.0, 0.12))
             print("Planning collision-aware hip clearance…", flush=True)
+            clearance_started_at = time.monotonic()
             clearance_route = ik_solver.solve_with_collision_detour(
                 clearance_transform,
                 preplan_start,
                 enforce_orientation=False,
+                support_plane=support_plane,
             )
             if not clearance_route.ok or clearance_route.q_path is None:
                 raise RemoteArmError(
@@ -840,23 +857,29 @@ def run(args: argparse.Namespace) -> int:
                     f"{clearance_route.reason}"
                 )
             preplanned_clearance_path = clearance_route.q_path
-            clearance_error = ik_solver.validate_joint_path(
-                preplanned_clearance_path,
-                support_plane=support_plane,
-            )
-            if clearance_error:
-                raise RemoteArmError(
-                    "IK hip-clearance route violates support-plane safety while disarmed: "
-                    f"{clearance_error}"
-                )
             motion_trace.append(
                 {
                     "phase": "preplan_clearance",
                     "kind": "hip_clearance",
                     "path_knots": len(preplanned_clearance_path),
                     "planned_while_disarmed": True,
+                    "planning_ms": round(
+                        (time.monotonic() - clearance_started_at) * 1000.0,
+                        1,
+                    ),
                 }
             )
+            refreshed_target = _fetch_vision_target(args.server)
+            refreshed_support = _vision_support_plane(refreshed_target)
+            if refreshed_support is None or not _support_regions_equivalent(
+                support_plane,
+                refreshed_support,
+            ):
+                raise RemoteArmError(
+                    "Live tabletop geometry changed during clearance planning; refusing arm ownership"
+                )
+            vision_target = refreshed_target
+            support_plane = refreshed_support
 
         enabled = client.request("enable", timeout_s=args.timeout)
         session_id = str(enabled.get("session_id") or "")
@@ -954,17 +977,28 @@ def run(args: argparse.Namespace) -> int:
             solution_q = tuple(baseline)
             if args.command == "point":
                 assert preplanned_clearance_path is not None
-                # Ownership transfer can settle the arm slightly. Rebase the
-                # disarmed preplan on that settled command and run a fast swept
-                # validation; never launch RRT while the session is armed.
-                clearance_path = (solution_q, *preplanned_clearance_path[1:])
-                support_plane = _vision_support_plane(vision_target or {})
-                if support_plane is None:
+                # Ownership transfer can settle the arm slightly. Rebase and
+                # validate only the changed first edge; the unchanged suffix
+                # was certified by the disarmed planner. Never run RRT while
+                # the session is armed.
+                if float(np.max(np.abs(np.asarray(solution_q) - np.asarray(preplan_start)))) > 0.02:
                     raise RemoteArmError(
-                        "Vision lost its support plane before arm ownership; refusing movement"
+                        "settled arm pose drifted more than 0.02 rad from the disarmed preplan"
                     )
+                latest_target = _fetch_vision_target(args.server)
+                latest_support = _vision_support_plane(latest_target)
+                if latest_support is None or not _support_regions_equivalent(
+                    support_plane,
+                    latest_support,
+                ):
+                    raise RemoteArmError(
+                        "Vision/tabletop geometry changed before first publish; refusing movement"
+                    )
+                vision_target = latest_target
+                support_plane = latest_support
+                clearance_path = (solution_q, *preplanned_clearance_path[1:])
                 clearance_error = ik_solver.validate_joint_path(
-                    clearance_path,
+                    clearance_path[:2],
                     support_plane=support_plane,
                 )
                 if clearance_error:

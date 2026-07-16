@@ -23,9 +23,11 @@ from object_tracking.manual_arm_cli import (
     _record_result,
     _signed_progress,
     _validate_args,
+    _vision_support_plane,
     _write_motion_trace,
     build_parser,
 )
+from object_tracking.arm_tracking.geometry import Plane, SupportRegion
 
 
 def test_arming_status_reports_the_safety_reason_without_joint_dump() -> None:
@@ -224,11 +226,10 @@ def test_point_tracking_options_are_guarded() -> None:
         _validate_args(build_parser().parse_args(["point", "--reacquire-samples", "1"]))
 
 
-def test_servo_solution_enforces_small_joint_step_and_fast_path_validation() -> None:
+def test_servo_solution_enforces_small_joint_step_without_full_route_validation() -> None:
     class Solver:
         def __init__(self, delta):
             self.delta = delta
-            self.validated = False
 
         def solve(self, transform, seed, *, support_plane):
             del transform, support_plane
@@ -241,8 +242,7 @@ def test_servo_solution_enforces_small_joint_step_and_fast_path_validation() -> 
 
         def validate_joint_path(self, path, *, support_plane):
             del path, support_plane
-            self.validated = True
-            return None
+            raise AssertionError("realtime servo must not run full route validation")
 
     accepted_solver = Solver(0.02)
     accepted, reason, _ = _bounded_servo_solution(
@@ -250,8 +250,6 @@ def test_servo_solution_enforces_small_joint_step_and_fast_path_validation() -> 
     )
     assert accepted == pytest.approx((0.02,) * 7)
     assert reason is None
-    assert accepted_solver.validated is True
-
     rejected, reason, _ = _bounded_servo_solution(
         Solver(0.0201), np.eye(4), (0.0,) * 7, support_plane=object()
     )
@@ -288,6 +286,20 @@ def test_fetch_vision_target_requires_fresh_registered_xyz(monkeypatch) -> None:
     assert target["object_xyz_m"] == pytest.approx((0.55, -0.1, 0.02))
     assert target["predicted_xyz_m"] == pytest.approx((0.57, -0.1, 0.02))
     assert target["target_age_ms"] == pytest.approx(42.0)
+
+
+def test_vision_support_plane_requires_all_four_calibrated_edges() -> None:
+    plane = Plane((0.0, 0.0, 1.0), 0.0)
+    bounded = SupportRegion.from_ordered_corners(
+        plane,
+        ((0.4, 0.3, 0.0), (0.4, -0.3, 0.0), (0.75, -0.3, 0.0), (0.75, 0.3, 0.0)),
+    )
+
+    assert _vision_support_plane({"support_plane": bounded.to_dict()}) is not None
+    assert _vision_support_plane({"support_plane": {"normal": [0, 0, 1], "offset": 0}}) is None
+    incomplete = bounded.to_dict()
+    incomplete["footprint"]["certified_edges"] = ["u_min"]
+    assert _vision_support_plane({"support_plane": incomplete}) is None
 
 
 def test_fetch_vision_target_selects_better_evaluated_fallback(monkeypatch) -> None:

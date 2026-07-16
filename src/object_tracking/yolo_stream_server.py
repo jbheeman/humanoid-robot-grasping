@@ -1455,6 +1455,7 @@ def main() -> None:
             arm_runtime = ArmTrackingRuntime(
                 RuntimeConfig(
                     calibration_path=Path(args.calibration),
+                    tabletop_path=TABLETOP_CALIBRATION_PATH,
                     arm_home_path=None if args.arm_home is None else Path(args.arm_home),
                     robot_id=args.robot_id,
                     execute=args.execute,

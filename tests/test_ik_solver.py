@@ -7,6 +7,7 @@ from object_tracking.arm_tracking.ik_solver import (
     collision_aware_joint_path,
     default_urdf_path,
 )
+from object_tracking.arm_tracking.geometry import Plane, SupportRegion
 import numpy as np
 import pytest
 
@@ -67,6 +68,27 @@ def test_collision_aware_path_rejects_invalid_goal() -> None:
     assert path is None
 
 
+def test_collision_aware_path_advances_to_last_valid_extension_prefix() -> None:
+    def valid(q: np.ndarray) -> bool:
+        return not (0.30 < q[0] < 0.70 and abs(q[1]) < 0.08)
+
+    path = collision_aware_joint_path(
+        (0.0, 0.0),
+        (1.0, 0.0),
+        (-0.2, -1.0),
+        (1.2, 1.0),
+        valid,
+        edge_step_rad=0.01,
+        extension_step_rad=0.12,
+        max_iterations=5,
+        seed=4,
+        guided_sampling=False,
+    )
+
+    assert path is not None
+    assert len(path) == 3
+
+
 def test_g1_rest_pose_can_detour_around_right_hip_for_pointing() -> None:
     pytest.importorskip("pinocchio")
     pytest.importorskip("scipy")
@@ -83,18 +105,37 @@ def test_g1_rest_pose_can_detour_around_right_hip_for_pointing() -> None:
         orientation_weight=0.03,
     )
     start_q = np.asarray(
-        (0.296993, -0.203672, 0.043167, 0.984252, -0.107451, 0.019762, 0.000875)
+        (
+            0.2951954305,
+            -0.1279316097,
+            0.0029960563,
+            0.9830660224,
+            -0.1099193171,
+            0.0618985221,
+            -0.0382895991,
+        )
     )
+    plane = Plane(
+        (0.0612211654, -0.0322558272, 0.9976028922),
+        0.0058313740,
+    )
+    corners = []
+    for x, y in ((0.42, 0.30), (0.42, -0.30), (0.75, -0.30), (0.75, 0.30)):
+        z = -(plane.offset + plane.normal[0] * x + plane.normal[1] * y) / plane.normal[2]
+        corners.append((x, y, z))
+    support = SupportRegion.from_ordered_corners(plane, corners)
     target = solver.forward_kinematics(start_q)
-    target[:3, 3] += np.asarray((0.07615, 0.03750, 0.05288))
+    target[:3, 3] += np.asarray((0.06, 0.0, 0.12))
 
     route = solver.solve_with_collision_detour(
         target,
         start_q,
         enforce_orientation=False,
+        support_plane=support,
     )
 
     assert route.ok, route.reason
     assert route.q_path is not None
     assert len(route.q_path) >= 3
     assert route.position_error_m < 0.005
+    assert solver.validate_joint_path(route.q_path, support_plane=support) is None

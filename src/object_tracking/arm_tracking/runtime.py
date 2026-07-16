@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 from dataclasses import dataclass
+import json
 from pathlib import Path
 import threading
 import time
@@ -17,7 +18,8 @@ from .geometry import (
     deproject_pixel,
     extract_support_plane,
     generate_pregrasp_target,
-    has_plane_clearance,
+    has_support_clearance,
+    SupportRegion,
 )
 from .ik_solver import G1RightArmIK, IKUnavailable, default_urdf_path
 from .tracking import PositionVelocityFilter
@@ -62,6 +64,7 @@ class TrackingTransport(Protocol):
 @dataclass(frozen=True)
 class RuntimeConfig:
     calibration_path: Path
+    tabletop_path: Path | None = None
     arm_home_path: Path | None = None
     robot_id: str | None = None
     execute: bool = False
@@ -150,6 +153,28 @@ class ArmTrackingRuntime:
         self.transport = transport
         self.repo_root = repo_root
         self.calibration = load_calibration(config.calibration_path)
+        self.tabletop_corners_px: tuple[tuple[float, float], ...] | None = None
+        self.tabletop_footprint_error: str | None = None
+        if config.tabletop_path is not None:
+            try:
+                value = json.loads(config.tabletop_path.read_text(encoding="utf-8"))
+                frame = value["camera_frame"]
+                expected_size = (
+                    self.calibration.rgb_profile.width,
+                    self.calibration.rgb_profile.height,
+                )
+                if (int(frame["width"]), int(frame["height"])) != expected_size:
+                    raise ValueError("tabletop corners use a different RGB profile")
+                corners = value["corners_px"]
+                expected_names = ("near_left", "near_right", "far_right", "far_left")
+                if tuple(str(item["name"]) for item in corners) != expected_names:
+                    raise ValueError("tabletop corners are not in the required order")
+                parsed = tuple((float(item["x"]), float(item["y"])) for item in corners)
+                if len(parsed) != 4 or not np.all(np.isfinite(parsed)):
+                    raise ValueError("tabletop footprint must contain four finite corners")
+                self.tabletop_corners_px = parsed
+            except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
+                self.tabletop_footprint_error = f"{type(exc).__name__}: {exc}"
         if config.execute:
             self.calibration.validate_for_execution(
                 camera_serial=self.calibration.camera_serial,
@@ -420,10 +445,7 @@ class ArmTrackingRuntime:
         )
         plane = self._support_plane(aligned, frame.depth_scale)
         if plane is not None:
-            base_status["visualization"]["support_plane"] = {
-                "normal": plane.normal.tolist(),
-                "offset": float(plane.offset),
-            }
+            base_status["visualization"]["support_plane"] = plane.to_dict()
         base_status["visualization"]["support_plane_status"] = {
             "available": plane is not None,
             "age_ms": round(max(0.0, time.monotonic() - self.last_support_plane_at) * 1000.0, 1)
@@ -434,7 +456,7 @@ class ArmTrackingRuntime:
         if not self.calibration.workspace.contains(target.position):
             self._reject(base_status, "workspace_violation", colormap)
             return
-        if plane is None or not has_plane_clearance(target.position, plane):
+        if plane is None or not has_support_clearance(target.position, plane):
             self._reject(base_status, "support_plane_clearance", colormap)
             return
         if self.ik is None:
@@ -580,8 +602,17 @@ class ArmTrackingRuntime:
             "methods": methods,
         }
 
-    def _support_plane(self, aligned: np.ndarray, depth_scale: float) -> Any | None:
+    def _support_plane(self, aligned: np.ndarray, depth_scale: float) -> SupportRegion | None:
         try:
+            if self.tabletop_corners_px is None:
+                raise ValueError(
+                    "no calibrated tabletop footprint"
+                    + (
+                        ""
+                        if self.tabletop_footprint_error is None
+                        else f": {self.tabletop_footprint_error}"
+                    )
+                )
             plane, _ = extract_support_plane(
                 aligned,
                 self.calibration.rgb_intrinsics,
@@ -589,10 +620,38 @@ class ArmTrackingRuntime:
                 optical_to_base=self.calibration.optical_to_torso,
                 stride=8,
             )
-            self.last_support_plane = plane
+            origin = self.calibration.optical_to_torso.translation
+            rotation = self.calibration.optical_to_torso.rotation
+            intrinsics = self.calibration.rgb_intrinsics
+            corners_xyz: list[np.ndarray] = []
+            for u, v in self.tabletop_corners_px:
+                optical_ray = np.asarray(
+                    (
+                        (u - intrinsics.ppx) / intrinsics.fx,
+                        (v - intrinsics.ppy) / intrinsics.fy,
+                        1.0,
+                    ),
+                    dtype=float,
+                )
+                torso_ray = rotation @ optical_ray
+                denominator = float(np.dot(plane.normal, torso_ray))
+                if abs(denominator) <= 1e-6:
+                    raise ValueError("tabletop corner ray is parallel to the support plane")
+                distance = -float(np.dot(plane.normal, origin) + plane.offset) / denominator
+                if distance <= 0.0:
+                    raise ValueError("tabletop corner intersects behind the camera")
+                corners_xyz.append(origin + distance * torso_ray)
+            support = SupportRegion.from_ordered_corners(
+                plane,
+                corners_xyz,
+                certified_edges=("u_min", "u_max", "v_min", "v_max"),
+                lateral_margin_m=0.07,
+                source="live_plane_calibrated_pixel_corners",
+            )
+            self.last_support_plane = support
             self.last_support_plane_at = time.monotonic()
             self.last_support_plane_error = None
-            return plane
+            return support
         except ValueError as exc:
             self.last_support_plane_error = f"{type(exc).__name__}: {exc}"
             return None

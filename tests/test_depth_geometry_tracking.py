@@ -12,13 +12,16 @@ from object_tracking.arm_tracking.depth import (
 )
 from object_tracking.arm_tracking.geometry import (
     CameraIntrinsics,
+    Plane,
     RigidTransform,
+    SupportRegion,
     WorkspaceBounds,
     deproject_pixel,
     extract_support_plane,
     fit_plane,
     generate_pregrasp_target,
     has_plane_clearance,
+    has_support_clearance,
     map_pixel_between_profiles,
 )
 from object_tracking.arm_tracking.tracking import (
@@ -130,6 +133,66 @@ class GeometryTests(unittest.TestCase):
         )
         self.assertGreater(float(inliers.mean()), 0.9)
         self.assertAlmostEqual(abs(plane.offset), 1.0, places=3)
+
+    def test_bounded_support_region_releases_only_across_certified_edge(self) -> None:
+        support = SupportRegion.from_xy_bounds(
+            Plane((0.0, 0.0, 1.0), 0.0),
+            (0.37, -0.35),
+            (0.80, 0.35),
+            certified_edges=("u_min",),
+            lateral_margin_m=0.07,
+        )
+
+        self.assertTrue(
+            has_support_clearance((0.20, 0.0, -0.10), support, minimum_clearance_m=0.05)
+        )
+        self.assertFalse(
+            has_support_clearance((0.31, 0.0, -0.10), support, minimum_clearance_m=0.05)
+        )
+        self.assertFalse(
+            has_support_clearance((0.50, 0.80, -0.10), support, minimum_clearance_m=0.05)
+        )
+        self.assertTrue(has_support_clearance((0.50, 0.0, 0.05), support, minimum_clearance_m=0.05))
+
+    def test_support_region_round_trips_without_losing_certification(self) -> None:
+        support = SupportRegion.from_xy_bounds(
+            Plane((0.02, -0.01, 0.99975), 0.005),
+            (0.37, -0.35),
+            (0.80, 0.35),
+            certified_edges=("u_min",),
+        )
+        restored = SupportRegion.from_dict(support.to_dict())
+
+        np.testing.assert_allclose(restored.plane.normal, support.plane.normal)
+        np.testing.assert_allclose(restored.minimum_uv, support.minimum_uv)
+        self.assertEqual(restored.certified_edges, ("u_min",))
+
+    def test_support_region_uses_explicit_ordered_tabletop_corners(self) -> None:
+        plane = Plane((0.0, 0.0, 1.0), 0.0)
+        support = SupportRegion.from_ordered_corners(
+            plane,
+            (
+                (0.40, 0.30, 0.0),
+                (0.40, -0.30, 0.0),
+                (0.75, -0.30, 0.0),
+                (0.75, 0.30, 0.0),
+            ),
+        )
+
+        self.assertEqual(
+            set(support.certified_edges),
+            {"u_min", "u_max", "v_min", "v_max"},
+        )
+        self.assertTrue(support.has_clearance((0.20, 0.0, -0.10), minimum_clearance_m=0.05))
+        self.assertFalse(support.has_clearance((0.55, 0.0, -0.10), minimum_clearance_m=0.05))
+
+    def test_support_region_rejects_non_table_plane(self) -> None:
+        with self.assertRaisesRegex(ValueError, "tabletop-like"):
+            SupportRegion.from_xy_bounds(
+                Plane((1.0, 0.0, 0.0), 0.0),
+                (0.37, -0.35),
+                (0.80, 0.35),
+            )
 
 
 class TrackingTests(unittest.TestCase):

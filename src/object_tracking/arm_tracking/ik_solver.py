@@ -24,7 +24,45 @@ _ADJACENT_G1_COLLISION_PAIRS = {
     frozenset(("torso_link_0", "right_shoulder_roll_link_0")),
     frozenset(("torso_link_0", "right_shoulder_yaw_link_0")),
     frozenset(("torso_link_0", "right_elbow_link_0")),
+    frozenset(("right_shoulder_yaw_link_0", "right_elbow_link_0")),
+    frozenset(("right_elbow_link_0", "right_wrist_roll_link_0")),
 }
+
+# Deterministic local directions discovered from the measured G1 hip-rest
+# posture. They are hypotheses only: _guided_start_escape densely validates
+# every application against the current pose, full collision model, bounded
+# support region, no-deepening rule, collision-free latch, and 10 mm exit gate.
+_G1_HIP_ESCAPE_DELTAS = (
+    (0.0, -0.20, 0.0, 0.0, 0.0, 0.0, 0.0),
+    (0.0, -0.20, 0.0, 0.0, 0.0, 0.03, 0.0),
+    (0.0, -0.20, 0.0, 0.0, 0.0, -0.03, 0.0),
+    (0.0, -0.20, 0.0, 0.0, 0.0, 0.0, 0.03),
+    (0.0, -0.20, 0.0, 0.0, 0.0, 0.0, -0.03),
+    (0.0, -0.20, 0.0, 0.0, 0.03, 0.0, 0.0),
+    (0.0, -0.20, 0.0, 0.0, -0.03, 0.0, 0.0),
+    (0.03, -0.20, 0.0, 0.0, 0.0, 0.0, 0.0),
+    (-0.03, -0.20, 0.0, 0.0, 0.0, 0.0, 0.0),
+    (0.0, -0.20, 0.03, 0.0, 0.0, 0.0, 0.0),
+    (0.0, -0.20, -0.03, 0.0, 0.0, 0.0, 0.0),
+    (0.0, -0.20, 0.0, 0.03, 0.0, 0.0, 0.0),
+    (0.0, -0.20, 0.0, -0.03, 0.0, 0.0, 0.0),
+    (0.08, -0.20, 0.0, 0.0, 0.0, 0.0, 0.0),
+    (-0.08, -0.20, 0.0, 0.0, 0.0, 0.0, 0.0),
+    (0.0, -0.20, 0.08, 0.0, 0.0, 0.0, 0.0),
+    (0.0, -0.20, -0.08, 0.0, 0.0, 0.0, 0.0),
+    (0.0, -0.20, 0.0, 0.08, 0.0, 0.0, 0.0),
+    (0.0, -0.20, 0.0, -0.08, 0.0, 0.0, 0.0),
+    (0.0, -0.20, 0.0, 0.0, 0.08, 0.0, 0.0),
+    (0.0, -0.20, 0.0, 0.0, -0.08, 0.0, 0.0),
+    (0.0, -0.20, 0.0, 0.0, 0.0, 0.08, 0.0),
+    (0.0, -0.20, 0.0, 0.0, 0.0, -0.08, 0.0),
+    (0.0, -0.20, 0.0, 0.0, 0.0, 0.0, 0.08),
+    (0.0, -0.20, 0.0, 0.0, 0.0, 0.0, -0.08),
+    (0.0, -0.24, 0.0, 0.0, 0.0, 0.12, 0.0),
+    (0.0, -0.24, 0.0, 0.0, 0.0, -0.12, 0.0),
+    (0.0, -0.24, 0.0, 0.0, 0.0, 0.0, 0.12),
+    (0.0, -0.24, 0.0, 0.0, 0.0, 0.0, -0.12),
+)
 
 
 class IKUnavailable(RuntimeError):
@@ -61,6 +99,7 @@ def collision_aware_joint_path(
     max_iterations: int = 500,
     planning_timeout_s: float = 1.5,
     seed: int = 7,
+    guided_sampling: bool = True,
 ) -> tuple[tuple[float, ...], ...] | None:
     """Plan a deterministic bidirectional RRT path and shortcut it.
 
@@ -86,13 +125,16 @@ def collision_aware_joint_path(
         or planning_timeout_s <= 0.0
     ):
         raise ValueError("invalid collision-aware joint path inputs")
+    deadline = time.monotonic() + planning_timeout_s
 
     def edge_is_valid(begin: np.ndarray, end: np.ndarray) -> bool:
         steps = max(1, int(np.ceil(np.max(np.abs(end - begin)) / edge_step_rad)))
-        return all(
-            state_is_valid((1.0 - alpha) * begin + alpha * end)
-            for alpha in np.linspace(0.0, 1.0, steps + 1)[1:]
-        )
+        for alpha in np.linspace(0.0, 1.0, steps + 1)[1:]:
+            if time.monotonic() >= deadline:
+                return False
+            if not state_is_valid((1.0 - alpha) * begin + alpha * end):
+                return False
+        return True
 
     if not state_is_valid(start) or not state_is_valid(goal):
         return None
@@ -109,17 +151,31 @@ def collision_aware_joint_path(
     def nearest(nodes: list[np.ndarray], target: np.ndarray) -> int:
         return int(np.argmin([np.linalg.norm(node - target) for node in nodes]))
 
-    def extend(
-        nodes: list[np.ndarray], parents: list[int], target: np.ndarray
-    ) -> int | None:
+    def extend(nodes: list[np.ndarray], parents: list[int], target: np.ndarray) -> int | None:
         parent = nearest(nodes, target)
         begin = nodes[parent]
         delta = target - begin
         distance = float(np.linalg.norm(delta))
-        end = target if distance <= extension_step_rad else begin + delta / distance * extension_step_rad
-        if not edge_is_valid(begin, end):
+        end = (
+            target
+            if distance <= extension_step_rad
+            else begin + delta / distance * extension_step_rad
+        )
+        # Standard RRT-Connect advances to the last valid interpolation point.
+        # Rejecting an entire extension because only its tail collides prevents
+        # either tree from reaching the boundary of a narrow passage.
+        steps = max(1, int(np.ceil(np.max(np.abs(end - begin)) / edge_step_rad)))
+        last_valid = begin
+        for alpha in np.linspace(0.0, 1.0, steps + 1)[1:]:
+            if time.monotonic() >= deadline:
+                break
+            candidate = (1.0 - alpha) * begin + alpha * end
+            if not state_is_valid(candidate):
+                break
+            last_valid = candidate
+        if np.linalg.norm(last_valid - begin) < 1e-9:
             return None
-        nodes.append(end)
+        nodes.append(last_valid)
         parents.append(parent)
         return len(nodes) - 1
 
@@ -131,14 +187,27 @@ def collision_aware_joint_path(
         return list(reversed(result))
 
     path: list[np.ndarray] | None = None
-    deadline = time.monotonic() + planning_timeout_s
     for _ in range(max_iterations):
         if time.monotonic() >= deadline:
             break
-        sample = goal if rng.random() < 0.15 else rng.uniform(low, high)
+        choice = rng.random()
+        if choice < 0.15:
+            sample = goal
+        elif guided_sampling and choice < 0.70:
+            alpha = rng.random()
+            center = (1.0 - alpha) * start + alpha * goal
+            sample = np.clip(
+                center + rng.normal(0.0, 0.18, start.shape) * (high - low),
+                low,
+                high,
+            )
+        else:
+            sample = rng.uniform(low, high)
         index_a = extend(nodes_a, parents_a, sample)
         if index_a is not None:
             while True:
+                if time.monotonic() >= deadline:
+                    break
                 index_b = extend(nodes_b, parents_b, nodes_a[index_a])
                 if index_b is None:
                     break
@@ -160,6 +229,8 @@ def collision_aware_joint_path(
     shortened = [path[0]]
     index = 0
     while index < len(path) - 1:
+        if time.monotonic() >= deadline:
+            return None
         candidate = len(path) - 1
         while candidate > index + 1 and not edge_is_valid(path[index], path[candidate]):
             candidate -= 1
@@ -264,6 +335,50 @@ class G1RightArmIK:
                 f"contract: expected {RIGHT_ARM_JOINTS}, got {reduced_joint_order}"
             )
         self.data = self.model.createData()
+        self._right_hand_hip_pair_indices = (
+            ()
+            if self.collision_model is None
+            else tuple(
+                index
+                for index in range(len(self.collision_model.collisionPairs))
+                if self._is_right_hand_hip_pair(index)
+            )
+        )
+        self._right_arm_collision_samples: tuple[tuple[int, np.ndarray], ...] = ()
+        if self.collision_model is not None:
+            samples: list[tuple[int, np.ndarray]] = []
+            arm_prefixes = (
+                "right_shoulder_",
+                "right_elbow_",
+                "right_wrist_",
+                "right_hand_",
+            )
+            for geometry_index, geometry_object in enumerate(
+                self.collision_model.geometryObjects
+            ):
+                if not geometry_object.name.startswith(arm_prefixes):
+                    continue
+                shape = geometry_object.geometry
+                try:
+                    shape.computeLocalAABB()
+                    minimum = np.asarray(shape.aabb_local.min_, dtype=float)
+                    maximum = np.asarray(shape.aabb_local.max_, dtype=float)
+                except Exception:
+                    samples = []
+                    break
+                if minimum.shape != (3,) or maximum.shape != (3,):
+                    samples = []
+                    break
+                midpoint = 0.5 * (minimum + maximum)
+                local_points = [midpoint]
+                local_points.extend(
+                    np.asarray((x, y, z), dtype=float)
+                    for x in (minimum[0], maximum[0])
+                    for y in (minimum[1], maximum[1])
+                    for z in (minimum[2], maximum[2])
+                )
+                samples.extend((geometry_index, point) for point in local_points)
+            self._right_arm_collision_samples = tuple(samples)
         parent = self.model.getJointId("right_wrist_yaw_joint")
         parent_frame = self.model.getFrameId("right_wrist_yaw_link")
         self.ee_frame = self.model.addFrame(
@@ -365,9 +480,7 @@ class G1RightArmIK:
             self.pin.framesForwardKinematics(self.model, self.data, q)
             pose = self.data.oMf[self.ee_frame]
             translation = sqrt_translation * (pose.translation - target[:3, 3])
-            rotation = sqrt_orientation * self.pin.log3(
-                pose.rotation @ target[:3, :3].T
-            )
+            rotation = sqrt_orientation * self.pin.log3(pose.rotation @ target[:3, :3].T)
             return np.concatenate(
                 (
                     translation,
@@ -421,9 +534,7 @@ class G1RightArmIK:
         # URDF neutral rather than measured, so hand-to-hand contacts are not
         # meaningful constraints for a right-arm pointing trajectory.  Keep
         # every torso/hip/right-arm pair active.
-        if (
-            first.startswith("left_hand_") and second.startswith("right_hand_")
-        ) or (
+        if (first.startswith("left_hand_") and second.startswith("right_hand_")) or (
             first.startswith("right_hand_") and second.startswith("left_hand_")
         ):
             return True
@@ -435,6 +546,262 @@ class G1RightArmIK:
         first = self.collision_model.geometryObjects[pair.first].name
         second = self.collision_model.geometryObjects[pair.second].name
         return f"{first}<->{second}"
+
+    def _collision_pair_names(self, pair_index: int) -> tuple[str, str]:
+        assert self.collision_model is not None
+        pair = self.collision_model.collisionPairs[pair_index]
+        return (
+            self.collision_model.geometryObjects[pair.first].name,
+            self.collision_model.geometryObjects[pair.second].name,
+        )
+
+    def _is_right_hand_hip_pair(self, pair_index: int) -> bool:
+        first, second = self._collision_pair_names(pair_index)
+        return bool(
+            (
+                first.startswith("right_hip_")
+                and (second.startswith("right_hand_") or second.startswith("right_wrist_"))
+            )
+            or (
+                second.startswith("right_hip_")
+                and (first.startswith("right_hand_") or first.startswith("right_wrist_"))
+            )
+        )
+
+    def _right_hand_hip_distances(
+        self,
+        q: np.ndarray,
+        pair_indices: Sequence[int] | None = None,
+    ) -> dict[int, float]:
+        assert self.collision_model is not None and self.collision_data is not None
+        self.pin.updateGeometryPlacements(
+            self.model,
+            self.data,
+            self.collision_model,
+            self.collision_data,
+            q,
+        )
+        indices = (
+            self._right_hand_hip_pair_indices
+            if pair_indices is None
+            else tuple(int(index) for index in pair_indices)
+        )
+        return {
+            index: float(
+                self.pin.computeDistance(
+                    self.collision_model,
+                    self.collision_data,
+                    index,
+                ).min_distance
+            )
+            for index in indices
+        }
+
+    def _right_hand_hip_clearance(
+        self,
+        q: np.ndarray,
+        pair_indices: Sequence[int] | None = None,
+    ) -> float:
+        return min(
+            self._right_hand_hip_distances(q, pair_indices).values(),
+            default=float("inf"),
+        )
+
+    def _colliding_hand_hip_pairs(
+        self,
+        q: np.ndarray,
+        pair_indices: Sequence[int] | None = None,
+    ) -> set[int]:
+        """Check selected semantic pairs without recomputing every FCL pair."""
+
+        assert self.collision_model is not None and self.collision_data is not None
+        self.pin.updateGeometryPlacements(
+            self.model,
+            self.data,
+            self.collision_model,
+            self.collision_data,
+            q,
+        )
+        indices = self._right_hand_hip_pair_indices if pair_indices is None else pair_indices
+        return {
+            int(index)
+            for index in indices
+            if self.pin.computeCollision(
+                self.collision_model,
+                self.collision_data,
+                int(index),
+            )
+        }
+
+    def _hand_hip_edge_is_strictly_clear(
+        self,
+        begin: np.ndarray,
+        end: np.ndarray,
+        *,
+        step_rad: float = 0.0005,
+    ) -> bool:
+        steps = max(1, int(np.ceil(np.max(np.abs(end - begin)) / step_rad)))
+        return all(
+            not self._colliding_hand_hip_pairs((1.0 - alpha) * begin + alpha * end)
+            for alpha in np.linspace(0.0, 1.0, steps + 1)
+        )
+
+    def _hand_hip_edge_is_exit_only(
+        self,
+        begin: np.ndarray,
+        end: np.ndarray,
+        initial_pairs: set[int],
+        baseline_distances: dict[int, float],
+        *,
+        step_rad: float = 0.0005,
+        numerical_tolerance_m: float = 0.00005,
+    ) -> str | None:
+        """Permit only the measured contacts until they clear, with no re-entry."""
+
+        steps = max(1, int(np.ceil(np.max(np.abs(end - begin)) / step_rad)))
+        escaped = False
+        for alpha in np.linspace(0.0, 1.0, steps + 1):
+            q = (1.0 - alpha) * begin + alpha * end
+            colliding = self._colliding_hand_hip_pairs(q)
+            if not colliding:
+                escaped = True
+                continue
+            if escaped:
+                return "hand_hip_collision_reentry"
+            distances = self._right_hand_hip_distances(q, tuple(sorted(colliding)))
+            if any(
+                distance
+                < baseline_distances.get(index, 0.0) - numerical_tolerance_m
+                for index, distance in distances.items()
+            ):
+                return (
+                    "hand_hip_new_penetration"
+                    if any(index not in initial_pairs for index in distances)
+                    else "hand_hip_penetration_worsened"
+                )
+        if not escaped or self._right_hand_hip_clearance(end) < 0.01:
+            return "start_collision_not_cleared"
+        return None
+
+    def _arm_chain_points(self, q: np.ndarray) -> tuple[np.ndarray, ...]:
+        self.pin.framesForwardKinematics(self.model, self.data, q)
+        points = [
+            np.asarray(self.data.oMi[self.model.getJointId(name)].translation, dtype=float).copy()
+            for name in RIGHT_ARM_JOINTS
+        ]
+        points.append(np.asarray(self.data.oMf[self.ee_frame].translation, dtype=float).copy())
+        return tuple(points)
+
+    def _arm_has_support_clearance(
+        self,
+        q: np.ndarray,
+        support_plane: Any | None,
+        *,
+        minimum_clearance_m: float = 0.05,
+    ) -> bool:
+        if support_plane is None:
+            return True
+        if (
+            self.collision_model is None
+            or self.collision_data is None
+            or not self._right_arm_collision_samples
+        ):
+            return False
+        self.pin.updateGeometryPlacements(
+            self.model,
+            self.data,
+            self.collision_model,
+            self.collision_data,
+            q,
+        )
+        # AABBs conservatively enclose every shoulder/elbow/wrist/hand mesh.
+        # Checking their transformed corners models the full link envelope,
+        # rather than pretending the arm is a zero-radius centerline.
+        for geometry_index, local_point in self._right_arm_collision_samples:
+            placement = self.collision_data.oMg[geometry_index]
+            point = placement.rotation @ local_point + placement.translation
+            if hasattr(support_plane, "has_clearance"):
+                clear = support_plane.has_clearance(
+                    point,
+                    minimum_clearance_m=minimum_clearance_m,
+                )
+            else:
+                clear = bool(float(support_plane.signed_distance(point)) >= minimum_clearance_m)
+            if not clear:
+                return False
+        return True
+
+    def _guided_start_escape(
+        self,
+        start_q: np.ndarray,
+        *,
+        support_plane: Any | None,
+        timeout_s: float = 1.0,
+    ) -> tuple[tuple[tuple[float, ...], ...] | None, str | None]:
+        """Exit a small measured hand/hip mesh penetration before RRT.
+
+        The initial real collision is not added to an allowed-collision set.
+        Only the exact measured contact pairs may remain touching, none may
+        deepen beyond numerical tolerance, and the first collision-free sample
+        latches strict mode. The endpoint must have 10 mm modeled clearance.
+        """
+
+        initial = self._collision_pairs(start_q)
+        if not initial:
+            return ((tuple(float(value) for value in start_q),), None)
+        if any(not self._is_right_hand_hip_pair(index) for index in initial):
+            labels = ",".join(self._collision_pair_label(index) for index in sorted(initial))
+            return None, f"start_self_collision:{labels}"
+        baseline_distances = self._right_hand_hip_distances(
+            start_q,
+            tuple(sorted(initial)),
+        )
+        baseline_clearance = min(baseline_distances.values())
+        # More than 5 mm of modeled penetration is not a small mesh-tolerance
+        # recovery and must remain an operator-visible hard failure.
+        if baseline_clearance < -0.005:
+            return None, f"start_hand_hip_penetration:{baseline_clearance:.5f}"
+        deadline = time.monotonic() + timeout_s
+        start_tuple = tuple(float(value) for value in start_q)
+
+        def edge_is_exit_only(candidate: np.ndarray) -> bool:
+            if self._hand_hip_edge_is_exit_only(
+                start_q,
+                candidate,
+                initial,
+                baseline_distances,
+            ) is not None:
+                return False
+            if time.monotonic() >= deadline:
+                return False
+            samples = max(
+                2,
+                int(np.ceil(np.max(np.abs(candidate - start_q)) / 0.0025)),
+            )
+            for alpha in np.linspace(0.0, 1.0, samples + 1)[1:]:
+                q = (1.0 - alpha) * start_q + alpha * candidate
+                collisions = self._collision_pairs(q)
+                if any(not self._is_right_hand_hip_pair(index) for index in collisions):
+                    return False
+                if not self._arm_has_support_clearance(q, support_plane):
+                    return False
+            return not self._collision_pairs(candidate)
+
+        for delta in _G1_HIP_ESCAPE_DELTAS:
+            candidate = np.clip(
+                start_q + np.asarray(delta, dtype=float),
+                self.lower,
+                self.upper,
+            )
+            if edge_is_exit_only(candidate):
+                return (
+                    start_tuple,
+                    tuple(float(value) for value in candidate),
+                ), None
+
+        if time.monotonic() >= deadline:
+            return None, "start_collision_escape_timeout"
+        return None, "start_collision_escape_unavailable"
 
     def _candidate_q(self, target: np.ndarray, last_q: np.ndarray) -> np.ndarray:
         if self.casadi is not None and self.cpin is not None:
@@ -475,9 +842,7 @@ class G1RightArmIK:
         self.pin.framesForwardKinematics(self.model, self.data, q)
         pose = self.data.oMf[self.ee_frame]
         position_error = float(np.linalg.norm(pose.translation - target[:3, 3]))
-        orientation_error = float(
-            np.linalg.norm(self.pin.log3(pose.rotation @ target[:3, :3].T))
-        )
+        orientation_error = float(np.linalg.norm(self.pin.log3(pose.rotation @ target[:3, :3].T)))
         return position_error, orientation_error
 
     def solve_with_collision_detour(
@@ -486,6 +851,9 @@ class G1RightArmIK:
         start_q_rad: Sequence[float],
         *,
         enforce_orientation: bool = True,
+        support_plane: Any | None = None,
+        planning_timeout_s: float = 13.0,
+        max_iterations: int = 5000,
     ) -> IKPathResult:
         """Solve a goal pose, then route around transient self-collisions.
 
@@ -500,6 +868,14 @@ class G1RightArmIK:
             return IKPathResult(False, None, float("inf"), float("inf"), "invalid_shape")
         if not np.all(np.isfinite(target)) or not np.all(np.isfinite(start_q)):
             return IKPathResult(False, None, float("inf"), float("inf"), "non_finite")
+        if not np.isfinite(planning_timeout_s) or planning_timeout_s <= 0.0 or max_iterations <= 0:
+            return IKPathResult(
+                False,
+                None,
+                float("inf"),
+                float("inf"),
+                "invalid_planning_budget",
+            )
         if self.collision_model is None or self.collision_data is None:
             return IKPathResult(
                 False,
@@ -508,10 +884,36 @@ class G1RightArmIK:
                 float("inf"),
                 "collision_model_unavailable",
             )
-        allowed_collisions = self._collision_pairs(start_q)
+        started_at = time.monotonic()
+        deadline = started_at + planning_timeout_s
+        escape_path, escape_error = self._guided_start_escape(
+            start_q,
+            support_plane=support_plane,
+            timeout_s=min(3.0, planning_timeout_s * 0.40),
+        )
+        if escape_path is None:
+            return IKPathResult(
+                False,
+                None,
+                float("inf"),
+                float("inf"),
+                escape_error or "start_collision_escape_unavailable",
+            )
+        route_start_q = np.asarray(escape_path[-1], dtype=float)
+        if self._collision_pairs(route_start_q):
+            return IKPathResult(
+                False,
+                None,
+                float("inf"),
+                float("inf"),
+                "start_collision_not_cleared",
+            )
         start_xyz = self.forward_kinematics(start_q)[:3, 3]
         last_failure = (float("inf"), float("inf"), "solver_failed")
+        goals: list[tuple[np.ndarray, float, float]] = []
         for seed_q in self._ik_seed_variants(start_q):
+            if time.monotonic() >= deadline:
+                break
             try:
                 goal_q = self._candidate_q(target, seed_q)
             except Exception:
@@ -530,37 +932,99 @@ class G1RightArmIK:
             ):
                 last_failure = (position_error, orientation_error, "orientation_error")
                 continue
-            introduced_at_goal = self._collision_pairs(goal_q) - allowed_collisions
-            if introduced_at_goal:
+            goal_collisions = self._collision_pairs(goal_q)
+            if goal_collisions:
                 labels = ",".join(
-                    self._collision_pair_label(index) for index in sorted(introduced_at_goal)
+                    self._collision_pair_label(index) for index in sorted(goal_collisions)
                 )
                 last_failure = (position_error, orientation_error, f"goal_self_collision:{labels}")
                 continue
+            if not self._arm_has_support_clearance(goal_q, support_plane):
+                last_failure = (
+                    position_error,
+                    orientation_error,
+                    "goal_support_region_clearance",
+                )
+                continue
+            if not any(np.allclose(goal_q, item[0], atol=1e-5) for item in goals):
+                goals.append((goal_q, position_error, orientation_error))
+
+        goals.sort(key=lambda item: float(np.linalg.norm(item[0] - route_start_q)))
+        selected_goals = goals[:2]
+        for goal_index, (goal_q, position_error, orientation_error) in enumerate(selected_goals):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0.05:
+                last_failure = (
+                    position_error,
+                    orientation_error,
+                    "collision_detour_timeout",
+                )
+                break
 
             goal_xyz = self.forward_kinematics(goal_q)[:3, 3]
             corridor_margin = np.array([0.50, 0.40, 0.50, 0.70, 0.50, 0.50, 0.60])
-            lower = np.maximum(self.lower, np.minimum(start_q, goal_q) - corridor_margin)
-            upper = np.minimum(self.upper, np.maximum(start_q, goal_q) + corridor_margin)
+            lower = np.maximum(
+                self.lower,
+                np.minimum(route_start_q, goal_q) - corridor_margin,
+            )
+            upper = np.minimum(
+                self.upper,
+                np.maximum(route_start_q, goal_q) + corridor_margin,
+            )
 
             def state_is_valid(q: np.ndarray) -> bool:
-                if self._collision_pairs(q) - allowed_collisions:
+                if self._collision_pairs(q):
                     return False
                 xyz = self.forward_kinematics(q)[:3, 3]
                 if xyz[0] < min(start_xyz[0], goal_xyz[0]) - 0.04:
                     return False
                 if xyz[2] < min(start_xyz[2], goal_xyz[2]) - 0.03:
                     return False
-                return bool(-0.48 <= xyz[1] <= 0.15)
+                if not -0.48 <= xyz[1] <= 0.15:
+                    return False
+                return self._arm_has_support_clearance(q, support_plane)
 
-            path = collision_aware_joint_path(start_q, goal_q, lower, upper, state_is_valid)
+            candidates_left = max(1, len(selected_goals) - goal_index)
+            validation_reserve = min(2.5, max(0.5, remaining * 0.25))
+            candidate_budget = (remaining - validation_reserve) / candidates_left
+            if candidate_budget <= 0.05:
+                last_failure = (
+                    position_error,
+                    orientation_error,
+                    "collision_detour_timeout",
+                )
+                break
+            path = collision_aware_joint_path(
+                route_start_q,
+                goal_q,
+                lower,
+                upper,
+                state_is_valid,
+                edge_step_rad=0.005,
+                extension_step_rad=0.14,
+                max_iterations=max_iterations,
+                planning_timeout_s=candidate_budget,
+                seed=31 + goal_index,
+                guided_sampling=True,
+            )
             if path is None:
                 last_failure = (position_error, orientation_error, "collision_detour_unavailable")
                 continue
-            # The measured-pose seed is always first.  Once a collision-free
-            # route is found, execute it rather than spending control time
-            # searching for cosmetically different redundant postures.
-            return IKPathResult(True, path, position_error, orientation_error)
+            combined = (*escape_path[:-1], *path)
+            validation_error = self.validate_joint_path(
+                combined,
+                support_plane=support_plane,
+                edge_step_rad=0.0025,
+                deadline_s=deadline,
+            )
+            if validation_error:
+                last_failure = (
+                    position_error,
+                    orientation_error,
+                    f"planned_path_invalid:{validation_error}",
+                )
+                continue
+            return IKPathResult(True, combined, position_error, orientation_error)
         position_error, orientation_error, reason = last_failure
         return IKPathResult(False, None, position_error, orientation_error, reason)
 
@@ -595,18 +1059,26 @@ class G1RightArmIK:
             )
         if self.collision_model is None or self.collision_data is None:
             return IKResult(False, None, float("inf"), float("inf"), "collision_model_unavailable")
-        # Mesh URDFs commonly contain persistent adjacent-link overlaps. Treat
-        # those present at the measured start pose as the baseline and reject
-        # only collision pairs introduced by the candidate sweep.
-        baseline_collisions = self._collision_pairs(last_q)
-        for alpha in np.linspace(0.0, 1.0, 12):
+        # Explicit adjacent mesh exclusions are handled by _collision_pairs.
+        # Never turn a measured hand/hip collision into a realtime-session ACM.
+        start_collisions = self._collision_pairs(last_q)
+        if start_collisions:
+            labels = ",".join(
+                self._collision_pair_label(index) for index in sorted(start_collisions)
+            )
+            return IKResult(
+                False,
+                None,
+                float("inf"),
+                float("inf"),
+                f"start_self_collision:{labels}",
+            )
+        sweep_steps = max(2, int(np.ceil(maximum_delta / 0.0025)))
+        for alpha in np.linspace(0.0, 1.0, sweep_steps + 1):
             swept_q = (1.0 - alpha) * last_q + alpha * q
-            introduced = self._collision_pairs(swept_q) - baseline_collisions
-            if introduced:
-                labels = ",".join(
-                    self._collision_pair_label(index)
-                    for index in sorted(introduced)
-                )
+            collisions = self._collision_pairs(swept_q)
+            if collisions:
+                labels = ",".join(self._collision_pair_label(index) for index in sorted(collisions))
                 return IKResult(
                     False,
                     None,
@@ -614,20 +1086,18 @@ class G1RightArmIK:
                     float("inf"),
                     f"self_collision:{labels}:path_fraction={alpha:.3f}",
                 )
-        if support_plane is not None:
-            self.pin.framesForwardKinematics(self.model, self.data, q)
-            for joint_name in RIGHT_ARM_JOINTS:
-                joint_id = self.model.getJointId(joint_name)
-                point = self.data.oMi[joint_id].translation
-                if float(support_plane.signed_distance(point)) < 0.05:
-                    return IKResult(False, None, float("inf"), float("inf"), "link_plane_clearance")
+            if not self._arm_has_support_clearance(swept_q, support_plane):
+                return IKResult(
+                    False,
+                    None,
+                    float("inf"),
+                    float("inf"),
+                    "link_support_region_clearance",
+                )
         position_error, orientation_error = self._pose_errors(target, q)
         if position_error > self.position_tolerance_m:
             return IKResult(False, None, position_error, orientation_error, "position_error")
-        if (
-            self.orientation_weight > 0.0
-            and orientation_error > self.orientation_tolerance_rad
-        ):
+        if self.orientation_weight > 0.0 and orientation_error > self.orientation_tolerance_rad:
             return IKResult(False, None, position_error, orientation_error, "orientation_error")
         return IKResult(True, tuple(float(value) for value in q), position_error, orientation_error)
 
@@ -636,16 +1106,22 @@ class G1RightArmIK:
         knots: Sequence[Sequence[float]],
         *,
         support_plane: Any | None = None,
-        edge_step_rad: float = 0.02,
+        edge_step_rad: float = 0.0025,
+        deadline_s: float | None = None,
     ) -> str | None:
         """Validate a short, already-planned path without invoking RRT or IK.
 
-        The first knot defines the allowed collision baseline.  This is used
-        to revalidate a preplanned clearance path after arm ownership settles,
-        and to vet bounded visual-servo steps before publishing them.
+        A small measured hand/hip penetration may only occur in an exit-only
+        prefix that never exceeds its initial depth and becomes collision-free.
+        Once clear, every real collision pair is forbidden.
         """
 
-        if len(knots) < 2 or not math.isfinite(edge_step_rad) or edge_step_rad <= 0.0:
+        if (
+            len(knots) < 2
+            or not math.isfinite(edge_step_rad)
+            or edge_step_rad <= 0.0
+            or (deadline_s is not None and not math.isfinite(deadline_s))
+        ):
             return "invalid_joint_path"
         path = tuple(np.asarray(knot, dtype=float) for knot in knots)
         if any(knot.shape != (7,) or not np.all(np.isfinite(knot)) for knot in path):
@@ -655,25 +1131,66 @@ class G1RightArmIK:
         if any(np.any(knot < self.lower) or np.any(knot > self.upper) for knot in path):
             return "joint_limit"
 
-        allowed_collisions = self._collision_pairs(path[0])
+        initial_collisions = self._collision_pairs(path[0])
+        if any(not self._is_right_hand_hip_pair(index) for index in initial_collisions):
+            labels = ",".join(
+                self._collision_pair_label(index) for index in sorted(initial_collisions)
+            )
+            return f"start_self_collision:{labels}"
+        baseline_distances = (
+            self._right_hand_hip_distances(path[0], tuple(sorted(initial_collisions)))
+            if initial_collisions
+            else {}
+        )
+        initial_clearance = min(baseline_distances.values(), default=float("inf"))
+        if initial_clearance < -0.005:
+            return f"start_hand_hip_penetration:{initial_clearance:.5f}"
+        escaping = bool(initial_collisions)
         for begin, end in zip(path, path[1:]):
+            if deadline_s is not None and time.monotonic() >= deadline_s:
+                return "validation_timeout"
+            maximum_delta = float(np.max(np.abs(end - begin)))
+            if escaping:
+                escape_error = self._hand_hip_edge_is_exit_only(
+                    begin,
+                    end,
+                    initial_collisions,
+                    baseline_distances,
+                )
+                if escape_error:
+                    return escape_error
+            elif maximum_delta > 0.025 and not self._hand_hip_edge_is_strictly_clear(
+                begin,
+                end,
+            ):
+                return "hand_hip_collision_reentry"
             steps = max(1, int(np.ceil(np.max(np.abs(end - begin)) / edge_step_rad)))
             for alpha in np.linspace(0.0, 1.0, steps + 1)[1:]:
+                if deadline_s is not None and time.monotonic() >= deadline_s:
+                    return "validation_timeout"
                 q = (1.0 - alpha) * begin + alpha * end
-                introduced = self._collision_pairs(q) - allowed_collisions
-                if introduced:
+                collisions = self._collision_pairs(q)
+                if escaping:
+                    forbidden = {
+                        index for index in collisions if not self._is_right_hand_hip_pair(index)
+                    }
+                    if forbidden:
+                        labels = ",".join(
+                            self._collision_pair_label(index) for index in sorted(forbidden)
+                        )
+                        return f"self_collision:{labels}:path_fraction={alpha:.3f}"
+                elif collisions:
                     labels = ",".join(
-                        self._collision_pair_label(index) for index in sorted(introduced)
+                        self._collision_pair_label(index) for index in sorted(collisions)
                     )
                     return f"self_collision:{labels}:path_fraction={alpha:.3f}"
                 hand_xyz = self.forward_kinematics(q)[:3, 3]
                 if not -0.48 <= hand_xyz[1] <= 0.15:
                     return "safe_corridor"
-                if support_plane is not None:
-                    self.pin.framesForwardKinematics(self.model, self.data, q)
-                    for joint_name in RIGHT_ARM_JOINTS:
-                        joint_id = self.model.getJointId(joint_name)
-                        point = self.data.oMi[joint_id].translation
-                        if float(support_plane.signed_distance(point)) < 0.05:
-                            return "link_plane_clearance"
+                if not self._arm_has_support_clearance(q, support_plane):
+                    return "link_support_region_clearance"
+            if escaping:
+                escaping = False
+        if escaping:
+            return "start_collision_not_cleared"
         return None
