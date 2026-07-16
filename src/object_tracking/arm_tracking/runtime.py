@@ -178,6 +178,12 @@ class ArmTrackingRuntime:
         self.target_sequence = 0
         self.last_target_track: int | None = None
         self.last_process_at = 0.0
+        # A support plane is a live safety input, not a calibration constant.
+        # Keep the most recent extraction result only for endpoint diagnostics;
+        # callers must still receive a fresh plane from the current depth frame.
+        self.last_support_plane: Any | None = None
+        self.last_support_plane_error: str | None = None
+        self.last_support_plane_at = 0.0
         self.last_arm_poll_at = 0.0
         self.last_arm_state: dict[str, Any] = {"state": "unreachable"}
         self._pending_predictions: deque[tuple[float, str, np.ndarray]] = deque()
@@ -383,7 +389,9 @@ class ArmTrackingRuntime:
                 "object_xyz_m": torso.round(5).tolist(),
                 "predicted_xyz_m": predicted.round(5).tolist(),
                 "prediction_source": (
-                    "learned_trajectory" if learned_prediction is not None else "alpha_beta_fallback"
+                    "learned_trajectory"
+                    if learned_prediction is not None
+                    else "alpha_beta_fallback"
                 ),
                 "trajectory_model": (
                     None
@@ -410,15 +418,22 @@ class ArmTrackingRuntime:
                 "pregrasp_target_xyz_m": base_status["target_xyz_m"],
             }
         )
-        if not self.calibration.workspace.contains(target.position):
-            self._reject(base_status, "workspace_violation", colormap)
-            return
         plane = self._support_plane(aligned, frame.depth_scale)
         if plane is not None:
             base_status["visualization"]["support_plane"] = {
                 "normal": plane.normal.tolist(),
                 "offset": float(plane.offset),
             }
+        base_status["visualization"]["support_plane_status"] = {
+            "available": plane is not None,
+            "age_ms": round(max(0.0, time.monotonic() - self.last_support_plane_at) * 1000.0, 1)
+            if self.last_support_plane_at
+            else None,
+            "error": self.last_support_plane_error,
+        }
+        if not self.calibration.workspace.contains(target.position):
+            self._reject(base_status, "workspace_violation", colormap)
+            return
         if plane is None or not has_plane_clearance(target.position, plane):
             self._reject(base_status, "support_plane_clearance", colormap)
             return
@@ -574,8 +589,12 @@ class ArmTrackingRuntime:
                 optical_to_base=self.calibration.optical_to_torso,
                 stride=8,
             )
+            self.last_support_plane = plane
+            self.last_support_plane_at = time.monotonic()
+            self.last_support_plane_error = None
             return plane
-        except ValueError:
+        except ValueError as exc:
+            self.last_support_plane_error = f"{type(exc).__name__}: {exc}"
             return None
 
     def _arm_state(self) -> dict[str, Any]:
@@ -619,6 +638,11 @@ class ArmTrackingRuntime:
                 "optical_to_torso": self.calibration.optical_to_torso.to_dict(),
             },
             "support_plane": None,
+            "support_plane_status": {
+                "available": False,
+                "age_ms": None,
+                "error": self.last_support_plane_error,
+            },
             "measured_object_xyz_m": None,
             "predicted_object_xyz_m": None,
             "predicted_trajectory_xyz_m": [],

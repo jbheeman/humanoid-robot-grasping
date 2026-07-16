@@ -543,8 +543,7 @@ def _fetch_vision_target(
         raise RemoteArmError("vision target has no valid target_age_ms") from exc
     if not math.isfinite(target_age_ms) or target_age_ms > maximum_age_ms:
         raise RemoteArmError(
-            f"vision target is stale: {target_age_ms:.1f} ms "
-            f"(maximum {maximum_age_ms:.0f} ms)"
+            f"vision target is stale: {target_age_ms:.1f} ms (maximum {maximum_age_ms:.0f} ms)"
         )
 
     normalized: dict[str, Any] = {
@@ -559,6 +558,8 @@ def _fetch_vision_target(
     normalized["workspace_bounds"] = workspace if isinstance(workspace, dict) else None
     support_plane = visualization.get("support_plane")
     normalized["support_plane"] = support_plane if isinstance(support_plane, dict) else None
+    plane_status = visualization.get("support_plane_status")
+    normalized["support_plane_status"] = plane_status if isinstance(plane_status, dict) else None
     for field in ("object_xyz_m", "predicted_xyz_m"):
         value = payload.get(field)
         if not isinstance(value, list) or len(value) != 3:
@@ -669,8 +670,7 @@ def _point_hand_target(
     distance = float(np.linalg.norm(ray))
     if distance <= standoff_m + 0.02:
         raise RemoteArmError(
-            "vision object is too close to form the requested "
-            f"{standoff_m:.2f} m pointing standoff"
+            f"vision object is too close to form the requested {standoff_m:.2f} m pointing standoff"
         )
     radial_distance = min(distance - standoff_m, MAX_POINTING_SHOULDER_DISTANCE_M)
     return shoulder + ray / distance * radial_distance
@@ -813,6 +813,15 @@ def run(args: argparse.Namespace) -> int:
         if args.command == "point":
             vision_target = _fetch_vision_target(args.server)
             assert ik_solver is not None
+            support_plane = _vision_support_plane(vision_target)
+            if support_plane is None:
+                plane_status = vision_target.get("support_plane_status")
+                detail = ""
+                if isinstance(plane_status, dict) and plane_status.get("error"):
+                    detail = f": {plane_status['error']}"
+                raise RemoteArmError(
+                    f"Vision has no fresh support plane; refusing hip-clearance planning{detail}"
+                )
             measured = status.get("measured_arm_q")
             if not isinstance(measured, list) or len(measured) != 14:
                 raise RemoteArmError("Bridge has no measured pose for clearance preplanning")
@@ -831,6 +840,15 @@ def run(args: argparse.Namespace) -> int:
                     f"{clearance_route.reason}"
                 )
             preplanned_clearance_path = clearance_route.q_path
+            clearance_error = ik_solver.validate_joint_path(
+                preplanned_clearance_path,
+                support_plane=support_plane,
+            )
+            if clearance_error:
+                raise RemoteArmError(
+                    "IK hip-clearance route violates support-plane safety while disarmed: "
+                    f"{clearance_error}"
+                )
             motion_trace.append(
                 {
                     "phase": "preplan_clearance",
@@ -940,7 +958,15 @@ def run(args: argparse.Namespace) -> int:
                 # disarmed preplan on that settled command and run a fast swept
                 # validation; never launch RRT while the session is armed.
                 clearance_path = (solution_q, *preplanned_clearance_path[1:])
-                clearance_error = ik_solver.validate_joint_path(clearance_path)
+                support_plane = _vision_support_plane(vision_target or {})
+                if support_plane is None:
+                    raise RemoteArmError(
+                        "Vision lost its support plane before arm ownership; refusing movement"
+                    )
+                clearance_error = ik_solver.validate_joint_path(
+                    clearance_path,
+                    support_plane=support_plane,
+                )
                 if clearance_error:
                     raise RemoteArmError(
                         "settled arm pose invalidated the preplanned hip clearance: "
@@ -959,9 +985,7 @@ def run(args: argparse.Namespace) -> int:
                 waypoint_count = max(
                     1,
                     math.ceil(
-                        float(np.linalg.norm(cartesian_offset))
-                        / MAX_IK_WAYPOINT_DISTANCE_M
-                        - 1e-9
+                        float(np.linalg.norm(cartesian_offset)) / MAX_IK_WAYPOINT_DISTANCE_M - 1e-9
                     ),
                 )
                 for waypoint_index in range(1, waypoint_count + 1):
@@ -1276,8 +1300,7 @@ def run(args: argparse.Namespace) -> int:
                     raise RemoteArmError("Bridge has no measured pose after a tracking update")
                 measured_q = tuple(float(value) for value in measured_tracking[-7:])
                 tracking_lag = max(
-                    abs(measured - commanded)
-                    for measured, commanded in zip(measured_q, solution_q)
+                    abs(measured - commanded) for measured, commanded in zip(measured_q, solution_q)
                 )
                 motion_trace.append(
                     {
@@ -1285,8 +1308,7 @@ def run(args: argparse.Namespace) -> int:
                         "event": "servo_target_accepted",
                         "max_command_tracking_lag_rad": tracking_lag,
                         "maximum_joint_step_rad": max(
-                            abs(target - start)
-                            for target, start in zip(servo_target, solution_q)
+                            abs(target - start) for target, start in zip(servo_target, solution_q)
                         ),
                         "target_age_ms": candidate["target_age_ms"],
                         "track_id": candidate.get("track_id"),
@@ -1295,9 +1317,7 @@ def run(args: argparse.Namespace) -> int:
                         "desired_hand_xyz_m": desired_xyz.tolist(),
                         "seed_command_q": list(solution_q),
                         "servo_target_q": list(servo_target),
-                        "cycle_compute_ms": round(
-                            (time.monotonic() - cycle_started) * 1000.0, 3
-                        ),
+                        "cycle_compute_ms": round((time.monotonic() - cycle_started) * 1000.0, 3),
                     }
                 )
                 tracking_updates += 1
@@ -1340,18 +1360,14 @@ def run(args: argparse.Namespace) -> int:
                 ik_target_transform = measured_transform.copy()
                 ik_target_transform[:3, 3] = desired_xyz
                 ik_measured_xyz_m = measured_transform[:3, 3].tolist()
-                ik_position_error_m = float(
-                    np.linalg.norm(measured_transform[:3, 3] - desired_xyz)
-                )
+                ik_position_error_m = float(np.linalg.norm(measured_transform[:3, 3] - desired_xyz))
                 expected_ray = np.asarray(vision_target["object_xyz_m"]) - shoulder_xyz
                 measured_ray = measured_transform[:3, 3] - shoulder_xyz
                 cosine = float(
                     np.dot(expected_ray, measured_ray)
                     / (np.linalg.norm(expected_ray) * np.linalg.norm(measured_ray))
                 )
-                point_angular_error_deg = math.degrees(
-                    math.acos(max(-1.0, min(1.0, cosine)))
-                )
+                point_angular_error_deg = math.degrees(math.acos(max(-1.0, min(1.0, cosine))))
         # Pointing is intentionally a terminal pose, not an out-and-back demo.
         # A SIGINT (or the explicit stop command) remains the single release
         # path.  Manual joint and Cartesian test motions retain their optional
