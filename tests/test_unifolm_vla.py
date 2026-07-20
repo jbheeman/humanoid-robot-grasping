@@ -18,8 +18,10 @@ from object_tracking.unifolm_vla_cli import (
     LiveObservationSource,
     Observation,
     UnifoLMRuntime,
+    VLAError,
     _format_xyz,
     _is_explicit_right_arm_instruction,
+    _load_checkpoint_state,
     _profile_gripper_means,
 )
 
@@ -97,6 +99,36 @@ def test_runtime_background_load_is_single_and_joined_by_foreground(tmp_path: Pa
 
     assert runtime.load_status() == "ready"
     assert len(calls) == 1
+
+
+def test_quantized_checkpoint_accepts_only_bitsandbytes_metadata() -> None:
+    class Model:
+        def load_state_dict(self, state: object, *, strict: bool) -> object:
+            assert state == {"weight": object_state}
+            assert strict is False
+            return SimpleNamespace(
+                missing_keys=[],
+                unexpected_keys=[
+                    "vlm.layer.weight.absmax",
+                    "vlm.layer.weight.quant_state.bitsandbytes__nf4",
+                ],
+            )
+
+    object_state = object()
+    _load_checkpoint_state(Model(), {"weight": object_state}, quantized=True)
+
+
+def test_quantized_checkpoint_rejects_real_schema_mismatch() -> None:
+    class Model:
+        def load_state_dict(self, state: object, *, strict: bool) -> object:
+            del state, strict
+            return SimpleNamespace(
+                missing_keys=["action_model.weight"],
+                unexpected_keys=["wrong.weight"],
+            )
+
+    with pytest.raises(VLAError, match="missing keys: action_model.weight"):
+        _load_checkpoint_state(Model(), {}, quantized=True)
 
 
 @pytest.mark.parametrize(

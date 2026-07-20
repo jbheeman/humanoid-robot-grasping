@@ -50,10 +50,46 @@ EXECUTION_VERBS = (
     "touch",
 )
 GREETING_ONLY = {"hello", "hey", "hi", "sup", "yo"}
+BNB_QUANTIZATION_STATE_SUFFIXES = (
+    ".absmax",
+    ".quant_map",
+    ".nested_absmax",
+    ".nested_quant_map",
+    ".quant_state.bitsandbytes__nf4",
+)
 
 
 class VLAError(RuntimeError):
     pass
+
+
+def _load_checkpoint_state(model: Any, state: dict[str, Any], *, quantized: bool) -> None:
+    """Load a full checkpoint while validating bitsandbytes bookkeeping.
+
+    PyTorch does not register the serialized NF4 quantization metadata as
+    model buffers, so vanilla ``load_state_dict(strict=True)`` rejects those
+    keys even when every actual model weight matches.  In the quantized case
+    only, accept that exact metadata family and continue to fail closed for
+    missing weights or any other unexpected key.
+    """
+
+    if not quantized:
+        model.load_state_dict(state, strict=True)
+        return
+    incompatible = model.load_state_dict(state, strict=False)
+    missing = tuple(incompatible.missing_keys)
+    unexpected = tuple(
+        key
+        for key in incompatible.unexpected_keys
+        if not key.endswith(BNB_QUANTIZATION_STATE_SUFFIXES)
+    )
+    if missing or unexpected:
+        details = []
+        if missing:
+            details.append(f"missing keys: {', '.join(missing[:8])}")
+        if unexpected:
+            details.append(f"unexpected keys: {', '.join(unexpected[:8])}")
+        raise VLAError("quantized VLA checkpoint does not match the model (" + "; ".join(details) + ")")
 
 
 def _color(value: str, code: str, enabled: bool) -> str:
@@ -322,9 +358,17 @@ class UnifoLMRuntime:
             state = torch.load(self.checkpoint, map_location="cpu", weights_only=True)
         except TypeError:  # PyTorch 2.5 compatibility
             state = torch.load(self.checkpoint, map_location="cpu")
-        model.load_state_dict(state, strict=True)
+        quantized = bool(cfg.framework.qwenvl.get("load_in_4bit", False))
+        _load_checkpoint_state(model, state, quantized=quantized)
         model.norm_stats = norm_stats
-        self.model = model.to(torch.bfloat16).to("cuda").eval()
+        if quantized:
+            # The VLM is already materialized on CUDA by its device map.  A
+            # dtype-wide conversion would incorrectly dequantize NF4 weights;
+            # moving the wrapper places the action head without changing the
+            # quantized parameter representation.
+            self.model = model.to("cuda").eval()
+        else:
+            self.model = model.to(torch.bfloat16).to("cuda").eval()
         self.processor = self.model.qwen_vl_interface.processor
         self.stats = norm_stats[self.profile]
 
