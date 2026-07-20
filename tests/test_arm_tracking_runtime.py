@@ -13,10 +13,11 @@ from object_tracking.arm_tracking.calibration import (
     save_calibration_atomic,
 )
 from object_tracking.arm_tracking.depth import DepthFrame
-from object_tracking.arm_tracking.geometry import CameraIntrinsics, RigidTransform, WorkspaceBounds
+from object_tracking.arm_tracking.geometry import CameraIntrinsics, Plane, RigidTransform, WorkspaceBounds
 from object_tracking.arm_tracking.runtime import (
     ArmTrackingRuntime,
     RuntimeConfig,
+    clamp_point_height_to_support,
     register_depth_in_rgb,
 )
 
@@ -117,6 +118,15 @@ def test_identity_registration_preserves_valid_depth_pixels() -> None:
     aligned = register_depth_in_rgb(z16, _calibration())
     assert aligned.shape == z16.shape
     assert aligned[1, 2] == 1000
+
+
+def test_registered_point_height_is_projected_onto_safe_table_height() -> None:
+    plane = Plane((0.0, 0.0, 1.0), 0.0)
+
+    corrected, height = clamp_point_height_to_support((0.52, 0.14, -0.05), plane)
+
+    np.testing.assert_allclose(corrected, (0.52, 0.14, 0.03))
+    assert height == 0.03
 
 
 def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) -> None:

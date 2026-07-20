@@ -14,6 +14,7 @@ from .joints import RIGHT_ARM_JOINT_NAMES
 XR_TELEOPERATE_REVISION = "7dc9aa1a6edbf4a9f4f887d8ab6fc449ea5135f6"
 UNITREE_ROS_REVISION = "d96d8f63ae17a7108d4f7229c00ef875ba7129c9"
 RIGHT_ARM_JOINTS = RIGHT_ARM_JOINT_NAMES
+_MAX_START_ESCAPE_PENETRATION_M = 0.005
 
 # These collision meshes overlap at the G1's factory shoulder articulation
 # range.  They are kinematic neighbours, not an arm-through-torso route.  The
@@ -31,7 +32,7 @@ _ADJACENT_G1_COLLISION_PAIRS = {
 # Deterministic local directions discovered from the measured G1 hip-rest
 # posture. They are hypotheses only: _guided_start_escape densely validates
 # every application against the current pose, full collision model, bounded
-# support region, no-deepening rule, collision-free latch, and 10 mm exit gate.
+# support region, 5 mm penetration ceiling, collision-free latch, and 10 mm exit gate.
 _G1_HIP_ESCAPE_DELTAS = (
     (0.0, -0.20, 0.0, 0.0, 0.0, 0.0, 0.0),
     (0.0, -0.20, 0.0, 0.0, 0.0, 0.03, 0.0),
@@ -656,7 +657,15 @@ class G1RightArmIK:
         step_rad: float = 0.0005,
         numerical_tolerance_m: float = 0.00005,
     ) -> str | None:
-        """Permit only the measured contacts until they clear, with no re-entry."""
+        """Permit only shallow measured contacts until they clear, with no re-entry.
+
+        FCL penetration depth is discontinuous while triangle meshes overlap,
+        so comparing every sample with the first contact depth rejects valid
+        exits.  Bound the entire semantic hand/hip contact family by the same
+        absolute 5 mm hard limit used for the measured start pose instead.
+        This permits contact to transfer between adjacent hand mesh components;
+        collision-free state still latches strict no-re-entry.
+        """
 
         steps = max(1, int(np.ceil(np.max(np.abs(end - begin)) / step_rad)))
         escaped = False
@@ -670,15 +679,10 @@ class G1RightArmIK:
                 return "hand_hip_collision_reentry"
             distances = self._right_hand_hip_distances(q, tuple(sorted(colliding)))
             if any(
-                distance
-                < baseline_distances.get(index, 0.0) - numerical_tolerance_m
-                for index, distance in distances.items()
+                distance < -_MAX_START_ESCAPE_PENETRATION_M - numerical_tolerance_m
+                for distance in distances.values()
             ):
-                return (
-                    "hand_hip_new_penetration"
-                    if any(index not in initial_pairs for index in distances)
-                    else "hand_hip_penetration_worsened"
-                )
+                return "hand_hip_penetration_limit"
         if not escaped or self._right_hand_hip_clearance(end) < 0.01:
             return "start_collision_not_cleared"
         return None
@@ -741,9 +745,9 @@ class G1RightArmIK:
         """Exit a small measured hand/hip mesh penetration before RRT.
 
         The initial real collision is not added to an allowed-collision set.
-        Only the exact measured contact pairs may remain touching, none may
-        deepen beyond numerical tolerance, and the first collision-free sample
-        latches strict mode. The endpoint must have 10 mm modeled clearance.
+        Only right-hand/right-hip contacts may remain touching, none may exceed
+        the 5 mm escape ceiling, and the first collision-free sample latches
+        strict mode. The endpoint must have 10 mm modeled clearance.
         """
 
         initial = self._collision_pairs(start_q)
@@ -759,7 +763,7 @@ class G1RightArmIK:
         baseline_clearance = min(baseline_distances.values())
         # More than 5 mm of modeled penetration is not a small mesh-tolerance
         # recovery and must remain an operator-visible hard failure.
-        if baseline_clearance < -0.005:
+        if baseline_clearance < -_MAX_START_ESCAPE_PENETRATION_M:
             return None, f"start_hand_hip_penetration:{baseline_clearance:.5f}"
         deadline = time.monotonic() + timeout_s
         start_tuple = tuple(float(value) for value in start_q)
@@ -812,6 +816,106 @@ class G1RightArmIK:
             return np.asarray(solution.value(self.var_q), dtype=float).reshape(7)
         return self._solve_numerical(target, last_q)
 
+    def plan_guided_clearance(
+        self,
+        start_q_rad: Sequence[float],
+        *,
+        support_plane: Any | None,
+        lift_m: float = 0.18,
+        forward_m: float = 0.06,
+        position_tolerance_m: float = 0.006,
+        max_steps_per_phase: int = 100,
+    ) -> IKPathResult:
+        """Escape the hip, lift, then move forward using validated local IK."""
+
+        start_q = np.asarray(start_q_rad, dtype=float)
+        if (
+            start_q.shape != (7,)
+            or not np.all(np.isfinite(start_q))
+            or not np.isfinite(lift_m)
+            or not np.isfinite(forward_m)
+            or lift_m <= 0.0
+            or forward_m < 0.0
+            or not 0.001 <= position_tolerance_m <= 0.02
+            or max_steps_per_phase <= 0
+        ):
+            return IKPathResult(False, None, float("inf"), 0.0, "invalid_guided_clearance")
+
+        escape_path, escape_error = self._guided_start_escape(
+            start_q,
+            support_plane=support_plane,
+            timeout_s=3.0,
+        )
+        if escape_path is None:
+            return IKPathResult(
+                False,
+                None,
+                float("inf"),
+                0.0,
+                escape_error or "start_collision_escape_unavailable",
+            )
+
+        path = list(escape_path)
+        q = np.asarray(path[-1], dtype=float)
+        for phase_name, delta_xyz in (
+            ("lift", np.asarray((0.0, 0.0, lift_m), dtype=float)),
+            ("forward", np.asarray((forward_m, 0.0, 0.0), dtype=float)),
+        ):
+            if float(np.linalg.norm(delta_xyz)) <= 1e-9:
+                continue
+            target = self.forward_kinematics(q)
+            target[:3, 3] += delta_xyz
+            previous_error = float("inf")
+            for _ in range(max_steps_per_phase):
+                error = float(
+                    np.linalg.norm(
+                        target[:3, 3] - self.forward_kinematics(q)[:3, 3]
+                    )
+                )
+                if error <= position_tolerance_m:
+                    break
+                result = self.solve_local_translation(
+                    target,
+                    q,
+                    support_plane=support_plane,
+                    maximum_joint_step_rad=0.025,
+                )
+                if not result.ok or result.q_rad is None:
+                    return IKPathResult(
+                        False,
+                        None,
+                        error,
+                        0.0,
+                        f"guided_{phase_name}:{result.reason or 'ik_failed'}",
+                    )
+                candidate = np.asarray(result.q_rad, dtype=float)
+                candidate_error = float(
+                    np.linalg.norm(
+                        target[:3, 3] - self.forward_kinematics(candidate)[:3, 3]
+                    )
+                )
+                if candidate_error >= min(error, previous_error) - 1e-5:
+                    return IKPathResult(
+                        False,
+                        None,
+                        candidate_error,
+                        0.0,
+                        f"guided_{phase_name}:no_progress",
+                    )
+                q = candidate
+                path.append(tuple(float(value) for value in q))
+                previous_error = candidate_error
+            else:
+                return IKPathResult(
+                    False,
+                    None,
+                    previous_error,
+                    0.0,
+                    f"guided_{phase_name}:step_limit",
+                )
+
+        return IKPathResult(True, tuple(path), 0.0, 0.0, None)
+
     def _ik_seed_variants(self, start_q: np.ndarray) -> tuple[np.ndarray, ...]:
         """Offer the optimizer bounded G1 arm postures, not one local branch.
 
@@ -852,8 +956,8 @@ class G1RightArmIK:
         *,
         enforce_orientation: bool = True,
         support_plane: Any | None = None,
-        planning_timeout_s: float = 13.0,
-        max_iterations: int = 5000,
+        planning_timeout_s: float = 20.0,
+        max_iterations: int = 7000,
     ) -> IKPathResult:
         """Solve a goal pose, then route around transient self-collisions.
 
@@ -950,7 +1054,12 @@ class G1RightArmIK:
                 goals.append((goal_q, position_error, orientation_error))
 
         goals.sort(key=lambda item: float(np.linalg.norm(item[0] - route_start_q)))
-        selected_goals = goals[:2]
+        # A close joint-space goal is not necessarily the easiest collision
+        # branch to reach.  In particular, the two closest G1 solutions can
+        # both fold the elbow toward the hip while a slightly farther
+        # wrist/elbow branch has a simple route over the table.  Keep every
+        # independently validated IK branch available to the bounded planner.
+        selected_goals = goals
         for goal_index, (goal_q, position_error, orientation_error) in enumerate(selected_goals):
             remaining = deadline - time.monotonic()
             if remaining <= 0.05:
@@ -984,9 +1093,10 @@ class G1RightArmIK:
                     return False
                 return self._arm_has_support_clearance(q, support_plane)
 
-            candidates_left = max(1, len(selected_goals) - goal_index)
             validation_reserve = min(2.5, max(0.5, remaining * 0.25))
-            candidate_budget = (remaining - validation_reserve) / candidates_left
+            # Give each branch enough time to leave a collision boundary, but
+            # cap a bad branch so later elbow/wrist alternatives still run.
+            candidate_budget = min(3.0, remaining - validation_reserve)
             if candidate_budget <= 0.05:
                 last_failure = (
                     position_error,
@@ -1011,11 +1121,16 @@ class G1RightArmIK:
                 last_failure = (position_error, orientation_error, "collision_detour_unavailable")
                 continue
             combined = (*escape_path[:-1], *path)
+            # Search may legitimately consume its whole bounded budget just as
+            # it finds a route. Never convert that into an automatic
+            # validation_timeout by handing the dense final sweep an expired
+            # deadline; validation receives its own small, disarmed-only cap.
+            validation_deadline = time.monotonic() + 3.0
             validation_error = self.validate_joint_path(
                 combined,
                 support_plane=support_plane,
                 edge_step_rad=0.0025,
-                deadline_s=deadline,
+                deadline_s=validation_deadline,
             )
             if validation_error:
                 last_failure = (
@@ -1101,6 +1216,94 @@ class G1RightArmIK:
             return IKResult(False, None, position_error, orientation_error, "orientation_error")
         return IKResult(True, tuple(float(value) for value in q), position_error, orientation_error)
 
+    def solve_local_translation(
+        self,
+        target_transform: np.ndarray,
+        last_q_rad: Sequence[float],
+        *,
+        support_plane: Any | None = None,
+        maximum_joint_step_rad: float = 0.040,
+        damping: float = 0.01,
+    ) -> IKResult:
+        """Compute one fast warm-started Cartesian servo step.
+
+        Finite-difference translational Jacobians avoid the 150-250 ms
+        nonlinear solve in the 20 Hz hot path. Wrist pitch/yaw receive useful
+        redundancy weight, while the returned edge still passes the complete
+        collision, table-clearance, corridor, and joint-limit validation.
+        """
+
+        target = np.asarray(target_transform, dtype=float)
+        last_q = np.asarray(last_q_rad, dtype=float)
+        if (
+            target.shape != (4, 4)
+            or last_q.shape != (7,)
+            or not np.all(np.isfinite(target))
+            or not np.all(np.isfinite(last_q))
+            or not math.isfinite(maximum_joint_step_rad)
+            or not 0.0 < maximum_joint_step_rad <= 0.05
+            or not math.isfinite(damping)
+            or damping <= 0.0
+        ):
+            return IKResult(False, None, float("inf"), float("inf"), "invalid_local_step")
+        current = self.forward_kinematics(last_q)
+        error = target[:3, 3] - current[:3, 3]
+        initial_error = float(np.linalg.norm(error))
+        if initial_error <= 1e-6:
+            return IKResult(True, tuple(float(value) for value in last_q), 0.0, 0.0)
+
+        epsilon = 1e-4
+        jacobian = np.empty((3, 7), dtype=float)
+        for index in range(7):
+            perturbed = last_q.copy()
+            direction = 1.0
+            if perturbed[index] + epsilon > self.upper[index]:
+                direction = -1.0
+            perturbed[index] += direction * epsilon
+            position = self.forward_kinematics(perturbed)[:3, 3]
+            jacobian[:, index] = (position - current[:3, 3]) / (direction * epsilon)
+
+        # Weighted minimum-norm solution. The short hand offset makes wrist
+        # pitch/yaw genuinely useful for translation; prefer them when safe
+        # instead of forcing every correction through shoulder and elbow.
+        inverse_joint_cost = np.diag((1.0, 1.0, 1.0, 1.2, 0.6, 3.0, 3.0))
+        system = jacobian @ inverse_joint_cost @ jacobian.T
+        system += np.eye(3) * (damping * damping)
+        try:
+            delta_q = inverse_joint_cost @ jacobian.T @ np.linalg.solve(system, error)
+        except np.linalg.LinAlgError:
+            return IKResult(False, None, initial_error, 0.0, "local_jacobian_singular")
+        maximum_delta = float(np.max(np.abs(delta_q)))
+        if maximum_delta > maximum_joint_step_rad:
+            delta_q *= maximum_joint_step_rad / maximum_delta
+
+        last_reason = "local_step_invalid"
+        for scale in (1.0, 0.5, 0.25):
+            candidate = np.clip(last_q + delta_q * scale, self.lower, self.upper)
+            candidate_error = float(
+                np.linalg.norm(self.forward_kinematics(candidate)[:3, 3] - target[:3, 3])
+            )
+            if candidate_error >= initial_error - 1e-5:
+                last_reason = "local_step_no_progress"
+                continue
+            validation_error = self.validate_joint_path(
+                (last_q, candidate),
+                support_plane=support_plane,
+                # Four swept intervals keep every maximum 0.040-rad realtime
+                # edge collision/table checked without returning to the much
+                # slower full-route sampling cadence.
+                edge_step_rad=0.010,
+            )
+            if validation_error is None:
+                return IKResult(
+                    True,
+                    tuple(float(value) for value in candidate),
+                    candidate_error,
+                    0.0,
+                )
+            last_reason = validation_error
+        return IKResult(False, None, initial_error, 0.0, last_reason)
+
     def validate_joint_path(
         self,
         knots: Sequence[Sequence[float]],
@@ -1112,7 +1315,8 @@ class G1RightArmIK:
         """Validate a short, already-planned path without invoking RRT or IK.
 
         A small measured hand/hip penetration may only occur in an exit-only
-        prefix that never exceeds its initial depth and becomes collision-free.
+        prefix that stays within the hard penetration ceiling and becomes
+        collision-free.
         Once clear, every real collision pair is forbidden.
         """
 
@@ -1143,7 +1347,7 @@ class G1RightArmIK:
             else {}
         )
         initial_clearance = min(baseline_distances.values(), default=float("inf"))
-        if initial_clearance < -0.005:
+        if initial_clearance < -_MAX_START_ESCAPE_PENETRATION_M:
             return f"start_hand_hip_penetration:{initial_clearance:.5f}"
         escaping = bool(initial_collisions)
         for begin, end in zip(path, path[1:]):

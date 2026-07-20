@@ -12,7 +12,7 @@ import numpy as np
 
 from .calibration import Calibration, load_calibration
 from .arm_commissioning import load_home_profile
-from .depth import DepthFrame, estimate_roi_depth
+from .depth import DepthFrame, estimate_adaptive_roi_depth
 from .geometry import (
     deproject_depth_samples,
     deproject_pixel,
@@ -122,6 +122,24 @@ def register_depth_in_rgb(
     return aligned
 
 
+def clamp_point_height_to_support(
+    point_xyz: Sequence[float],
+    support_plane: Any,
+    *,
+    minimum_height_m: float = 0.03,
+    maximum_height_m: float = 0.12,
+) -> tuple[np.ndarray, float]:
+    """Keep registered XYZ while bounding only its tabletop-normal height."""
+
+    point = np.asarray(point_xyz, dtype=float)
+    height = float(support_plane.signed_distance(point))
+    clamped_height = float(np.clip(height, minimum_height_m, maximum_height_m))
+    corrected = point + (clamped_height - height) * np.asarray(
+        support_plane.normal, dtype=float
+    )
+    return corrected, clamped_height
+
+
 def depth_colormap_jpeg(z16: np.ndarray, depth_scale: float) -> bytes | None:
     try:
         import cv2
@@ -154,6 +172,7 @@ class ArmTrackingRuntime:
         self.repo_root = repo_root
         self.calibration = load_calibration(config.calibration_path)
         self.tabletop_corners_px: tuple[tuple[float, float], ...] | None = None
+        self.tabletop_size_m: tuple[float, float] | None = None
         self.tabletop_footprint_error: str | None = None
         if config.tabletop_path is not None:
             try:
@@ -173,6 +192,12 @@ class ArmTrackingRuntime:
                 if len(parsed) != 4 or not np.all(np.isfinite(parsed)):
                     raise ValueError("tabletop footprint must contain four finite corners")
                 self.tabletop_corners_px = parsed
+                tabletop = value["tabletop"]
+                depth_m = float(tabletop["depth_m"])
+                width_m = float(tabletop["width_m"])
+                if not 0.1 <= depth_m <= 2.0 or not 0.1 <= width_m <= 2.0:
+                    raise ValueError("tabletop physical dimensions are invalid")
+                self.tabletop_size_m = (depth_m, width_m)
             except (KeyError, OSError, TypeError, ValueError, json.JSONDecodeError) as exc:
                 self.tabletop_footprint_error = f"{type(exc).__name__}: {exc}"
         if config.execute:
@@ -334,8 +359,14 @@ class ArmTrackingRuntime:
             f"factory-{self.calibration.camera_serial}-{frame.z16.shape[1]}x{frame.z16.shape[0]}",
             f"ros-aligned-{frame.z16.shape[1]}x{frame.z16.shape[0]}",
         }
+        frame_calibration_id = frame.calibration_id
+        frame_geometry = f"{frame.z16.shape[1]}x{frame.z16.shape[0]}"
+        factory_geometry_match = (
+            frame_calibration_id.startswith("factory-")
+            and frame_calibration_id.endswith(f"-{frame_geometry}")
+        )
         if (self.config.execute and frame.calibration_id != self.calibration.calibration_id) or (
-            not self.config.execute and frame.calibration_id not in recognized_ids
+            not self.config.execute and frame_calibration_id not in recognized_ids and not factory_geometry_match
         ):
             self._reject(base_status, "calibration_mismatch", colormap)
             return
@@ -376,20 +407,50 @@ class ArmTrackingRuntime:
             float(selected["bbox_xyxy"][2]) * sx,
             float(selected["bbox_xyxy"][3]) * sy,
         )
-        estimate = estimate_roi_depth(aligned, bbox, depth_scale=frame.depth_scale)
+        plane = self._support_plane(aligned, frame.depth_scale)
+        if plane is not None:
+            base_status["visualization"]["support_plane"] = plane.to_dict()
+        base_status["visualization"]["support_plane_status"] = {
+            "available": plane is not None,
+            "age_ms": round(max(0.0, time.monotonic() - self.last_support_plane_at) * 1000.0, 1)
+            if self.last_support_plane_at
+            else None,
+            "error": self.last_support_plane_error,
+        }
+        if plane is None:
+            self._reject(base_status, "support_plane_unavailable", colormap)
+            return
+        estimate = estimate_adaptive_roi_depth(
+            aligned,
+            bbox,
+            depth_scale=frame.depth_scale,
+        )
         if estimate is None or not estimate.is_certain:
             self._reject(base_status, "depth_uncertain", colormap)
             return
+        # Use the registered depth point for the actual object XYZ.  The plane is
+        # retained as a bounded tabletop/clearance validator; intersecting a ray
+        # with a stale plane can otherwise extrapolate to metres outside the robot.
+        optical_depth_point = deproject_pixel(
+            estimate.pixel_xy,
+            estimate.depth_m,
+            self.calibration.rgb_intrinsics,
+        )
+        direct_torso = self.calibration.optical_to_torso.apply(optical_depth_point)
+        direct_height_m = float(plane.signed_distance(direct_torso))
+        if not np.all(np.isfinite(direct_torso)) or np.linalg.norm(direct_torso) > 2.0:
+            self._reject(base_status, "localization_outlier", colormap)
+            return
+        torso, object_height_m = clamp_point_height_to_support(direct_torso, plane)
         base_status.update(
             {
                 "depth_valid": True,
-                "median_aligned_depth_m": round(estimate.depth_m, 5),
+                "median_aligned_depth_m": round(float(estimate.depth_m), 5),
+                "object_depth_certain": True,
+                "localization_source": "registered_depth_table_height_clamped",
+                "object_height_above_table_m": round(object_height_m, 5),
             }
         )
-        optical = deproject_pixel(
-            estimate.pixel_xy, estimate.depth_m, self.calibration.rgb_intrinsics
-        )
-        torso = self.calibration.optical_to_torso.apply(optical)
         if self.filter.state is not None and rgb_time <= self.filter.state.timestamp_s:
             self._reject(base_status, "waiting_for_new_rgb_frame", colormap)
             return
@@ -410,7 +471,9 @@ class ArmTrackingRuntime:
             {
                 "status": "tracking",
                 "track_id": int(selected["track_id"]),
-                "depth_valid_fraction": round(estimate.valid_fraction, 4),
+                "depth_valid_fraction": (
+                    None if estimate is None else round(estimate.valid_fraction, 4)
+                ),
                 "object_xyz_m": torso.round(5).tolist(),
                 "predicted_xyz_m": predicted.round(5).tolist(),
                 "prediction_source": (
@@ -443,16 +506,6 @@ class ArmTrackingRuntime:
                 "pregrasp_target_xyz_m": base_status["target_xyz_m"],
             }
         )
-        plane = self._support_plane(aligned, frame.depth_scale)
-        if plane is not None:
-            base_status["visualization"]["support_plane"] = plane.to_dict()
-        base_status["visualization"]["support_plane_status"] = {
-            "available": plane is not None,
-            "age_ms": round(max(0.0, time.monotonic() - self.last_support_plane_at) * 1000.0, 1)
-            if self.last_support_plane_at
-            else None,
-            "error": self.last_support_plane_error,
-        }
         if not self.calibration.workspace.contains(target.position):
             self._reject(base_status, "workspace_violation", colormap)
             return
@@ -618,6 +671,21 @@ class ArmTrackingRuntime:
                 self.calibration.rgb_intrinsics,
                 depth_scale=depth_scale,
                 optical_to_base=self.calibration.optical_to_torso,
+                pixel_roi=self.tabletop_corners_px,
+                # The polygon encloses the tabletop in RGB pixels, but its far
+                # edge can still include background/floor depth through gaps.
+                # Restrict RANSAC candidates to the calibrated tabletop-height
+                # corridor before choosing the dominant plane.
+                base_minimum=(
+                    float(self.calibration.workspace.minimum[0] - 0.12),
+                    float(self.calibration.workspace.minimum[1] - 0.12),
+                    self._expected_table_height_m() - self._table_height_tolerance_m(),
+                ),
+                base_maximum=(
+                    float(self.calibration.workspace.maximum[0] + 0.12),
+                    float(self.calibration.workspace.maximum[1] + 0.12),
+                    self._expected_table_height_m() + self._table_height_tolerance_m(),
+                ),
                 stride=8,
             )
             origin = self.calibration.optical_to_torso.translation
@@ -648,6 +716,17 @@ class ArmTrackingRuntime:
                 lateral_margin_m=0.07,
                 source="live_plane_calibrated_pixel_corners",
             )
+            if self.tabletop_size_m is None:
+                raise ValueError("no calibrated tabletop physical dimensions")
+            measured_size = support.maximum_uv - support.minimum_uv
+            expected_size = np.asarray(self.tabletop_size_m, dtype=float)
+            size_ratio = measured_size / expected_size
+            if np.any(size_ratio < 0.65) or np.any(size_ratio > 1.35):
+                raise ValueError(
+                    "live tabletop footprint dimensions disagree with calibration: "
+                    f"measured={measured_size.round(3).tolist()}m "
+                    f"expected={expected_size.round(3).tolist()}m"
+                )
             self.last_support_plane = support
             self.last_support_plane_at = time.monotonic()
             self.last_support_plane_error = None
@@ -655,6 +734,17 @@ class ArmTrackingRuntime:
         except ValueError as exc:
             self.last_support_plane_error = f"{type(exc).__name__}: {exc}"
             return None
+
+    def _expected_table_height_m(self) -> float:
+        poses = (*self.calibration.solve_poses, *self.calibration.validation_poses)
+        return float(np.median([pose.torso_point_m[2] for pose in poses]))
+
+    def _table_height_tolerance_m(self) -> float:
+        residual = max(
+            self.calibration.solve_residuals.max_error_m,
+            self.calibration.validation_residuals.max_error_m,
+        )
+        return max(0.08, float(residual) + 0.04)
 
     def _arm_state(self) -> dict[str, Any]:
         now = time.monotonic()

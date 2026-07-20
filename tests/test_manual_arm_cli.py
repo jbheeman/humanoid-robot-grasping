@@ -216,7 +216,7 @@ def test_point_hand_target_increases_standoff_when_nominal_target_is_out_of_reac
     shoulder = np.asarray((0.0, -0.18, 0.35))
     target = _point_hand_target((0.65, 0.02, 0.06), 0.25, shoulder)
     object_xyz = np.asarray((0.65, 0.02, 0.06))
-    assert np.linalg.norm(target - shoulder) == pytest.approx(0.40)
+    assert np.linalg.norm(target - shoulder) == pytest.approx(0.48)
     assert np.linalg.norm(object_xyz - target) > 0.25
 
 
@@ -258,17 +258,22 @@ def test_servo_solution_enforces_small_joint_step_without_full_route_validation(
             del path, support_plane
             raise AssertionError("realtime servo must not run full route validation")
 
+        def forward_kinematics(self, candidate):
+            transform = np.eye(4)
+            transform[:3, 3] = candidate[:3]
+            return transform
+
     accepted_solver = Solver(0.02)
     accepted, reason, _ = _bounded_servo_solution(
         accepted_solver, np.eye(4), (0.0,) * 7, support_plane=object()
     )
     assert accepted == pytest.approx((0.02,) * 7)
     assert reason is None
-    rejected, reason, _ = _bounded_servo_solution(
-        Solver(0.0201), np.eye(4), (0.0,) * 7, support_plane=object()
+    clipped, reason, _ = _bounded_servo_solution(
+        Solver(0.0401), np.eye(4), (0.0,) * 7, support_plane=object()
     )
-    assert rejected is None
-    assert reason.startswith("joint_step:")
+    assert clipped == pytest.approx((0.040,) * 7)
+    assert reason is None
 
 
 def test_fetch_vision_target_requires_fresh_registered_xyz(monkeypatch) -> None:

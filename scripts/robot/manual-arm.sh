@@ -29,8 +29,16 @@ if [[ ! -x "${ROBOT_PYTHON}" ]]; then
 fi
 
 source "${ROOT_DIR}/scripts/shared/ros-env.sh"
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+# The stock Foxy Fast DDS reader has repeatedly aborted with std::bad_alloc
+# while cross-distro clients join this small JSON command graph.  Cyclone is
+# stable for these bounded String messages; the large compressed-depth graph
+# remains isolated on domain 43 with Fast DDS.
+export RMW_IMPLEMENTATION="${G1_ARM_RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 g1_source_ros "${ROOT_DIR}" foxy
+if ! ros2 pkg prefix "${RMW_IMPLEMENTATION}" >/dev/null 2>&1; then
+  echo "Missing ROS middleware package ${RMW_IMPLEMENTATION} on the robot." >&2
+  exit 1
+fi
 g1_configure_cyclonedds manual-arm-robot "${ROBOT_INTERFACE}" \
   "${CLIENT_IP},${UNITREE_CONTROL_PEER}" "${ROS_DOMAIN_ID}"
 
@@ -49,7 +57,7 @@ if [[ "${ALLOW_MOVEMENT}" == "1" ]]; then
   args+=(--allow-movement)
 fi
 
-echo "G1 manual arm bridge: mode=${MODE}, profile=${MANUAL_ARM_PROFILE:-sdk2}, ROS domain=${ROS_DOMAIN_ID}, project NIC=${ROBOT_INTERFACE}."
+echo "G1 manual arm bridge: mode=${MODE}, profile=${MANUAL_ARM_PROFILE:-sdk2}, RMW=${RMW_IMPLEMENTATION}, ROS domain=${ROS_DOMAIN_ID}, project NIC=${ROBOT_INTERFACE}."
 echo "No camera, depth, calibration, or browser server is started by this command."
 set +e
 "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${args[@]}"

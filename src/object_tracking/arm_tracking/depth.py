@@ -198,3 +198,36 @@ def estimate_roi_depth(
         mad_m=mad,
         cluster_span_m=float(np.ptp(chosen_values)),
     )
+
+
+def estimate_adaptive_roi_depth(
+    z16: np.ndarray,
+    bbox_xyxy: tuple[float, float, float, float] | list[float],
+    *,
+    depth_scale: float,
+    roi_fractions: tuple[float, ...] = (0.1, 0.15, 0.2, 0.3, 0.4, 0.6),
+) -> DepthEstimate | None:
+    """Return the largest central ROI that passes the strict depth gate.
+
+    A detection box around a three-dimensional plush often includes its curved
+    silhouette and the tabletop behind it.  A fixed large ROI merges those
+    surfaces and inflates depth dispersion.  Trying bounded central ROIs keeps
+    the existing sample-count and MAD requirements intact while preferring the
+    largest coherent surface available.
+    """
+
+    if not roi_fractions:
+        raise ValueError("roi_fractions must not be empty")
+    candidates = []
+    for fraction in roi_fractions:
+        estimate = estimate_roi_depth(
+            z16,
+            bbox_xyxy,
+            depth_scale=depth_scale,
+            roi_fraction=fraction,
+        )
+        if estimate is not None and estimate.is_certain:
+            candidates.append(estimate)
+    if not candidates:
+        return None
+    return max(candidates, key=lambda item: (item.sample_count, item.valid_fraction))

@@ -76,7 +76,8 @@ HARDWARE_INTERFACE="${HARDWARE_INTERFACE}" \
 UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER}" \
 G1_PROJECT_ROS_DOMAIN_ID="${ROS_DOMAIN_ID}" \
   "${ROOT_DIR}/scripts/robot/manual-arm.sh" move &
-pids+=("$!")
+manual_arm_pid="$!"
+pids+=("${manual_arm_pid}")
 
 echo "Vision pointing stack started initially DISARMED."
 echo "  RGB: native 960x540@60 relay to ${CLIENT_IP}:5600"
@@ -85,11 +86,43 @@ echo "  Arm: isolated Fast DDS XR manual bridge on domain ${ROS_DOMAIN_ID} (non-
 echo "  Combined log: ${G1_ACTIVE_LOG_FILE}"
 g1_console "Vision pointing stack starting DISARMED: RGB 60 FPS, depth domain ${DEPTH_ROS_DOMAIN_ID}, arm domain ${ROS_DOMAIN_ID}."
 
+# Bash 5.0 can wake `wait -n PID...` for a different child than those listed.
+# Poll the two explicitly critical PIDs instead so a manual-arm DDS abort can
+# never be mistaken for an RGB/depth failure and tear down healthy vision.
+monitor_critical_processes() {
+  local arm_exit_reported=0
+  local pid
+  local process_state
+  while true; do
+    if (( arm_exit_reported == 0 )); then
+      process_state="$(ps -o stat= -p "${manual_arm_pid}" 2>/dev/null || true)"
+      if [[ -z "${process_state}" || "${process_state}" == Z* ]]; then
+        set +e
+        wait "${manual_arm_pid}"
+        local arm_status=$?
+        set -e
+        echo "Manual arm bridge exited (code ${arm_status}); RGB/depth remain active." >&2
+        echo "After diagnosing it, the operator may restart only the disarmed bridge with:" >&2
+        echo "  G1_PROJECT_ROS_DOMAIN_ID=${ROS_DOMAIN_ID} scripts/robot/manual-arm.sh move" >&2
+        arm_exit_reported=1
+      fi
+    fi
+    for pid in "${critical_pids[@]}"; do
+      process_state="$(ps -o stat= -p "${pid}" 2>/dev/null || true)"
+      if [[ -z "${process_state}" || "${process_state}" == Z* ]]; then
+        set +e
+        wait "${pid}"
+        status=$?
+        set -e
+        return "${status}"
+      fi
+    done
+    sleep 0.20
+  done
+}
+
 set +e
-# The arm bridge is deliberately non-critical: an SDK2/DDS abort must never
-# take down the independent RGB relay or depth publisher.  It has its own
-# detailed log and GB10 commands will report an unavailable bridge instead.
-wait -n "${critical_pids[@]}"
+monitor_critical_processes
 status=$?
 set -e
 echo "A critical vision-pointing process exited; stopping the stack." >&2

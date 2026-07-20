@@ -47,14 +47,15 @@ DEPTH_TOPIC = "/g1/depth"
 ARM_CONTROL_SERVICE = "/g1/arm/control"
 COMMISSIONING_STATE_TOPIC = "/g1/commissioning/state"
 MANUAL_BASE = "/g1/arm_control"
-MANUAL_LEFT_TOPIC = f"{MANUAL_BASE}/left/command"
-MANUAL_RIGHT_TOPIC = f"{MANUAL_BASE}/right/command"
+MANUAL_LEFT_TOPIC = f"{MANUAL_BASE}/left/command_json"
+MANUAL_RIGHT_TOPIC = f"{MANUAL_BASE}/right/command_json"
 MANUAL_HEARTBEAT_TOPIC = f"{MANUAL_BASE}/heartbeat"
-MANUAL_REQUEST_TOPIC = f"{MANUAL_BASE}/request"
-MANUAL_RESPONSE_TOPIC = f"{MANUAL_BASE}/response"
-MANUAL_STATUS_TOPIC = f"{MANUAL_BASE}/status"
+MANUAL_REQUEST_TOPIC = f"{MANUAL_BASE}/request_json"
+MANUAL_RESPONSE_TOPIC = f"{MANUAL_BASE}/response_json"
+MANUAL_STATUS_TOPIC = f"{MANUAL_BASE}/status_json"
 MANUAL_JOINT_STATES_TOPIC = f"{MANUAL_BASE}/joint_states"
 _HEADER_LENGTH = struct.Struct("!I")
+_MAX_MANUAL_WIRE_JSON_BYTES = 16 * 1024
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -181,6 +182,16 @@ def _safe_json(value: object) -> str:
 
 def _optional_string(value: object) -> str:
     return "" if value is None else str(value)
+
+
+def _manual_wire_object(message: object) -> dict[str, Any]:
+    raw = str(getattr(message, "data", ""))
+    if not raw or len(raw.encode("utf-8")) > _MAX_MANUAL_WIRE_JSON_BYTES:
+        raise ValueError("manual wire envelope is empty or oversized")
+    value = json.loads(raw)
+    if not isinstance(value, dict):
+        raise ValueError("manual wire envelope must be a JSON object")
+    return value
 
 
 def _age_ms(value: object) -> int:
@@ -326,18 +337,26 @@ class RobotRosNode:
                     allow_movement=args.allow_movement,
                     gain_profile=args.manual_control_profile,
                     control_hz=50.0 if args.manual_control_profile == "sdk2" else 250.0,
+                    # XR ownership blending can settle the wrist joints by
+                    # roughly 0.04 rad even though the latched target equals
+                    # the measured pose.  Use a slower ramp so that benign
+                    # arbitration settling remains below the unchanged
+                    # measured-velocity safety gate.
+                    weight_ramp_s=(
+                        0.5 if args.manual_control_profile == "sdk2" else 1.0
+                    ),
                     # XR remains under the same target, measured-velocity,
                     # following-error, and collision gates.  This is a modest
                     # increase so visual tracking is not dominated by the
                     # transport waypoint cadence.
                     max_velocity_rad_s=(
-                        0.25 if args.manual_control_profile == "sdk2" else 0.40
+                        0.25 if args.manual_control_profile == "sdk2" else 0.60
                     ),
                     max_target_delta_rad=(
                         0.05 if args.manual_control_profile == "sdk2" else 0.10
                     ),
                     max_acceleration_rad_s2=(
-                        1.0 if args.manual_control_profile == "sdk2" else 1.20
+                        1.0 if args.manual_control_profile == "sdk2" else 2.00
                     ),
                 ),
                 event_sink=lambda event: print(
@@ -411,23 +430,26 @@ class RobotRosNode:
         self.commissioning_response_publisher = None
         self.depth_publisher = None
         if args.control_mode == "manual":
+            # Keep the cross-distro command path on standard ROS messages.
+            # The stock Foxy Fast DDS reader has intermittently thrown
+            # std::bad_alloc while decoding Jazzy-generated custom messages.
             self.manual_status_publisher = self.node.create_publisher(
-                self.types["ArmState"], MANUAL_STATUS_TOPIC, qos
+                self.types["String"], MANUAL_STATUS_TOPIC, depth_qos
             )
             self.manual_joint_state_publisher = self.node.create_publisher(
                 self.types["JointState"], MANUAL_JOINT_STATES_TOPIC, depth_qos
             )
             self.manual_response_publisher = self.node.create_publisher(
-                self.types["ArmManualResponse"], MANUAL_RESPONSE_TOPIC, qos
+                self.types["String"], MANUAL_RESPONSE_TOPIC, qos
             )
             self.node.create_subscription(
-                self.types["ArmSideTarget"],
+                self.types["String"],
                 MANUAL_LEFT_TOPIC,
                 lambda message: self._on_manual_target("left", message),
                 qos,
             )
             self.node.create_subscription(
-                self.types["ArmSideTarget"],
+                self.types["String"],
                 MANUAL_RIGHT_TOPIC,
                 lambda message: self._on_manual_target("right", message),
                 qos,
@@ -436,7 +458,7 @@ class RobotRosNode:
                 self.types["String"], MANUAL_HEARTBEAT_TOPIC, self._on_manual_heartbeat, qos
             )
             self.node.create_subscription(
-                self.types["ArmManualRequest"],
+                self.types["String"],
                 MANUAL_REQUEST_TOPIC,
                 self._on_manual_request,
                 qos,
@@ -535,21 +557,18 @@ class RobotRosNode:
         if self.args.control_mode != "manual":
             return
         try:
-            duration = getattr(message, "move_duration")
-            duration_s = (
-                float(getattr(duration, "sec", 0)) + float(getattr(duration, "nanosec", 0)) / 1e9
-            )
+            payload = _manual_wire_object(message)
             self.controller.set_side_target(
                 side=side,
-                session_id=str(message.session_id),
-                sequence=int(message.sequence),
-                joint_names=tuple(message.joint_names),
-                position_rad=tuple(message.position_rad),
-                duration_s=duration_s,
-                sent_time_ns=self._stamp_ns(message.header.stamp),
+                session_id=str(payload.get("session_id", "")),
+                sequence=int(payload.get("sequence", -1)),
+                joint_names=tuple(payload.get("joint_names", ())),
+                position_rad=tuple(payload.get("position_rad", ())),
+                duration_s=float(payload.get("duration_s", 0.0)),
+                sent_time_ns=int(payload.get("sent_time_ns", 0)),
             )
         except ArmBridgeError as exc:
-            # Rejections are reported on the typed status topic and do not
+            # Rejections are reported on the bounded status envelope and do not
             # disturb a currently safe command.
             self.controller.record_rejection(side, exc)
             return
@@ -565,36 +584,45 @@ class RobotRosNode:
             return
 
     def _on_manual_request(self, request: object) -> None:
-        response = self.types["ArmManualResponse"]()
-        response.request_id = str(getattr(request, "request_id", ""))
+        response = self.types["String"]()
+        request_id = ""
         try:
+            payload = _manual_wire_object(request)
+            request_id = str(payload.get("request_id", ""))
             if self.args.control_mode != "manual":
                 raise ArmBridgeError("Manual control mode is not active", code="mode_mismatch")
-            operation = str(getattr(request, "operation", "")).strip().lower()
+            operation = str(payload.get("operation", "")).strip().lower()
             if operation == "enable":
-                report = self.controller.enable(str(getattr(request, "session_id", "")))
+                report = self.controller.enable(str(payload.get("session_id", "")))
             elif operation == "heartbeat":
-                report = self.controller.heartbeat(str(getattr(request, "session_id", "")))
+                report = self.controller.heartbeat(str(payload.get("session_id", "")))
             elif operation == "stop":
                 report = self.controller.stop(
-                    str(getattr(request, "reason", "") or "operator_stop")
+                    str(payload.get("reason", "") or "operator_stop")
                 )
             elif operation == "state":
                 report = self.controller.state_report()
             else:
                 raise ArmBridgeError("Unknown manual arm operation", code="invalid_request")
         except Exception as exc:
-            response.ok = False
-            response.error_code = str(getattr(exc, "code", "bridge_failure"))
-            response.message = str(exc)
-            response.session_id = ""
-            response.report_json = "{}"
+            envelope = {
+                "request_id": request_id,
+                "ok": False,
+                "error_code": str(getattr(exc, "code", "bridge_failure")),
+                "message": str(exc),
+                "session_id": "",
+                "report": {},
+            }
         else:
-            response.ok = True
-            response.error_code = ""
-            response.message = ""
-            response.session_id = _optional_string(report.get("session_id"))
-            response.report_json = _safe_json(report)
+            envelope = {
+                "request_id": request_id,
+                "ok": True,
+                "error_code": "",
+                "message": "",
+                "session_id": _optional_string(report.get("session_id")),
+                "report": report,
+            }
+        response.data = _safe_json(envelope)
         self.manual_response_publisher.publish(response)
 
     @staticmethod
@@ -744,7 +772,9 @@ class RobotRosNode:
         message.report_json = _safe_json(report)
         self.arm_state_publisher.publish(message)
         if self.args.control_mode == "manual":
-            self.manual_status_publisher.publish(message)
+            status = self.types["String"]()
+            status.data = message.report_json
+            self.manual_status_publisher.publish(status)
 
     def _publish_manual_joint_states(self) -> None:
         if self.args.control_mode != "manual":

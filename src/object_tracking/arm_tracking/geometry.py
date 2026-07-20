@@ -436,6 +436,31 @@ def deproject_pixel(
     return np.array([x * depth_m, y * depth_m, depth_m], dtype=np.float64)
 
 
+def intersect_pixel_ray_with_plane(
+    pixel_xy: Iterable[float],
+    intrinsics: CameraIntrinsics,
+    optical_to_base: RigidTransform,
+    plane: Plane,
+) -> np.ndarray:
+    """Intersect a calibrated camera pixel ray with a plane in base coordinates."""
+
+    pixel = np.asarray(tuple(pixel_xy), dtype=np.float64)
+    if pixel.shape != (2,) or not np.all(np.isfinite(pixel)):
+        raise ValueError("pixel_xy must contain two finite values")
+    x = (pixel[0] - intrinsics.ppx) / intrinsics.fx
+    y = (pixel[1] - intrinsics.ppy) / intrinsics.fy
+    x, y = _undistort_normalized(x, y, intrinsics)
+    ray = optical_to_base.rotation @ np.asarray((x, y, 1.0), dtype=np.float64)
+    origin = optical_to_base.translation
+    denominator = float(np.dot(plane.normal, ray))
+    if abs(denominator) <= 1e-9:
+        raise ValueError("camera ray is parallel to plane")
+    distance = -float(np.dot(plane.normal, origin) + plane.offset) / denominator
+    if distance <= 0.0 or not np.isfinite(distance):
+        raise ValueError("camera ray intersects plane behind camera")
+    return origin + distance * ray
+
+
 def _undistort_normalized(
     x: np.ndarray | float, y: np.ndarray | float, intrinsics: CameraIntrinsics
 ) -> tuple[np.ndarray | float, np.ndarray | float]:
@@ -558,6 +583,28 @@ def deproject_depth_samples(
     return np.column_stack((x * depths, y * depths, depths))
 
 
+def _points_in_polygon(points_xy: np.ndarray, polygon_uv: Sequence[tuple[float, float]]) -> np.ndarray:
+    """Return a boolean mask for points inside or on the boundary of a polygon."""
+    polygon = np.asarray(polygon_uv, dtype=np.float64)
+    if polygon.ndim != 2 or polygon.shape[1] != 2 or len(polygon) < 3:
+        raise ValueError("polygon must contain at least three (u, v) corners")
+    if points_xy.shape[1] != 2:
+        raise ValueError("points_xy must be (N, 2)")
+    px = points_xy[:, 0]
+    py = points_xy[:, 1]
+    x = polygon[:, 0]
+    y = polygon[:, 1]
+
+    inside = np.zeros(px.shape, dtype=bool)
+    for i in range(len(polygon)):
+        j = i - 1
+        xi, yi = x[i], y[i]
+        xj, yj = x[j], y[j]
+        mask = ((yi > py) != (yj > py)) & (px < (xj - xi) * (py - yi) / (yj - yi) + xi)
+        inside ^= mask
+    return inside
+
+
 def extract_support_plane(
     z16: np.ndarray,
     intrinsics: CameraIntrinsics,
@@ -566,32 +613,95 @@ def extract_support_plane(
     optical_to_base: RigidTransform | None = None,
     lower_image_fraction: float = 0.45,
     stride: int = 4,
+    pixel_roi: Sequence[tuple[float, float]] | None = None,
+    base_minimum: Iterable[float] | None = None,
+    base_maximum: Iterable[float] | None = None,
     distance_threshold_m: float = 0.015,
     minimum_inlier_fraction: float = 0.35,
 ) -> tuple[Plane, np.ndarray]:
-    """Extract a dominant support plane from the lower registered depth image."""
+    """Extract a dominant support plane from a depth sample region.
+
+    By default this uses the lower image strip. If ``pixel_roi`` is provided, the
+    support plane is extracted only from points inside that polygon footprint.
+    """
 
     if not 0 < lower_image_fraction <= 1:
         raise ValueError("lower_image_fraction must be in (0, 1]")
-    start_row = int(intrinsics.height * (1.0 - lower_image_fraction))
-    points = deproject_depth_samples(
+    row_range = None if pixel_roi is not None else (int(intrinsics.height * (1.0 - lower_image_fraction)), intrinsics.height)
+
+    points, all_rows, all_cols = deproject_depth_samples_with_sample_grid(
         z16,
         intrinsics,
         depth_scale=depth_scale,
         stride=stride,
-        row_range=(start_row, intrinsics.height),
+        row_range=row_range,
     )
+    if pixel_roi is not None:
+        if len(pixel_roi) < 3:
+            raise ValueError("pixel_roi must contain at least three points")
+        sample_points = np.column_stack((all_cols.ravel(), all_rows.ravel()))
+        inside = _points_in_polygon(sample_points, pixel_roi)
+        points = points[inside]
+    if points.size == 0:
+        raise ValueError("no points available for support plane extraction")
+    if (base_minimum is None) != (base_maximum is None):
+        raise ValueError("base_minimum and base_maximum must be provided together")
     if optical_to_base is not None:
         points = optical_to_base.apply(points)
         orientation = (0.0, 0.0, 1.0)
     else:
         orientation = None
+    if base_minimum is not None and base_maximum is not None:
+        minimum = _vector3(base_minimum, "base_minimum")
+        maximum = _vector3(base_maximum, "base_maximum")
+        if np.any(maximum <= minimum):
+            raise ValueError("base support-plane bounds are invalid")
+        points = points[np.all((points >= minimum) & (points <= maximum), axis=1)]
+        if len(points) < 3:
+            raise ValueError("no tabletop-height points remain inside the calibrated bounds")
     return fit_plane_ransac(
         points,
         distance_threshold_m=distance_threshold_m,
         minimum_inlier_fraction=minimum_inlier_fraction,
         orient_toward=orientation,
     )
+
+
+def deproject_depth_samples_with_sample_grid(
+    z16: np.ndarray,
+    intrinsics: CameraIntrinsics,
+    *,
+    depth_scale: float,
+    row_range: tuple[int, int] | None = None,
+    stride: int = 4,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+    """Like :func:`deproject_depth_samples` but also returns row/col sample grids."""
+    depth = np.asarray(z16)
+    if depth.shape != (intrinsics.height, intrinsics.width):
+        raise ValueError("depth frame shape must match its calibrated intrinsics")
+    if stride <= 0 or not np.isfinite(depth_scale) or depth_scale <= 0:
+        raise ValueError("stride and depth scale must be positive")
+    start, stop = row_range or (0, intrinsics.height)
+    if not 0 <= start < stop <= intrinsics.height:
+        raise ValueError("row_range is outside the depth frame")
+    rows, columns = np.mgrid[start:stop:stride, 0 : intrinsics.width : stride]
+    depths = depth[rows, columns].astype(np.float64) * depth_scale
+    valid = np.isfinite(depths) & (depths >= 1e-3) & (depths <= 3.0)
+    if not np.any(valid):
+        return (
+            np.empty((0, 3), dtype=np.float64),
+            rows,
+            columns,
+        )
+    depths = depths[valid]
+    rows = rows[valid]
+    columns = columns[valid]
+    pixels_x = columns.astype(np.float64)
+    pixels_y = rows.astype(np.float64)
+    x = (pixels_x - intrinsics.ppx) / intrinsics.fx
+    y = (pixels_y - intrinsics.ppy) / intrinsics.fy
+    x, y = _undistort_normalized(x, y, intrinsics)
+    return np.column_stack((x * depths, y * depths, depths)), rows, columns
 
 
 def generate_pregrasp_target(

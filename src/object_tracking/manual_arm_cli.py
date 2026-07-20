@@ -21,17 +21,24 @@ from object_tracking.arm_tracking.joints import (
 
 
 BASE = "/g1/arm_control"
-LEFT_TOPIC = f"{BASE}/left/command"
-RIGHT_TOPIC = f"{BASE}/right/command"
+LEFT_TOPIC = f"{BASE}/left/command_json"
+RIGHT_TOPIC = f"{BASE}/right/command_json"
 HEARTBEAT_TOPIC = f"{BASE}/heartbeat"
-REQUEST_TOPIC = f"{BASE}/request"
-RESPONSE_TOPIC = f"{BASE}/response"
-STATUS_TOPIC = f"{BASE}/status"
+REQUEST_TOPIC = f"{BASE}/request_json"
+RESPONSE_TOPIC = f"{BASE}/response_json"
+STATUS_TOPIC = f"{BASE}/status_json"
 MAX_ROBOT_STEP_RAD = 0.10
 # Keep a small numerical margin only for generated IK routes. Manual jogs
 # retain their documented 0.050-rad increments.
-SAFE_IK_PUBLISHED_STEP_RAD = 0.04
-SERVO_MAX_JOINT_STEP_RAD = 0.02
+# Initial clearance is planned and swept for collisions before ownership.  It
+# can therefore use larger stream knots than the unplanned visual-servo loop,
+# while remaining well below the robot bridge's 0.10-rad command-increment
+# gate.  Keeping these limits separate avoids making the long, certified
+# clearance route unnecessarily slow just to preserve small realtime updates.
+CLEARANCE_PUBLISHED_STEP_RAD = 0.04
+SERVO_MAX_JOINT_STEP_RAD = 0.040
+CLEARANCE_STREAM_PERIOD_S = 0.05
+CLEARANCE_TARGET_DURATION_S = 0.20
 MAX_MANUAL_TOTAL_DELTA_RAD = 0.20
 MAX_IK_WAYPOINT_DISTANCE_M = 0.01
 MAX_IK_WAYPOINT_JOINT_DELTA_RAD = 0.35
@@ -44,7 +51,7 @@ MAX_VISION_TARGET_AGE_MS = 750.0
 # The D435 tabletop geometry can place a nominal 25 cm standoff beyond the
 # G1's practical right-arm reach. Keep the hand on the pointing ray but cap
 # its distance from the shoulder, increasing standoff when necessary.
-MAX_POINTING_SHOULDER_DISTANCE_M = 0.40
+MAX_POINTING_SHOULDER_DISTANCE_M = 0.48
 # The calibrated object workspace begins at the physical tabletop, while a
 # pointing hand intentionally remains on the robot side of that near edge.
 # Table/mesh collision gates still apply; this is only the outer hand corridor.
@@ -126,12 +133,6 @@ class ManualArmClient:
     def __init__(self) -> None:
         try:
             import rclpy
-            from g1_control_interfaces.msg import (
-                ArmManualRequest,
-                ArmManualResponse,
-                ArmSideTarget,
-            )
-            from g1_control_interfaces.msg import ArmState as ArmStateMessage
             from rclpy.qos import (
                 DurabilityPolicy,
                 HistoryPolicy,
@@ -145,8 +146,6 @@ class ManualArmClient:
                 "after rebuilding the GB10 ROS workspace."
             ) from exc
         self.rclpy = rclpy
-        self.ArmManualRequest = ArmManualRequest
-        self.ArmSideTarget = ArmSideTarget
         self.String = String
         rclpy.init(args=None)
         self.node = rclpy.create_node("g1_manual_arm_client")
@@ -156,7 +155,7 @@ class ManualArmClient:
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
-        self.request_publisher = self.node.create_publisher(ArmManualRequest, REQUEST_TOPIC, qos)
+        self.request_publisher = self.node.create_publisher(String, REQUEST_TOPIC, qos)
         self.heartbeat_publisher = self.node.create_publisher(String, HEARTBEAT_TOPIC, qos)
         latest_target_qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
@@ -164,21 +163,32 @@ class ManualArmClient:
             reliability=ReliabilityPolicy.RELIABLE,
             durability=DurabilityPolicy.VOLATILE,
         )
+        latest_status_qos = QoSProfile(
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1,
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            durability=DurabilityPolicy.VOLATILE,
+        )
         self.target_publishers = {
-            "left": self.node.create_publisher(ArmSideTarget, LEFT_TOPIC, latest_target_qos),
-            "right": self.node.create_publisher(ArmSideTarget, RIGHT_TOPIC, latest_target_qos),
+            "left": self.node.create_publisher(String, LEFT_TOPIC, latest_target_qos),
+            "right": self.node.create_publisher(String, RIGHT_TOPIC, latest_target_qos),
         }
         self.responses: dict[str, object] = {}
         self.status: Optional[dict[str, Any]] = None
-        self.node.create_subscription(ArmManualResponse, RESPONSE_TOPIC, self._on_response, qos)
-        self.node.create_subscription(ArmStateMessage, STATUS_TOPIC, self._on_status, qos)
+        self.node.create_subscription(String, RESPONSE_TOPIC, self._on_response, qos)
+        self.node.create_subscription(String, STATUS_TOPIC, self._on_status, latest_status_qos)
 
     def _on_response(self, message: object) -> None:
-        self.responses[str(message.request_id)] = message
+        try:
+            response = json.loads(str(message.data))
+        except (TypeError, ValueError):
+            return
+        if isinstance(response, dict):
+            self.responses[str(response.get("request_id", ""))] = response
 
     def _on_status(self, message: object) -> None:
         try:
-            report = json.loads(str(message.report_json))
+            report = json.loads(str(message.data))
         except (TypeError, ValueError):
             report = {}
         if isinstance(report, dict):
@@ -205,25 +215,27 @@ class ManualArmClient:
         timeout_s: float = 3.0,
     ) -> dict[str, Any]:
         request_id = uuid.uuid4().hex
-        message = self.ArmManualRequest()
-        message.request_id = request_id
-        message.operation = operation
-        message.session_id = session_id
-        message.reason = reason
+        message = self.String()
+        message.data = json.dumps(
+            {
+                "request_id": request_id,
+                "operation": operation,
+                "session_id": session_id,
+                "reason": reason,
+            },
+            separators=(",", ":"),
+        )
         self.request_publisher.publish(message)
         response = self.spin_until(
             lambda: self.responses.pop(request_id, None),
             timeout_s,
             f"{operation} response",
         )
-        if not bool(response.ok):
+        if not bool(response.get("ok")):
             raise RemoteArmError(
-                f"{operation} rejected [{response.error_code}]: {response.message}"
+                f"{operation} rejected [{response.get('error_code')}]: {response.get('message')}"
             )
-        try:
-            report = json.loads(str(response.report_json))
-        except (TypeError, ValueError) as exc:
-            raise RemoteArmError(f"{operation} returned invalid status JSON") from exc
+        report = response.get("report")
         if not isinstance(report, dict):
             raise RemoteArmError(f"{operation} returned a non-object status")
         return report
@@ -242,17 +254,20 @@ class ManualArmClient:
         positions: Sequence[float],
         duration_s: float,
     ) -> None:
-        message = self.ArmSideTarget()
-        message.header.stamp = self.node.get_clock().now().to_msg()
-        message.session_id = session_id
-        message.sequence = int(sequence)
-        message.joint_names = list(
-            LEFT_ARM_JOINT_NAMES if side == "left" else RIGHT_ARM_JOINT_NAMES
+        message = self.String()
+        message.data = json.dumps(
+            {
+                "session_id": session_id,
+                "sequence": int(sequence),
+                "joint_names": list(
+                    LEFT_ARM_JOINT_NAMES if side == "left" else RIGHT_ARM_JOINT_NAMES
+                ),
+                "position_rad": [float(value) for value in positions],
+                "duration_s": float(duration_s),
+                "sent_time_ns": int(self.node.get_clock().now().nanoseconds),
+            },
+            separators=(",", ":"),
         )
-        message.position_rad = [float(value) for value in positions]
-        seconds = int(duration_s)
-        message.move_duration.sec = seconds
-        message.move_duration.nanosec = int(round((duration_s - seconds) * 1e9))
         self.target_publishers[side].publish(message)
 
     def pump_heartbeat(
@@ -524,7 +539,7 @@ def _write_motion_trace(path: Path, result: dict[str, Any], samples: list[dict[s
 
 def _fetch_vision_target(
     server: str,
-    timeout_s: float = 1.0,
+    timeout_s: float = 3.0,
     *,
     maximum_age_ms: float = MAX_VISION_TARGET_AGE_MS,
 ) -> dict[str, Any]:
@@ -590,6 +605,31 @@ def _fetch_vision_target(
             normalized["predicted_xyz_m"] = fallback_point
             normalized["prediction_source"] = "alpha_beta_fallback_selected"
     return normalized
+
+
+def _wait_for_fresh_vision_target(
+    server: str,
+    *,
+    wait_s: float = 5.0,
+    maximum_age_ms: float = MAX_VISION_TARGET_AGE_MS,
+) -> dict[str, Any]:
+    """Wait only while disarmed for the next acceptable perception sample."""
+
+    deadline = time.monotonic() + wait_s
+    last_error: RemoteArmError | None = None
+    while time.monotonic() < deadline:
+        try:
+            return _fetch_vision_target(
+                server,
+                timeout_s=min(1.0, max(0.1, deadline - time.monotonic())),
+                maximum_age_ms=maximum_age_ms,
+            )
+        except RemoteArmError as exc:
+            last_error = exc
+            time.sleep(0.05)
+    if last_error is not None:
+        raise last_error
+    raise RemoteArmError("timed out waiting for a fresh vision target")
 
 
 def _vision_support_plane(target: dict[str, Any]) -> Any | None:
@@ -659,20 +699,31 @@ def _bounded_servo_solution(
 
     import numpy as np
 
-    result = ik_solver.solve(target_transform, seed_q, support_plane=support_plane)
+    if hasattr(ik_solver, "solve_local_translation"):
+        result = ik_solver.solve_local_translation(
+            target_transform,
+            seed_q,
+            support_plane=support_plane,
+            maximum_joint_step_rad=maximum_joint_step_rad,
+        )
+    else:
+        result = ik_solver.solve(target_transform, seed_q, support_plane=support_plane)
     if not result.ok or result.q_rad is None:
         return None, result.reason or "ik_failed", result.position_error_m
     seed = np.asarray(seed_q, dtype=float)
     solution = np.asarray(result.q_rad, dtype=float)
-    maximum_delta = float(np.max(np.abs(solution - seed)))
+    delta = solution - seed
+    maximum_delta = float(np.max(np.abs(delta)))
     if maximum_delta > maximum_joint_step_rad + 1e-9:
-        return (
-            None,
-            f"joint_step:{maximum_delta:.4f}>{maximum_joint_step_rad:.4f}",
-            result.position_error_m,
-        )
+        # The full straight-line IK edge was already collision/support checked
+        # by solve().  Use its bounded prefix instead of discarding the update;
+        # the next 20 Hz cycle warm-starts from this newest commanded pose.
+        solution = seed + delta * (maximum_joint_step_rad / maximum_delta)
     candidate = tuple(float(value) for value in solution)
-    return candidate, None, result.position_error_m
+    candidate_error = float(
+        np.linalg.norm(ik_solver.forward_kinematics(candidate)[:3, 3] - target_transform[:3, 3])
+    )
+    return candidate, None, candidate_error
 
 
 def _signed_progress(start: float, actual: float, requested_delta: float) -> float:
@@ -832,7 +883,7 @@ def run(args: argparse.Namespace) -> int:
         # Fail before taking arm ownership if the perception pipeline is not
         # currently producing a fresh, depth-backed 3D target.
         if args.command == "point":
-            vision_target = _fetch_vision_target(args.server)
+            vision_target = _wait_for_fresh_vision_target(args.server)
             assert ik_solver is not None
             support_plane = _vision_support_plane(vision_target)
             if support_plane is None:
@@ -847,27 +898,27 @@ def run(args: argparse.Namespace) -> int:
             if not isinstance(measured, list) or len(measured) != 14:
                 raise RemoteArmError("Bridge has no measured pose for clearance preplanning")
             preplan_start = tuple(float(value) for value in measured[-7:])
-            clearance_transform = ik_solver.forward_kinematics(preplan_start)
-            clearance_transform[:3, 3] += np.asarray((0.06, 0.0, 0.12))
-            print("Planning collision-aware hip clearance…", flush=True)
+            print("Planning guided hip/table clearance…", flush=True)
             clearance_started_at = time.monotonic()
-            clearance_route = ik_solver.solve_with_collision_detour(
-                clearance_transform,
+            clearance_route = ik_solver.plan_guided_clearance(
                 preplan_start,
-                enforce_orientation=False,
                 support_plane=support_plane,
+                lift_m=0.18,
+                forward_m=0.06,
             )
             if not clearance_route.ok or clearance_route.q_path is None:
                 raise RemoteArmError(
-                    "IK could not preplan the hip-clearance route while disarmed: "
+                    "IK could not preplan the guided clearance route while disarmed: "
                     f"{clearance_route.reason}"
                 )
             preplanned_clearance_path = clearance_route.q_path
             motion_trace.append(
                 {
                     "phase": "preplan_clearance",
-                    "kind": "hip_clearance",
+                    "kind": "guided_hip_and_tabletop_clearance",
                     "path_knots": len(preplanned_clearance_path),
+                    "hip_path_knots": len(preplanned_clearance_path),
+                    "tabletop_stage_knots": 0,
                     "planned_while_disarmed": True,
                     "planning_ms": round(
                         (time.monotonic() - clearance_started_at) * 1000.0,
@@ -875,7 +926,7 @@ def run(args: argparse.Namespace) -> int:
                     ),
                 }
             )
-            refreshed_target = _fetch_vision_target(args.server)
+            refreshed_target = _wait_for_fresh_vision_target(args.server)
             refreshed_support = _vision_support_plane(refreshed_target)
             if refreshed_support is None or not _support_regions_equivalent(
                 support_plane,
@@ -930,13 +981,91 @@ def run(args: argparse.Namespace) -> int:
         step_count = 0
         sequence = -1
 
-        def execute_targets(targets: Sequence[Sequence[float]], *, phase: str) -> None:
+        def execute_targets(
+            targets: Sequence[Sequence[float]],
+            *,
+            phase: str,
+            stream_period_s: float | None = None,
+        ) -> None:
             """Send one already collision-checked segment before replanning."""
 
             nonlocal sequence, step_count
+            escape_prefix_active = False
+            if stream_period_s is not None:
+                initial_status = client.status or {}
+                initial_commanded = initial_status.get("commanded_arm_q")
+                if isinstance(initial_commanded, list) and len(initial_commanded) == 14:
+                    initial_begin = np.asarray(
+                        initial_commanded[:7] if side == "left" else initial_commanded[-7:],
+                        dtype=float,
+                    )
+                    initial_collisions = ik_solver._collision_pairs(initial_begin)
+                    escape_prefix_active = bool(initial_collisions) and all(
+                        ik_solver._is_right_hand_hip_pair(index)
+                        for index in initial_collisions
+                    )
             for target in targets:
                 if stop.is_set():
                     return
+                if stream_period_s is not None:
+                    # The 250 Hz quintic controller may retime a 0.025-rad
+                    # planned edge to longer than our 50 ms publish cadence.
+                    # Pace against its current commanded pose so several safe
+                    # edges never accumulate into one >0.10-rad rebase.  Since
+                    # the current command can lie partway along the preceding
+                    # edge, independently sweep-check the exact live rebase.
+                    rebase_deadline = time.monotonic() + max(2.0, args.timeout)
+                    last_rebase_error = "command_delta"
+                    while not stop.is_set():
+                        status_now = client.status or {}
+                        commanded = status_now.get("commanded_arm_q")
+                        if isinstance(commanded, list) and len(commanded) == 14:
+                            begin = tuple(
+                                float(value)
+                                for value in (
+                                    commanded[:7] if side == "left" else commanded[-7:]
+                                )
+                            )
+                            requested_delta = max(
+                                abs(float(end) - start)
+                                for start, end in zip(begin, target)
+                            )
+                            if requested_delta <= MAX_ROBOT_STEP_RAD - 0.005:
+                                assert ik_solver is not None
+                                if escape_prefix_active:
+                                    # These targets are collinear subdivisions
+                                    # of the already certified exit-only edge.
+                                    # A partial subdivision may intentionally
+                                    # remain in the original hand/hip contact;
+                                    # it need not complete the whole escape.
+                                    break
+                                live_edge_error = ik_solver.validate_joint_path(
+                                    (begin, target),
+                                    support_plane=support_plane,
+                                    edge_step_rad=0.005,
+                                )
+                                if live_edge_error is None:
+                                    break
+                                last_rebase_error = live_edge_error
+                            else:
+                                last_rebase_error = (
+                                    f"command_delta:{requested_delta:.4f}"
+                                )
+                        if time.monotonic() >= rebase_deadline:
+                            raise RemoteArmError(
+                                "Clearance controller did not advance enough for the next "
+                                "collision-checked target: "
+                                f"{last_rebase_error}"
+                            )
+                        client.pump_heartbeat(
+                            session_id,
+                            0.02,
+                            stop,
+                            trace=motion_trace,
+                            phase=f"{phase}_pacing",
+                        )
+                    if stop.is_set():
+                        return
                 sequence += 1
                 step_count += 1
                 client.publish_target(
@@ -944,12 +1073,16 @@ def run(args: argparse.Namespace) -> int:
                     session_id=session_id,
                     sequence=sequence,
                     positions=target,
-                    duration_s=args.duration,
+                    duration_s=(
+                        args.duration
+                        if stream_period_s is None
+                        else CLEARANCE_TARGET_DURATION_S
+                    ),
                 )
                 client.wait_sequence(side, sequence, session_id, args.timeout)
                 client.pump_heartbeat(
                     session_id,
-                    args.duration,
+                    args.duration if stream_period_s is None else stream_period_s,
                     stop,
                     trace=motion_trace,
                     phase=phase,
@@ -961,6 +1094,15 @@ def run(args: argparse.Namespace) -> int:
                         f"state={status.get('state')}, "
                         f"fault={status.get('fault_reason')}"
                     )
+                if stream_period_s is not None and status.get("last_clamp") is not None:
+                    raise RemoteArmError(
+                        "Robot had to clamp a streamed clearance target; refusing to skip "
+                        "the collision-checked route"
+                    )
+                if escape_prefix_active and not ik_solver._collision_pairs(
+                    np.asarray(target, dtype=float)
+                ):
+                    escape_prefix_active = False
 
         if args.command == "move":
             manual_deltas = _manual_deltas(args, names)
@@ -1014,7 +1156,7 @@ def run(args: argparse.Namespace) -> int:
                     )
                 preplanned_targets = _guarded_joint_path(
                     clearance_path,
-                    maximum_step_rad=SAFE_IK_PUBLISHED_STEP_RAD,
+                    maximum_step_rad=CLEARANCE_PUBLISHED_STEP_RAD,
                 )
                 path_knots.extend(preplanned_clearance_path[1:])
                 solution_q = preplanned_clearance_path[-1]
@@ -1052,7 +1194,55 @@ def run(args: argparse.Namespace) -> int:
             execute_targets(guarded_targets, phase="outward")
         else:
             guarded_targets = preplanned_targets
-            execute_targets(guarded_targets, phase="outward_preplanned")
+            execute_targets(
+                guarded_targets,
+                phase="outward_preplanned",
+                stream_period_s=CLEARANCE_STREAM_PERIOD_S,
+            )
+            # The intermediate knots are streamed continuously.  Wait only at
+            # the final clearance pose so tracking never starts below the
+            # certified hip/table corridor.
+            final_clearance = tuple(float(value) for value in guarded_targets[-1])
+            final_clearance_transform = ik_solver.forward_kinematics(final_clearance)
+            settle_deadline = time.monotonic() + max(2.0, args.duration * 4.0)
+            while not stop.is_set() and time.monotonic() < settle_deadline:
+                status = client.status or {}
+                measured = status.get("measured_arm_q")
+                if isinstance(measured, list) and len(measured) == 14:
+                    measured_clearance_q = tuple(float(value) for value in measured[-7:])
+                    measured_clearance_transform = ik_solver.forward_kinematics(
+                        measured_clearance_q
+                    )
+                    clearance_error_m = float(
+                        np.linalg.norm(
+                            measured_clearance_transform[:3, 3]
+                            - final_clearance_transform[:3, 3]
+                        )
+                    )
+                    # Servo tracking error is joint-dependent; accept the
+                    # physical clearance pose only when its hand location and
+                    # complete measured geometry are independently safe.
+                    if (
+                        clearance_error_m <= 0.015
+                        and not ik_solver._collision_pairs(
+                            np.asarray(measured_clearance_q, dtype=float)
+                        )
+                        and ik_solver._arm_has_support_clearance(
+                            np.asarray(measured_clearance_q, dtype=float),
+                            support_plane,
+                        )
+                    ):
+                        break
+                client.pump_heartbeat(
+                    session_id,
+                    0.02,
+                    stop,
+                    trace=motion_trace,
+                    phase="clearance_settle",
+                )
+            else:
+                if not stop.is_set():
+                    raise RemoteArmError("Clearance stream did not settle at its safe endpoint")
         client.pump_heartbeat(session_id, args.hold, stop, trace=motion_trace, phase="outward_hold")
         outward_status = client.status or {}
         if outward_status.get("state") != "ARMED":
@@ -1174,7 +1364,7 @@ def run(args: argparse.Namespace) -> int:
                 try:
                     candidate = _fetch_vision_target(
                         args.server,
-                        timeout_s=max(0.02, min(0.10, args.tracking_poll)),
+                        timeout_s=0.20,
                         maximum_age_ms=250.0,
                     )
                 except RemoteArmError as exc:
@@ -1266,9 +1456,25 @@ def run(args: argparse.Namespace) -> int:
                         phase="tracking_hold",
                     )
                     continue
-                support_plane = _vision_support_plane(candidate)
-                if support_plane is None:
+                live_support_plane = _vision_support_plane(candidate)
+                if live_support_plane is None:
                     freeze_active_trajectory("support_plane_unavailable")
+                    client.pump_heartbeat(
+                        session_id,
+                        max(0.0, args.tracking_poll - (time.monotonic() - cycle_started)),
+                        stop,
+                        trace=motion_trace,
+                        phase="tracking_hold",
+                    )
+                    continue
+                # The table is stationary for a pointing session.  Keep the
+                # support region certified immediately before arm ownership as
+                # the collision reference instead of replacing it with a noisy
+                # RANSAC fit every video frame.  We still validate every live
+                # fit against that reference and freeze if the physical table
+                # appears to have moved.
+                if not _support_regions_equivalent(support_plane, live_support_plane):
+                    freeze_active_trajectory("support_plane_changed")
                     client.pump_heartbeat(
                         session_id,
                         max(0.0, args.tracking_poll - (time.monotonic() - cycle_started)),
@@ -1361,6 +1567,7 @@ def run(args: argparse.Namespace) -> int:
                     }
                 )
                 tracking_updates += 1
+                solution_q = servo_target
                 client.pump_heartbeat(
                     session_id,
                     max(0.0, args.tracking_poll - (time.monotonic() - cycle_started)),

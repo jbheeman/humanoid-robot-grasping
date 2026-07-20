@@ -7,6 +7,7 @@ import numpy as np
 from object_tracking.arm_tracking.depth import (
     DepthFrame,
     DepthFrameBuffer,
+    estimate_adaptive_roi_depth,
     estimate_roi_depth,
     pair_rgb_depth,
 )
@@ -22,6 +23,7 @@ from object_tracking.arm_tracking.geometry import (
     generate_pregrasp_target,
     has_plane_clearance,
     has_support_clearance,
+    intersect_pixel_ray_with_plane,
     map_pixel_between_profiles,
 )
 from object_tracking.arm_tracking.tracking import (
@@ -79,6 +81,31 @@ class RobustDepthTests(unittest.TestCase):
         depth[10, 10] = 1000
         self.assertIsNone(estimate_roi_depth(depth, [2, 2, 18, 18], depth_scale=0.001))
 
+    def test_adaptive_roi_uses_coherent_object_center(self) -> None:
+        gradient = np.linspace(600, 1000, 80, dtype=np.uint16)
+        depth = np.repeat(gradient[np.newaxis, :], 80, axis=0)
+        depth[36:44, 36:44] = 800
+
+        large = estimate_roi_depth(
+            depth,
+            [0, 0, 80, 80],
+            depth_scale=0.001,
+            roi_fraction=0.6,
+        )
+        estimate = estimate_adaptive_roi_depth(
+            depth,
+            [0, 0, 80, 80],
+            depth_scale=0.001,
+        )
+
+        self.assertIsNotNone(large)
+        assert large is not None
+        self.assertFalse(large.is_certain)
+        self.assertIsNotNone(estimate)
+        assert estimate is not None
+        self.assertTrue(estimate.is_certain)
+        self.assertAlmostEqual(estimate.depth_m, 0.8, places=3)
+
 
 class GeometryTests(unittest.TestCase):
     def test_deprojects_and_transforms(self) -> None:
@@ -90,6 +117,16 @@ class GeometryTests(unittest.TestCase):
         torso = transform.apply(optical)
         np.testing.assert_allclose(torso, [1.2, 2.2, 5.0], atol=1e-9)
         np.testing.assert_allclose(transform.inverse().apply(torso), optical, atol=1e-9)
+
+    def test_intersects_calibrated_pixel_ray_with_plane(self) -> None:
+        intrinsics = CameraIntrinsics(640, 480, 500, 500, 320, 240)
+        point = intersect_pixel_ray_with_plane(
+            (370, 190),
+            intrinsics,
+            RigidTransform.identity(),
+            Plane((0, 0, 1), -2.0),
+        )
+        np.testing.assert_allclose(point, (0.2, -0.2, 2.0), atol=1e-9)
 
     def test_deprojects_zero_coefficient_brown_profile(self) -> None:
         intrinsics = CameraIntrinsics(
@@ -133,6 +170,26 @@ class GeometryTests(unittest.TestCase):
         )
         self.assertGreater(float(inliers.mean()), 0.9)
         self.assertAlmostEqual(abs(plane.offset), 1.0, places=3)
+
+    def test_support_plane_bounds_exclude_dominant_background(self) -> None:
+        intrinsics = CameraIntrinsics(32, 24, 30, 30, 16, 12)
+        depth = np.full((24, 32), 1800, dtype=np.uint16)
+        depth[8:22, 6:27] = 700
+        optical_to_base = RigidTransform(
+            np.eye(3),
+            (0.5, 0.0, -0.67),
+        )
+        plane, _ = extract_support_plane(
+            depth,
+            intrinsics,
+            depth_scale=0.001,
+            optical_to_base=optical_to_base,
+            pixel_roi=((5, 7), (28, 7), (28, 23), (5, 23)),
+            base_minimum=(0.0, -1.0, -0.05),
+            base_maximum=(1.0, 1.0, 0.10),
+            stride=1,
+        )
+        self.assertAlmostEqual(float(plane.offset), -0.03, places=3)
 
     def test_bounded_support_region_releases_only_across_certified_edge(self) -> None:
         support = SupportRegion.from_xy_bounds(
