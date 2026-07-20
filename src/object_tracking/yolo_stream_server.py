@@ -931,6 +931,40 @@ def snapshot() -> Response:
     return Response(content=data, media_type="image/jpeg")
 
 
+@app.get("/raw-snapshot.jpg")
+def raw_snapshot() -> Response:
+    """Return one clean latest RGB observation for policy inference.
+
+    Unlike ``/snapshot.jpg``, this endpoint contains no boxes, tracks, or FPS
+    text that would shift the VLA input distribution.  Encoding happens only
+    when requested by an operator/policy process, not in the camera hot path.
+    """
+
+    with state.lock:
+        frame = None if state.raw_frame is None else state.raw_frame.copy()
+        received_at = state.raw_frame_received_monotonic
+        frame_id = state.frame_count
+    if frame is None:
+        return Response(content=b"No frame yet", media_type="text/plain", status_code=503)
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    if not ok:
+        return Response(
+            content=b"Could not encode latest frame",
+            media_type="text/plain",
+            status_code=503,
+        )
+    age_ms = max(0.0, (time.monotonic() - received_at) * 1000.0)
+    return Response(
+        content=encoded.tobytes(),
+        media_type="image/jpeg",
+        headers={
+            "X-G1-Frame-Id": str(frame_id),
+            "X-G1-Frame-Age-Ms": f"{age_ms:.3f}",
+            "Cache-Control": "no-store",
+        },
+    )
+
+
 @app.get("/detections")
 def detections() -> dict[str, Any]:
     with state.lock:
@@ -1170,6 +1204,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--ros-depth-only",
         action="store_true",
         help="Subscribe only to /g1/depth; manual arm control uses its separate ROS client",
+    )
+    parser.add_argument(
+        "--ros-observe-only",
+        action="store_true",
+        help="Subscribe to depth and arm state without creating any command publishers",
     )
     parser.add_argument(
         "--trajectory-model",
@@ -1448,7 +1487,10 @@ def main() -> None:
     try:
         from object_tracking.ros2_tracking import create_ros_tracking_transport
 
-        tracking_transport = create_ros_tracking_transport(observe_depth_only=args.ros_depth_only)
+        tracking_transport = create_ros_tracking_transport(
+            observe_depth_only=args.ros_depth_only,
+            observe_only=args.ros_observe_only,
+        )
         if args.calibration:
             from object_tracking.arm_tracking.runtime import ArmTrackingRuntime, RuntimeConfig
 

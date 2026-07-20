@@ -1,0 +1,149 @@
+import json
+from pathlib import Path
+import threading
+from types import SimpleNamespace
+
+import numpy as np
+import pytest
+from PIL import Image
+
+from object_tracking.unifolm_vla import (
+    compose_pose23,
+    parse_action_chunk,
+    rotation_6d_to_matrix,
+    rotation_matrix_to_6d,
+)
+from object_tracking.unifolm_vla_cli import (
+    GuardedVLAExecutor,
+    LiveObservationSource,
+    Observation,
+    _profile_gripper_means,
+)
+
+
+def test_rotation_6d_round_trip() -> None:
+    angle = 0.4
+    rotation = np.array(
+        [
+            [np.cos(angle), -np.sin(angle), 0.0],
+            [np.sin(angle), np.cos(angle), 0.0],
+            [0.0, 0.0, 1.0],
+        ]
+    )
+    encoded = rotation_matrix_to_6d(rotation)
+    np.testing.assert_allclose(rotation_6d_to_matrix(encoded), rotation, atol=1e-8)
+
+
+def test_pose23_uses_unitree_gripper_and_waist_order() -> None:
+    left = np.eye(4)
+    right = np.eye(4)
+    left[:3, 3] = (0.2, 0.3, 0.4)
+    right[:3, 3] = (0.5, -0.2, 0.1)
+    pose = compose_pose23(
+        left,
+        right,
+        right_gripper=4.5,
+        left_gripper=3.5,
+        waist_yaw_roll_pitch=(0.1, 0.2, 0.3),
+    )
+    assert len(pose) == 23
+    assert pose[0:3] == (0.2, 0.3, 0.4)
+    assert pose[9:12] == (0.5, -0.2, 0.1)
+    assert pose[18:23] == (4.5, 3.5, 0.1, 0.2, 0.3)
+
+
+def test_action_chunk_rejects_degenerate_rotation() -> None:
+    invalid = [0.0] * 23
+    with pytest.raises(ValueError, match="degenerate"):
+        parse_action_chunk([invalid])
+
+
+def test_no_hand_grippers_use_profile_means(tmp_path: Path) -> None:
+    model_root = tmp_path / "model"
+    checkpoint = model_root / "checkpoints/pytorch_model.pt"
+    checkpoint.parent.mkdir(parents=True)
+    means = [0.0] * 23
+    means[18:20] = [3.95, 4.03]
+    (model_root / "dataset_statistics.json").write_text(
+        json.dumps({"g1_stack_block": {"proprio": {"mean": means}}}),
+        encoding="utf-8",
+    )
+
+    assert _profile_gripper_means(checkpoint, "g1_stack_block") == (3.95, 4.03)
+
+
+def test_guarded_executor_clears_then_streams_bounded_vla_waypoint(monkeypatch: pytest.MonkeyPatch) -> None:
+    support = SimpleNamespace(certified_edges=("u_min", "u_max", "v_min", "v_max"))
+    start = (0.0,) * 7
+    cleared = (0.01,) * 7
+    moved = (0.02,) * 7
+
+    class Solver:
+        def plan_guided_clearance(self, q: object, *, support_plane: object) -> object:
+            assert tuple(q) == start and support_plane is support
+            return SimpleNamespace(ok=True, q_path=(start, cleared), reason="")
+
+        def solve_local_translation(self, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            return SimpleNamespace(ok=True, q_rad=moved, reason="")
+
+        def validate_joint_path(self, path: object, *, support_plane: object) -> None:
+            assert tuple(path) == (cleared, moved) and support_plane is support
+            return None
+
+    class Transport:
+        def __init__(self) -> None:
+            self.targets: list[tuple[float, ...]] = []
+            self.stopped = False
+            self.heartbeats = 0
+
+        def enable_arm(self, session: str, calibration: str) -> dict[str, object]:
+            assert session.startswith("vla-") and calibration == "calibration"
+            return {"ok": True}
+
+        def publish_target(self, *args: object, **kwargs: object) -> None:
+            del kwargs
+            self.targets.append(tuple(args[3]))
+
+        def heartbeat_arm(self, session: str) -> None:
+            assert session.startswith("vla-")
+            self.heartbeats += 1
+
+        def stop_arm(self, reason: str) -> None:
+            assert reason == "vla_smoke_test_complete"
+            self.stopped = True
+
+    source = LiveObservationSource.__new__(LiveObservationSource)
+    source.last_state = {
+        "calibration_id": "calibration",
+        "measured_arm_q": [0.0] * 14,
+        "visualization": {},
+    }
+
+    def snapshot() -> Observation:
+        source.last_state["measured_arm_q"] = [0.0] * 7 + list(cleared)
+        return Observation(Image.new("RGB", (8, 8)), (0.0,) * 23, 0.0, 0.0)
+
+    source.snapshot = snapshot
+    action = np.asarray(
+        [compose_pose23(np.eye(4), np.eye(4), right_gripper=4.0, left_gripper=4.0, waist_yaw_roll_pitch=(0, 0, 0))]
+    )
+    def predict(observation: object, instruction: str) -> tuple[np.ndarray, float]:
+        del observation, instruction
+        threading.Event().wait(0.12)
+        return action, 0.1
+
+    runtime = SimpleNamespace(predict=predict)
+    executor = GuardedVLAExecutor.__new__(GuardedVLAExecutor)
+    executor.solver = Solver()
+    executor.calibration_id = "calibration"
+    executor.calibrated_support = support
+    executor.period_s = 0.1
+    executor.max_waypoints = 1
+    executor.transport = Transport()
+    monkeypatch.setattr("object_tracking.unifolm_vla_cli.time.sleep", lambda _: None)
+
+    assert executor.execute(source, runtime, "move the hand") == (1, 0.1)
+    assert executor.transport.targets == [cleared, moved]
+    assert executor.transport.heartbeats >= 1
+    assert executor.transport.stopped is True

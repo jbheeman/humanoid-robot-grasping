@@ -91,6 +91,9 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("setup", "gb10"): Route(
         "script", "scripts/gb10/setup.sh", "install GB10 vision/training environment"
     ),
+    ("setup", "vla"): Route(
+        "script", "scripts/gb10/vla-setup.sh", "install the pinned official UnifoLM-VLA runtime"
+    ),
     ("setup", "opencv"): Route(
         "script", "scripts/local/opencv-setup.sh", "install system-OpenCV vision environment"
     ),
@@ -149,6 +152,9 @@ ROUTES: dict[tuple[str, str], Route] = {
     ),
     ("gb10", "plushie"): Route(
         "script", "scripts/gb10/plushie.sh", "run the lightweight plushie stream variant"
+    ),
+    ("gb10", "vla"): Route(
+        "script", "scripts/gb10/vla-chat.sh", "open the guarded UnifoLM-VLA task terminal"
     ),
     ("local", "start"): Route(
         "script", "scripts/local/start.sh", "serve a local camera stream"

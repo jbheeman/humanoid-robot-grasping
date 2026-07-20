@@ -90,6 +90,9 @@ source "${ROOT_DIR}/scripts/shared/ros-env.sh"
 g1_source_ros "${ROOT_DIR}" foxy
 g1_configure_cyclonedds \
   robot "${ROBOT_INTERFACE}" "${CLIENT_IP},${UNITREE_CONTROL_PEER}" "${ROS_DOMAIN_ID}"
+pkill -TERM -u "$(id -u)" -f \
+  "[r]os2cli.daemon.daemonize.*--ros-domain-id ${ROS_DOMAIN_ID}" 2>/dev/null || true
+export ROS2CLI_NO_DAEMON=1
 
 export PYTHONPATH="${ROOT_DIR}:${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 UNITREE_SDK_PYTHONPATH="${UNITREE_SDK_PYTHONPATH:-${HOME}/unitree_sdk2_python}"

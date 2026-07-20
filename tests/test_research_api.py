@@ -59,6 +59,28 @@ def test_visualization_endpoint_is_read_only_and_reports_unavailable() -> None:
         yolo_stream_server.state.arm_tracking = previous
 
 
+def test_raw_snapshot_is_clean_latest_frame_with_freshness_headers() -> None:
+    import numpy as np
+
+    previous_frame = yolo_stream_server.state.raw_frame
+    previous_received = yolo_stream_server.state.raw_frame_received_monotonic
+    previous_count = yolo_stream_server.state.frame_count
+    try:
+        yolo_stream_server.state.raw_frame = np.full((8, 12, 3), 127, dtype=np.uint8)
+        yolo_stream_server.state.raw_frame_received_monotonic = __import__("time").monotonic()
+        yolo_stream_server.state.frame_count = 42
+        response = TestClient(yolo_stream_server.app).get("/raw-snapshot.jpg")
+        assert response.status_code == 200
+        assert response.headers["content-type"] == "image/jpeg"
+        assert response.headers["x-g1-frame-id"] == "42"
+        assert float(response.headers["x-g1-frame-age-ms"]) >= 0.0
+        assert response.headers["cache-control"] == "no-store"
+    finally:
+        yolo_stream_server.state.raw_frame = previous_frame
+        yolo_stream_server.state.raw_frame_received_monotonic = previous_received
+        yolo_stream_server.state.frame_count = previous_count
+
+
 def test_single_server_serves_viewer_visual_assets_and_tokenless_commissioning() -> None:
     client = TestClient(yolo_stream_server.app)
 

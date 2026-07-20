@@ -12,7 +12,7 @@ G1 robot (Ubuntu 20.04, ROS 2 Foxy, Python 3.8)
   /lowstate + Unitree API topics
   guarded arm/depth ROS node
   H264 RGB relay ────────────────────────────────┐
-        │ ROS 2 / CycloneDDS                     │ UDP 5600
+        │ ROS 2 / Fast DDS                       │ UDP 5600
         ▼                                        ▼
 GB10 (Ubuntu 24.04, ROS 2 Jazzy, Python 3.12)
   depth fusion + YOLO + IK + research + browser UI :8000
@@ -35,7 +35,7 @@ Robot prerequisites:
 
 - Ubuntu 20.04 with `/usr/bin/python3` 3.8
 - ROS 2 Foxy at `/opt/ros/foxy`
-- `ros-foxy-rmw-cyclonedds-cpp`
+- `ros-foxy-rmw-fastrtps-cpp`
 - `ros-foxy-rosidl-generator-dds-idl`
 - `python3-colcon-common-extensions`, Git, `uv`, GStreamer, and the depth driver
 
@@ -63,13 +63,15 @@ the launchers automatically.
 
 ## Normal startup
 
-Use the real IP reachable from the other machine. The launchers generate
-CycloneDDS static-peer configuration and default to ROS domain `0`.
+Use the real IP reachable from the other machine. ROS 2 works over the Wi-Fi
+LAN; Ethernet is not required. Both launchers use Fast DDS, explicit peers,
+and ROS domain `42` by default.
 
 On the robot:
 
 ```bash
-uv run g1 robot start --client-ip <GB10_IP>
+uv run g1 robot start --client-ip <GB10_IP> \
+  --calibration /home/unitree/.config/g1-grasping/g1-tabletop-calibration.json
 ```
 
 On the GB10:
@@ -83,6 +85,53 @@ Open the single UI:
 ```text
 http://<GB10_IP>:8000/
 ```
+
+### UnifoLM-VLA terminal (GB10 only)
+
+Install the pinned official Unitree runtime and model on the GB10, then open
+the typed task terminal:
+
+```bash
+uv run g1 setup vla
+uv run g1 gb10 vla
+```
+
+The default terminal is inference-only: it reads the latest unannotated RGB
+frame plus measured arm state and prints the proposed 23D action chunk without
+publishing a command. Type a task such as `raise the right hand slightly`;
+`/status`, `/help`, and `/exit` are built in.
+
+After offline validation and with a spotter/e-stop, guarded execution uses a
+command-free dashboard transport so the VLA is the sole ROS command publisher:
+
+```bash
+# Robot: explicit permission is required; startup remains DISARMED.
+uv run g1 robot start --client-ip 192.168.0.66 \
+  --calibration /home/unitree/.config/g1-grasping/g1-tabletop-calibration.json \
+  --allow-movement --expected-motion-mode ai
+
+# GB10 terminal 1: observations only; never publishes an arm command.
+uv run g1 gb10 start --robot-host 192.168.0.213 --dry-run --vla-preview \
+  --calibration runs/localization/g1-tabletop-calibration.json
+
+# GB10 terminal 2: the only project command publisher.
+uv run g1 gb10 vla --execute --max-waypoints 3 --motion-period 0.15
+```
+
+Execution first plans and streams a collision-checked clearance pose. Within
+the calibrated table footprint, checked links must remain at least 5 cm above
+the calibrated tabletop plane. It then takes a fresh observation, re-runs the
+policy, and permits at most three right-arm translation waypoints with a 0.025
+rad per-joint step cap. Left-arm, waist, orientation, and gripper predictions
+are ignored. Any stale state, failed keepalive, calibration change, incomplete
+table footprint, IK failure, or collision check stops the session.
+
+The base policy was trained with head and wrist cameras and task-specific G1
+demonstrations. A single head D435I can exercise inference, but reliable plush
+contact requires a matching XR-teleop dataset and offline/simulation evaluation
+before connecting proposals to the guarded arm controller. The robot's lack of
+a controllable hand also means the practical initial goal is palm contact, not
+a verified grasp.
 
 Commissioning is at `http://<GB10_IP>:8000/commissioning/`. There are no
 bearer-token files, robot HTTP ports, separate static viewer, or robot SSH
@@ -114,10 +163,10 @@ Unitree contracts used on the robot:
 
 Project contracts shared by Foxy and Jazzy:
 
-- `/g1/arm/target` (`g1_control_interfaces/msg/ArmTarget`)
-- `/g1/arm/state` (`g1_control_interfaces/msg/ArmState`)
+- `/g1/arm/target_json` (`std_msgs/msg/String`, validated JSON envelope)
+- `/g1/arm/state_json` (`std_msgs/msg/String`, validated JSON report)
 - `/g1/depth` (`g1_control_interfaces/msg/CompressedDepth`)
-- `/g1/arm/control` (`g1_control_interfaces/srv/ArmControl`)
+- `/g1/arm/control/{request_json,response_json}` (`std_msgs/msg/String`)
 - `/g1/commissioning/command`
   (`g1_control_interfaces/srv/CommissioningCommand`)
 - `/g1/commissioning/state`

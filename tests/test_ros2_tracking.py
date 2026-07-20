@@ -45,6 +45,21 @@ class FakePublisher:
 
     def publish(self, message: object) -> None:
         self.messages.append(message)
+        if self._topic == "/g1/arm/control/request_json":
+            request = json.loads(message.data)
+            callback = self._node.callbacks.get("/g1/arm/control/response_json")
+            assert callback is not None
+            callback(
+                SimpleNamespace(
+                    data=json.dumps(
+                        {
+                            "request_id": request["request_id"],
+                            **self._node.arm_control_response,
+                        }
+                    )
+                )
+            )
+            return
         if self._topic != "/g1/commissioning/request":
             return
         response = self._node.commissioning_response
@@ -70,6 +85,12 @@ class FakeNode:
         self.commissioning_response = SimpleNamespace(
             ok=True, error_code="", message="", report_json="{}"
         )
+        self.arm_control_response = {
+            "ok": True,
+            "error_code": "",
+            "message": "",
+            "report": {"state": "ARMED"},
+        }
 
     def create_publisher(self, message_type: type, topic: str, qos: object) -> FakePublisher:
         del message_type, qos
@@ -144,13 +165,11 @@ class Policy:
 
 def _types() -> dict[str, object]:
     return {
-        "ArmState": Message,
-        "ArmTarget": Message,
+        "String": Message,
         "CommissioningState": Message,
         "CommissioningRequest": CommissioningRequest,
         "CommissioningResponse": CommissioningResponse,
         "CompressedDepth": Message,
-        "ArmControl": ArmControl,
         "CommissioningCommand": CommissioningCommand,
         "QoSProfile": lambda **kwargs: kwargs,
         "ReliabilityPolicy": Policy,
@@ -163,22 +182,27 @@ def test_target_and_service_calls_use_ros_entities() -> None:
     runner = FakeRunner()
     transport = RosTrackingTransport(runner=runner, types=_types())
     transport.start()
-    runner.node.clients[0].response.report_json = json.dumps({"state": "ARMED"})
 
     assert transport.enable_arm("session", "calibration") == {"state": "ARMED"}
     transport.publish_target("session", 9, "calibration", [0.1] * 7, 12.4)
     transport.heartbeat_arm("session")
     transport.stop_arm("done")
 
-    assert [request.operation for request in runner.node.clients[0].requests] == [
+    control = next(
+        publisher
+        for publisher in runner.node.publishers
+        if publisher._topic == "/g1/arm/control/request_json"
+    )
+    assert [json.loads(message.data)["operation"] for message in control.messages] == [
         "enable",
         "heartbeat",
         "stop",
     ]
     target = runner.node.publishers[0].messages[0]
-    assert target.sequence == 9
-    assert target.pipeline_age_ms == 12
-    assert target.right_arm_q == [0.1] * 7
+    target_payload = json.loads(target.data)
+    assert target_payload["sequence"] == 9
+    assert target_payload["pipeline_age_ms"] == 12
+    assert target_payload["right_arm_q"] == [0.1] * 7
     transport.close()
 
 
@@ -234,6 +258,26 @@ def test_depth_only_observer_creates_no_arm_or_commissioning_entities() -> None:
     assert transport.arm_state()["state"] == "unreachable"
 
 
+def test_observe_only_subscribes_to_arm_state_without_command_publishers() -> None:
+    runner = FakeRunner()
+    transport = RosTrackingTransport(
+        runner=runner,
+        types=_types(),
+        observe_only=True,
+    )
+
+    transport.start()
+
+    assert set(runner.node.callbacks) == {"/g1/depth", "/g1/arm/state_json"}
+    assert runner.node.publishers == []
+    assert runner.node.clients == []
+
+
+def test_observation_modes_are_mutually_exclusive() -> None:
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        RosTrackingTransport(observe_depth_only=True, observe_only=True)
+
+
 def as_message_fields(header: object, envelope: bytes) -> dict[str, object]:
     header_size = int.from_bytes(envelope[:4], "big")
     payload = envelope[4 + header_size :]
@@ -258,12 +302,12 @@ def test_rejected_service_response_surfaces_robot_error() -> None:
     runner = FakeRunner()
     transport = RosTrackingTransport(runner=runner, types=_types())
     transport.start()
-    runner.node.clients[0].response = SimpleNamespace(
-        ok=False,
-        error_code="safety_gate",
-        message="robot is not standing",
-        report_json="{}",
-    )
+    runner.node.arm_control_response = {
+        "ok": False,
+        "error_code": "safety_gate",
+        "message": "robot is not standing",
+        "report": {},
+    }
 
     try:
         transport.enable_arm("session", "calibration")
@@ -297,18 +341,10 @@ def test_arm_state_topic_expires_using_local_monotonic_time() -> None:
     )
     transport.start()
     message = SimpleNamespace(
-        ok=True,
-        state="ARMED",
-        session_id="session",
-        control_mode="tracking",
-        calibration_id="calibration",
-        weight=1.0,
-        fault_reason="",
-        hold_reason="",
-        report_json=json.dumps({"ok": True, "state": "ARMED", "session_id": "session"}),
+        data=json.dumps({"ok": True, "state": "ARMED", "session_id": "session"})
     )
 
-    runner.node.callbacks["/g1/arm/state"](message)
+    runner.node.callbacks["/g1/arm/state_json"](message)
     assert transport.arm_state()["state"] == "ARMED"
 
     now[0] += 0.501

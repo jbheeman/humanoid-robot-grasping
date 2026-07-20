@@ -114,7 +114,18 @@ class Ros2NodeRunner:
                 context = bindings.context_type()
                 bindings.rclpy.init(args=self._ros_args, context=context)
                 try:
-                    node = bindings.rclpy.create_node(self.node_name, context=context)
+                    # Foxy Fast DDS can discover Jazzy's newer automatic
+                    # parameter/type-description services, but intermittently
+                    # fails to deserialize their metadata and eventually
+                    # aborts with std::bad_alloc.  Project nodes do not use
+                    # ROS parameters or rosout, so omit those cross-distro
+                    # readers entirely.
+                    node = bindings.rclpy.create_node(
+                        self.node_name,
+                        context=context,
+                        enable_rosout=False,
+                        start_parameter_services=False,
+                    )
                     executor = bindings.executor_type(context=context, num_threads=2)
                     executor.add_node(node)
                 except Exception:

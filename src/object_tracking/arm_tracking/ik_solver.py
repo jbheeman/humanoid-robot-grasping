@@ -844,7 +844,10 @@ class G1RightArmIK:
         escape_path, escape_error = self._guided_start_escape(
             start_q,
             support_plane=support_plane,
-            timeout_s=3.0,
+            # Pinocchio collision queries are substantially slower on the
+            # GB10 ARM build.  Keep the same finite candidate set and safety
+            # predicates, but allow enough wall time to evaluate them.
+            timeout_s=12.0,
         )
         if escape_path is None:
             return IKPathResult(

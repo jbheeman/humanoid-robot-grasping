@@ -19,10 +19,11 @@ from object_tracking.arm_tracking.protocol import DepthEnvelopeCodec, DepthFrame
 from object_tracking.ros2_transport import Ros2NodeRunner
 
 
-ARM_TARGET_TOPIC = "/g1/arm/target"
-ARM_STATE_TOPIC = "/g1/arm/state"
+ARM_TARGET_TOPIC = "/g1/arm/target_json"
+ARM_STATE_TOPIC = "/g1/arm/state_json"
 DEPTH_TOPIC = "/g1/depth"
-ARM_CONTROL_SERVICE = "/g1/arm/control"
+ARM_CONTROL_REQUEST_TOPIC = "/g1/arm/control/request_json"
+ARM_CONTROL_RESPONSE_TOPIC = "/g1/arm/control/response_json"
 COMMISSIONING_STATE_TOPIC = "/g1/commissioning/state"
 COMMISSIONING_REQUEST_TOPIC = "/g1/commissioning/request"
 COMMISSIONING_RESPONSE_TOPIC = "/g1/commissioning/response"
@@ -40,14 +41,12 @@ class RosTrackingError(RuntimeError):
 def _load_types() -> dict[str, Any]:
     try:
         from g1_control_interfaces.msg import (
-            ArmState,
-            ArmTarget,
             CommissioningRequest,
             CommissioningResponse,
             CommissioningState,
             CompressedDepth,
         )
-        from g1_control_interfaces.srv import ArmControl
+        from std_msgs.msg import String
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
@@ -59,13 +58,11 @@ def _load_types() -> dict[str, Any]:
             "ROS 2 project interfaces are unavailable; source scripts/shared/ros-env.sh"
         ) from exc
     return {
-        "ArmState": ArmState,
-        "ArmTarget": ArmTarget,
+        "String": String,
         "CommissioningState": CommissioningState,
         "CommissioningRequest": CommissioningRequest,
         "CommissioningResponse": CommissioningResponse,
         "CompressedDepth": CompressedDepth,
-        "ArmControl": ArmControl,
         "QoSProfile": QoSProfile,
         "ReliabilityPolicy": ReliabilityPolicy,
         "DurabilityPolicy": DurabilityPolicy,
@@ -86,6 +83,7 @@ class RosTrackingTransport:
         service_timeout_s: float = 2.0,
         state_topic_timeout_s: float = 0.5,
         observe_depth_only: bool = False,
+        observe_only: bool = False,
     ) -> None:
         if service_timeout_s <= 0.0:
             raise ValueError("service_timeout_s must be positive")
@@ -99,9 +97,14 @@ class RosTrackingTransport:
         self._service_timeout_s = service_timeout_s
         self._state_topic_timeout_s = state_topic_timeout_s
         self._observe_depth_only = bool(observe_depth_only)
+        self._observe_only = bool(observe_only)
+        if self._observe_depth_only and self._observe_only:
+            raise ValueError("observe_depth_only and observe_only are mutually exclusive")
         self._node: Optional[object] = None
         self._target_publisher: Optional[object] = None
-        self._arm_client: Optional[object] = None
+        self._arm_control_publisher: Optional[object] = None
+        self._arm_waiters: dict[str, tuple[threading.Event, dict[str, Any]]] = {}
+        self._arm_waiters_lock = threading.Lock()
         self._commissioning_request_publisher: Optional[object] = None
         self._commissioning_waiters: dict[str, tuple[threading.Event, dict[str, Any]]] = {}
         self._commissioning_waiters_lock = threading.Lock()
@@ -146,23 +149,29 @@ class RosTrackingTransport:
                 reliability=types["ReliabilityPolicy"].BEST_EFFORT,
                 durability=types["DurabilityPolicy"].TRANSIENT_LOCAL,
             )
+            target_publisher = None
+            arm_subscription = None
+            commissioning_subscription = None
+            commissioning_request_publisher = None
+            commissioning_response_subscription = None
+            arm_control_publisher = None
+            arm_control_subscription = None
             try:
                 depth_subscription = node.create_subscription(
                     types["CompressedDepth"], DEPTH_TOPIC, self._on_depth, depth_qos
                 )
                 if self._observe_depth_only:
-                    target_publisher = None
-                    arm_subscription = None
-                    commissioning_subscription = None
-                    commissioning_request_publisher = None
-                    commissioning_response_subscription = None
-                    arm_client = None
+                    pass
+                elif self._observe_only:
+                    arm_subscription = node.create_subscription(
+                        types["String"], ARM_STATE_TOPIC, self._on_arm_state, qos
+                    )
                 else:
                     target_publisher = node.create_publisher(
-                        types["ArmTarget"], ARM_TARGET_TOPIC, qos
+                        types["String"], ARM_TARGET_TOPIC, qos
                     )
                     arm_subscription = node.create_subscription(
-                        types["ArmState"], ARM_STATE_TOPIC, self._on_arm_state, qos
+                        types["String"], ARM_STATE_TOPIC, self._on_arm_state, qos
                     )
                     commissioning_subscription = node.create_subscription(
                         types["CommissioningState"],
@@ -179,7 +188,15 @@ class RosTrackingTransport:
                         self._on_commissioning_response,
                         qos,
                     )
-                    arm_client = node.create_client(types["ArmControl"], ARM_CONTROL_SERVICE)
+                    arm_control_publisher = node.create_publisher(
+                        types["String"], ARM_CONTROL_REQUEST_TOPIC, qos
+                    )
+                    arm_control_subscription = node.create_subscription(
+                        types["String"],
+                        ARM_CONTROL_RESPONSE_TOPIC,
+                        self._on_arm_control_response,
+                        qos,
+                    )
             except Exception:
                 if self._owns_runner:
                     runner.close()
@@ -188,10 +205,12 @@ class RosTrackingTransport:
             self._runner = runner
             self._node = node
             self._target_publisher = target_publisher
-            self._arm_client = arm_client
+            self._arm_control_publisher = arm_control_publisher
             self._commissioning_request_publisher = commissioning_request_publisher
             self._entities = [("destroy_subscription", depth_subscription)]
-            if not self._observe_depth_only:
+            if self._observe_only:
+                self._entities.append(("destroy_subscription", arm_subscription))
+            elif not self._observe_depth_only:
                 self._entities.extend(
                     [
                         ("destroy_subscription", arm_subscription),
@@ -200,7 +219,8 @@ class RosTrackingTransport:
                             "destroy_subscription",
                             commissioning_response_subscription,
                         ),
-                        ("destroy_client", arm_client),
+                        ("destroy_subscription", arm_control_subscription),
+                        ("destroy_publisher", arm_control_publisher),
                         ("destroy_publisher", commissioning_request_publisher),
                         ("destroy_publisher", target_publisher),
                     ]
@@ -219,7 +239,7 @@ class RosTrackingTransport:
             self._entities.clear()
             self._node = None
             self._target_publisher = None
-            self._arm_client = None
+            self._arm_control_publisher = None
             self._commissioning_request_publisher = None
         with self._depth_condition:
             self._latest_depth = None
@@ -307,12 +327,21 @@ class RosTrackingTransport:
             raise ValueError("right_arm_q must contain exactly seven joints")
         if sequence < 0:
             raise ValueError("sequence must be non-negative")
-        message = self._types["ArmTarget"]()
-        message.session_id = str(session_id)
-        message.sequence = int(sequence)
-        message.calibration_id = str(calibration_id)
-        message.right_arm_q = list(joints)
-        message.pipeline_age_ms = max(0, min((1 << 32) - 1, int(round(pipeline_age_ms))))
+        message = self._types["String"]()
+        message.data = json.dumps(
+            {
+                "session_id": str(session_id),
+                "sequence": int(sequence),
+                "calibration_id": str(calibration_id),
+                "right_arm_q": list(joints),
+                "pipeline_age_ms": max(
+                    0, min((1 << 32) - 1, int(round(pipeline_age_ms)))
+                ),
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+            allow_nan=False,
+        )
         self._target_publisher.publish(message)
 
     def stop_arm(self, reason: str) -> None:
@@ -361,12 +390,54 @@ class RosTrackingTransport:
         reason: str = "",
     ) -> dict[str, Any]:
         self._require_started()
-        request = self._types["ArmControl"].Request()
-        request.operation = operation
-        request.session_id = session_id
-        request.calibration_id = calibration_id
-        request.reason = reason
-        return self._call_service(self._arm_client, request, f"arm {operation}")
+        request_id = secrets.token_urlsafe(18)
+        ready = threading.Event()
+        result: dict[str, Any] = {}
+        with self._arm_waiters_lock:
+            self._arm_waiters[request_id] = (ready, result)
+        request = self._types["String"]()
+        request.data = json.dumps(
+            {
+                "request_id": request_id,
+                "operation": operation,
+                "session_id": session_id,
+                "calibration_id": calibration_id,
+                "reason": reason,
+            },
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        self._arm_control_publisher.publish(request)
+        if not ready.wait(self._service_timeout_s):
+            with self._arm_waiters_lock:
+                self._arm_waiters.pop(request_id, None)
+            raise RosTrackingError(
+                f"arm {operation} timed out after {self._service_timeout_s:.1f}s",
+                code="service_timeout",
+            )
+        if not result.get("ok"):
+            raise RosTrackingError(
+                str(result.get("message") or f"arm {operation} was rejected"),
+                code=str(result.get("error_code") or "rejected"),
+            )
+        report = result.get("report")
+        if not isinstance(report, dict):
+            raise RosTrackingError("arm control returned malformed report")
+        return report
+
+    def _on_arm_control_response(self, message: object) -> None:
+        try:
+            payload = json.loads(str(message.data))
+            request_id = str(payload.get("request_id", ""))
+        except (AttributeError, TypeError, ValueError, json.JSONDecodeError):
+            return
+        with self._arm_waiters_lock:
+            waiter = self._arm_waiters.pop(request_id, None)
+        if waiter is None:
+            return
+        ready, result = waiter
+        result.update(payload)
+        ready.set()
 
     def _call_service(self, client: object, request: object, operation: str) -> dict[str, Any]:
         available = client.wait_for_service(timeout_sec=self._service_timeout_s)
@@ -413,19 +484,12 @@ class RosTrackingTransport:
 
     def _on_arm_state(self, message: object) -> None:
         received_at = self._monotonic()
-        report = self._message_report(
-            message,
-            {
-                "ok": bool(message.ok),
-                "state": str(message.state),
-                "session_id": str(message.session_id),
-                "control_mode": str(message.control_mode),
-                "calibration_id": str(message.calibration_id),
-                "weight": float(message.weight),
-                "fault_reason": str(message.fault_reason),
-                "hold_reason": str(message.hold_reason),
-            },
-        )
+        try:
+            report = json.loads(str(message.data))
+        except (AttributeError, TypeError, json.JSONDecodeError):
+            return
+        if not isinstance(report, dict):
+            return
         with self._state_lock:
             self._latest_arm_state = report
             self._latest_arm_state_received_at = received_at
@@ -499,7 +563,12 @@ class RosTrackingTransport:
             raise RuntimeError("ROS tracking transport is not running")
 
 
-def create_ros_tracking_transport(*, observe_depth_only: bool = False) -> RosTrackingTransport:
+def create_ros_tracking_transport(
+    *, observe_depth_only: bool = False, observe_only: bool = False
+) -> RosTrackingTransport:
     """Create the production GB10 transport without importing ROS eagerly."""
 
-    return RosTrackingTransport(observe_depth_only=observe_depth_only)
+    return RosTrackingTransport(
+        observe_depth_only=observe_depth_only,
+        observe_only=observe_only,
+    )

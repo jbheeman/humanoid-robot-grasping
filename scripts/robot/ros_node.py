@@ -41,10 +41,11 @@ from scripts.robot.depth_service import (
 )
 
 
-ARM_TARGET_TOPIC = "/g1/arm/target"
-ARM_STATE_TOPIC = "/g1/arm/state"
+ARM_TARGET_TOPIC = "/g1/arm/target_json"
+ARM_STATE_TOPIC = "/g1/arm/state_json"
 DEPTH_TOPIC = "/g1/depth"
-ARM_CONTROL_SERVICE = "/g1/arm/control"
+ARM_CONTROL_REQUEST_TOPIC = "/g1/arm/control/request_json"
+ARM_CONTROL_RESPONSE_TOPIC = "/g1/arm/control/response_json"
 COMMISSIONING_STATE_TOPIC = "/g1/commissioning/state"
 MANUAL_BASE = "/g1/arm_control"
 MANUAL_LEFT_TOPIC = f"{MANUAL_BASE}/left/command_json"
@@ -124,8 +125,6 @@ def build_parser() -> argparse.ArgumentParser:
 def _imports() -> dict[str, Any]:
     try:
         from g1_control_interfaces.msg import (
-            ArmState,
-            ArmTarget,
             ArmManualRequest,
             ArmManualResponse,
             ArmSideTarget,
@@ -134,7 +133,6 @@ def _imports() -> dict[str, Any]:
             CommissioningState,
             CompressedDepth,
         )
-        from g1_control_interfaces.srv import ArmControl
         from sensor_msgs.msg import JointState
         from std_msgs.msg import String
         from rclpy.qos import (
@@ -148,8 +146,6 @@ def _imports() -> dict[str, Any]:
             "ROS 2 project interfaces are unavailable; source ros_ws/install/setup.bash"
         ) from exc
     return {
-        "ArmState": ArmState,
-        "ArmTarget": ArmTarget,
         "ArmManualRequest": ArmManualRequest,
         "ArmManualResponse": ArmManualResponse,
         "ArmSideTarget": ArmSideTarget,
@@ -157,7 +153,6 @@ def _imports() -> dict[str, Any]:
         "CommissioningRequest": CommissioningRequest,
         "CommissioningResponse": CommissioningResponse,
         "CompressedDepth": CompressedDepth,
-        "ArmControl": ArmControl,
         "JointState": JointState,
         "String": String,
         "QoSProfile": QoSProfile,
@@ -421,11 +416,12 @@ class RobotRosNode:
         )
 
         self.arm_state_publisher = self.node.create_publisher(
-            self.types["ArmState"], ARM_STATE_TOPIC, qos
+            self.types["String"], ARM_STATE_TOPIC, qos
         )
         self.manual_status_publisher = None
         self.manual_joint_state_publisher = None
         self.manual_response_publisher = None
+        self.arm_control_response_publisher = None
         self.commissioning_state_publisher = None
         self.commissioning_response_publisher = None
         self.depth_publisher = None
@@ -464,11 +460,17 @@ class RobotRosNode:
                 qos,
             )
         else:
-            self.node.create_subscription(
-                self.types["ArmTarget"], ARM_TARGET_TOPIC, self._on_target, qos
+            self.arm_control_response_publisher = self.node.create_publisher(
+                self.types["String"], ARM_CONTROL_RESPONSE_TOPIC, qos
             )
-            self.node.create_service(
-                self.types["ArmControl"], ARM_CONTROL_SERVICE, self._on_arm_control
+            self.node.create_subscription(
+                self.types["String"], ARM_TARGET_TOPIC, self._on_target, qos
+            )
+            self.node.create_subscription(
+                self.types["String"],
+                ARM_CONTROL_REQUEST_TOPIC,
+                self._on_arm_control_request,
+                qos,
             )
         if args.control_mode == "commissioning":
             self.commissioning_state_publisher = self.node.create_publisher(
@@ -537,12 +539,13 @@ class RobotRosNode:
         if self.args.control_mode == "manual":
             return
         try:
+            payload = _manual_wire_object(message)
             self.controller.set_target(
-                session_id=message.session_id,
-                sequence=int(message.sequence),
-                calibration_id=message.calibration_id,
-                right_arm_q=tuple(float(value) for value in message.right_arm_q),
-                pipeline_age_ms=int(message.pipeline_age_ms),
+                session_id=str(payload.get("session_id", "")),
+                sequence=int(payload.get("sequence", -1)),
+                calibration_id=str(payload.get("calibration_id", "")),
+                right_arm_q=tuple(float(value) for value in payload.get("right_arm_q", ())),
+                pipeline_age_ms=int(payload.get("pipeline_age_ms", (1 << 32) - 1)),
             )
         except ArmBridgeError:
             return
@@ -633,29 +636,48 @@ class RobotRosNode:
         response.report_json = "{}"
         return response
 
-    def _on_arm_control(self, request: object, response: object) -> object:
+    def _on_arm_control_request(self, request: object) -> None:
+        response = self.types["String"]()
+        request_id = ""
         try:
-            operation = str(request.operation).strip().lower()
+            payload = _manual_wire_object(request)
+            request_id = str(payload.get("request_id", ""))
+            operation = str(payload.get("operation", "")).strip().lower()
             if operation == "enable":
                 report = self.controller.enable(
-                    session_id=request.session_id,
-                    calibration_id=request.calibration_id,
+                    session_id=str(payload.get("session_id", "")),
+                    calibration_id=str(payload.get("calibration_id", "")),
                 )
             elif operation == "heartbeat":
-                report = self.controller.heartbeat(session_id=request.session_id)
+                report = self.controller.heartbeat(
+                    session_id=str(payload.get("session_id", ""))
+                )
             elif operation == "stop":
-                report = self.controller.stop(str(request.reason or "operator_stop"))
+                report = self.controller.stop(
+                    str(payload.get("reason", "") or "operator_stop")
+                )
             elif operation == "state":
                 report = self.controller.state_report()
             else:
                 raise ArmBridgeError("Unknown arm operation", code="invalid_request")
         except Exception as exc:
-            return self._service_error(response, exc)
-        response.ok = True
-        response.error_code = ""
-        response.message = ""
-        response.report_json = _safe_json(report)
-        return response
+            envelope = {
+                "request_id": request_id,
+                "ok": False,
+                "error_code": str(getattr(exc, "code", "bridge_failure")),
+                "message": str(exc),
+                "report": {},
+            }
+        else:
+            envelope = {
+                "request_id": request_id,
+                "ok": True,
+                "error_code": "",
+                "message": "",
+                "report": report,
+            }
+        response.data = _safe_json(envelope)
+        self.arm_control_response_publisher.publish(response)
 
     def _run_commissioning_command(
         self, operation_raw: object, request_json: object
@@ -712,10 +734,8 @@ class RobotRosNode:
     def _on_commissioning_request(self, request: object) -> None:
         """Serve GB10 commissioning commands over correlated ROS topics.
 
-        Foxy/Fast DDS and Jazzy/CycloneDDS exchange the project topics
-        correctly, while their generated custom service wire format is not
-        compatible on this G1 image.  Keep the existing controller semantics
-        and translate only the transport envelope here.
+        Keep the existing controller semantics and translate only the
+        correlated topic transport envelope here.
         """
         response = self.types["CommissioningResponse"]()
         response.request_id = str(getattr(request, "request_id", ""))
@@ -737,43 +757,17 @@ class RobotRosNode:
 
     def _publish_state(self) -> None:
         report = self.controller.state_report()
-        message = self.types["ArmState"]()
-        message.ok = bool(report.get("ok"))
-        message.state = _optional_string(report.get("state"))
-        message.session_id = _optional_string(report.get("session_id"))
-        message.control_mode = _optional_string(report.get("control_mode"))
-        message.calibration_id = _optional_string(report.get("calibration_id"))
-        message.last_sequence = int(report.get("last_sequence", -1))
-        message.last_target_age_ms = _age_ms(report.get("last_target_age_ms"))
-        message.robot_state_age_ms = _age_ms(report.get("robot_state_age_ms"))
-        measured = report.get("measured_arm_q")
-        commanded = report.get("commanded_arm_q")
-        message.measured_arm_q = list(measured if measured is not None else [math.nan] * 14)
-        message.commanded_arm_q = list(commanded if commanded is not None else [math.nan] * 14)
-        for field in (
-            "standing",
-            "compatible_motion_mode",
-            "controller_available",
-            "motion_mode_verified",
-            "controller_ownership_verified",
-            "motor_status_verified",
-            "motor_state_healthy",
-        ):
-            setattr(message, field, bool(report.get(field)))
         robot_state_age_ms = report.get("robot_state_age_ms")
-        message.robot_state_fresh = (
+        report["robot_state_fresh"] = (
             robot_state_age_ms is not None
             and float(robot_state_age_ms) <= self.controller.config.state_ttl_s * 1000.0
         )
-        message.weight = float(report.get("weight", 0.0))
-        message.motor_faults = [str(value) for value in report.get("motor_faults", [])]
-        message.fault_reason = _optional_string(report.get("fault_reason"))
-        message.hold_reason = _optional_string(report.get("hold_reason"))
-        message.report_json = _safe_json(report)
+        message = self.types["String"]()
+        message.data = _safe_json(report)
         self.arm_state_publisher.publish(message)
         if self.args.control_mode == "manual":
             status = self.types["String"]()
-            status.data = message.report_json
+            status.data = message.data
             self.manual_status_publisher.publish(status)
 
     def _publish_manual_joint_states(self) -> None:

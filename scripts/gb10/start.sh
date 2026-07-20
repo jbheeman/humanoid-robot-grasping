@@ -11,12 +11,16 @@ if [[ ! -x "${VENV_DIR}/bin/python" ]]; then
 fi
 
 MODEL="${MODEL:-${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.engine}"
-#ROBOT_HOST="${ROBOT_HOST:-}"
-ROBOT_HOST="192.168.0.213"
+ROBOT_HOST="${ROBOT_HOST:-}"
 ROS_INTERFACE="${ROS_INTERFACE:-auto}"
 # Manual arm control runs in domain 42. Vision-pointing overrides this process
-# to depth domain 43 so Foxy CycloneDDS never discovers the Fast DDS arm graph.
+# to depth domain 43 to keep the large depth stream isolated from arm control.
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+# The robot project node must use Fast DDS because native Unitree SDK2 owns a
+# separate CycloneDDS instance in the same robot process.  Keep the Foxy and
+# Jazzy ends on the same RMW: mixed Fast DDS/Cyclone discovery succeeded over
+# Wi-Fi but malformed a project subscription and crashed Foxy with bad_alloc.
+export RMW_IMPLEMENTATION="${G1_PROJECT_RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
 UDP_PORT="${UDP_PORT:-5600}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
@@ -50,14 +54,16 @@ TRAJECTORY_MODEL="${TRAJECTORY_MODEL:-${ROOT_DIR}/models/plushie_detector/trajec
 GB10_LAN_IP="${GB10_LAN_IP:-}"
 ARM_COMMISSIONING=0
 VISION_POINTING=0
+VLA_PREVIEW=0
 server_args=()
 
 while (($#)); do
   case "$1" in
     --arm-commissioning) ARM_COMMISSIONING=1 ;;
     --vision-pointing) VISION_POINTING=1 ;;
+    --vla-preview) VLA_PREVIEW=1 ;;
     -h|--help)
-      echo "Usage: scripts/gb10/start.sh [--arm-commissioning|--vision-pointing] [server options]"
+      echo "Usage: scripts/gb10/start.sh [--arm-commissioning|--vision-pointing|--vla-preview] [server options]"
       exit 0
       ;;
     *) server_args+=("$1") ;;
@@ -116,7 +122,7 @@ if [[ -z "${ROBOT_HOST}" ]]; then
   exit 1
 fi
 if [[ "${ROS_INTERFACE}" == "auto" ]]; then
-  # The GB10 has several live NICs.  CycloneDDS autodetection can choose a
+  # The GB10 has several live NICs. DDS autodetection can choose a
   # management or private-network interface, leaving the depth subscriber
   # unable to discover the G1 even though RGB UDP still works.
   ROS_INTERFACE="$(
@@ -155,14 +161,30 @@ done
 source "${ROOT_DIR}/scripts/shared/ros-env.sh"
 GB10_ROS_DISTRO="${GB10_ROS_DISTRO:-$([[ -r /opt/ros/jazzy/setup.bash ]] && echo jazzy || echo humble)}"
 g1_source_ros "${ROOT_DIR}" "${GB10_ROS_DISTRO}"
+if ! ros2 pkg prefix "${RMW_IMPLEMENTATION}" >/dev/null 2>&1; then
+  echo "Missing ros-${GB10_ROS_DISTRO}-${RMW_IMPLEMENTATION#rmw_} on the GB10." >&2
+  exit 1
+fi
 g1_configure_cyclonedds gb10 "${ROS_INTERFACE}" "${ROBOT_HOST}" "${ROS_DOMAIN_ID}"
+# A Jazzy ros2cli daemon exposes newer graph/type-description services that
+# the robot's Foxy Fast DDS reader can discover but cannot safely deserialize.
+# It is unnecessary for runtime and has caused intermittent std::bad_alloc.
+pkill -TERM -u "$(id -u)" -f \
+  "[r]os2cli.daemon.daemonize.*--ros-domain-id ${ROS_DOMAIN_ID}" 2>/dev/null || true
+export ROS2CLI_NO_DAEMON=1
 export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 PIPELINE="${PIPELINE:-udpsrc address=0.0.0.0 port=${UDP_PORT} buffer-size=1048576 ! application/x-rtp,media=video,encoding-name=H264,clock-rate=90000 ! queue ! rtpjitterbuffer latency=20 drop-on-latency=true ! rtph264depay ! h264parse ! avdec_h264 max-threads=8 ! videoconvert ! videoscale ! video/x-raw,width=${VISION_WIDTH},height=${VISION_HEIGHT},format=BGR ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! appsink sync=false drop=true max-buffers=1}"
 
 tracking_args=(--target-hz "${TARGET_HZ}")
-if [[ "${VISION_POINTING}" == "1" ]]; then
-  tracking_args+=(--ros-depth-only)
+if [[ "${VISION_POINTING}" == "1" || "${VLA_PREVIEW}" == "1" ]]; then
+  if [[ "${VLA_PREVIEW}" == "1" ]]; then
+    # Keep fresh measured arm state available to the VLA while leaving it as
+    # the sole owner of all command and control publishers.
+    tracking_args+=(--ros-observe-only)
+  else
+    tracking_args+=(--ros-depth-only)
+  fi
 fi
 if [[ -n "${CALIBRATION}" ]]; then
   tracking_args+=(--calibration "${CALIBRATION}")
@@ -247,6 +269,7 @@ echo "Tracking profile:    ${VISION_WIDTH}x${VISION_HEIGHT} at ${VISION_FPS} FPS
 echo "Movement requested:  ${EXECUTE} (robot safety gates still apply)"
 echo "Arm commissioning:    ${ARM_COMMISSIONING}"
 echo "Vision pointing:      ${VISION_POINTING} (planner ready; startup never moves the arm)"
+echo "VLA preview:          ${VLA_PREVIEW} (observations only; no arm-control publisher)"
 echo "Research recording:  ${RESEARCH_RECORD} at ${RESEARCH_HZ} Hz"
 echo "Trajectory model:    ${TRAJECTORY_MODEL:-alpha-beta fallback only}"
 echo "Process log:         ${G1_ACTIVE_LOG_FILE}"

@@ -18,17 +18,28 @@ bash scripts/gb10/setup.sh
 # Normal operation
 uv run g1 robot start  # defaults to GB10 192.168.0.66
 uv run g1 gb10 start --robot-host <ROBOT_IP> --dry-run
+
+# GB10 only: install official UnifoLM and open the typed inference terminal
+uv run g1 setup vla
+uv run g1 gb10 vla
 ```
+
+The VLA terminal is inference-only unless `--execute` is supplied. For a later
+guarded hardware test, run the GB10 dashboard with `--dry-run --vla-preview` so
+it subscribes to RGB/depth/arm state but creates no command publisher. Then run
+`uv run g1 gb10 vla --execute --max-waypoints 3 --motion-period 0.15` in a
+second terminal. The robot launcher must independently include
+`--allow-movement --expected-motion-mode ai` and the validated calibration.
 
 Useful launch options:
 
 ```bash
 uv run g1 robot start \
   --client-ip <GB10_IP> --interface wlan0 --control-peer 192.168.123.1 \
-  --ros-domain-id 0 --calibration /secure/g1-camera.yaml
+  --ros-domain-id 42 --calibration /secure/g1-camera.yaml
 
 uv run g1 gb10 start \
-  --robot-host <ROBOT_IP> --ros-interface auto --ros-domain-id 0 \
+  --robot-host <ROBOT_IP> --ros-interface auto --ros-domain-id 42 \
   --calibration /secure/g1-camera.yaml --dry-run
 ```
 
