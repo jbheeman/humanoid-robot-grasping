@@ -96,6 +96,17 @@ uv run g1 setup vla
 uv run g1 gb10 vla
 ```
 
+To load the newest completed checkpoint under `models/unifolm_vla` instead of
+the Unitree base model:
+
+```bash
+bash scripts/gb10/vla-trained.sh
+```
+
+Set `VLA_CHECKPOINT=/absolute/path/to/final_model/pytorch_model.pt` to select a
+specific run. The launcher remains inference-only unless `--execute` is also
+supplied.
+
 The default terminal is inference-only: it reads the latest unannotated RGB
 frame plus measured arm state and prints the proposed 23D action chunk without
 publishing a command. Type a task such as `raise the right hand slightly`;

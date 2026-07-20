@@ -340,6 +340,9 @@ class UnifoLMRuntime:
             )
         cfg = OmegaConf.create(config)
         cfg.framework.qwenvl.base_vlm = str(self.vlm_path)
+        qwen_cfg = cfg.framework.qwenvl
+        quantized = bool(qwen_cfg.get("load_in_4bit", False))
+        use_lora = bool(qwen_cfg.get("use_lora", False))
         # Unitree's Qwen wrapper currently hard-codes FlashAttention 2 and
         # ignores its own config value.  It is not shipped in this runtime and
         # is not a safe GB10/sm_121 default.  Override only the load keyword;
@@ -349,7 +352,52 @@ class UnifoLMRuntime:
 
         def load_vlm_with_sdpa(*args: Any, **kwargs: Any) -> Any:
             kwargs["attn_implementation"] = "sdpa"
-            return original_from_pretrained(*args, **kwargs)
+            if quantized:
+                try:
+                    from transformers import BitsAndBytesConfig
+                except Exception as exc:
+                    raise VLAError("bitsandbytes support is required for this VLA checkpoint") from exc
+                kwargs["quantization_config"] = BitsAndBytesConfig(
+                    load_in_4bit=True,
+                    bnb_4bit_quant_type="nf4",
+                    bnb_4bit_use_double_quant=True,
+                    bnb_4bit_compute_dtype=torch.bfloat16,
+                )
+            vlm_model = original_from_pretrained(*args, **kwargs)
+            if use_lora:
+                try:
+                    from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
+                except Exception as exc:
+                    raise VLAError("PEFT support is required for this VLA checkpoint") from exc
+                if quantized:
+                    vlm_model = prepare_model_for_kbit_training(
+                        vlm_model,
+                        use_gradient_checkpointing=bool(qwen_cfg.get("gradient_checkpointing", True)),
+                    )
+                vlm_model = get_peft_model(
+                    vlm_model,
+                    LoraConfig(
+                        r=int(qwen_cfg.get("lora_rank", 16)),
+                        lora_alpha=int(qwen_cfg.get("lora_alpha", 32)),
+                        lora_dropout=float(qwen_cfg.get("lora_dropout", 0.05)),
+                        bias="none",
+                        target_modules=list(
+                            qwen_cfg.get(
+                                "lora_target_modules",
+                                [
+                                    "q_proj",
+                                    "k_proj",
+                                    "v_proj",
+                                    "o_proj",
+                                    "gate_proj",
+                                    "up_proj",
+                                    "down_proj",
+                                ],
+                            )
+                        ),
+                    ),
+                )
+            return vlm_model
 
         cfg.framework.qwenvl.attn_implementation = "sdpa"
         with patch.object(qwen_class, "from_pretrained", new=staticmethod(load_vlm_with_sdpa)):
@@ -358,7 +406,6 @@ class UnifoLMRuntime:
             state = torch.load(self.checkpoint, map_location="cpu", weights_only=True)
         except TypeError:  # PyTorch 2.5 compatibility
             state = torch.load(self.checkpoint, map_location="cpu")
-        quantized = bool(cfg.framework.qwenvl.get("load_in_4bit", False))
         _load_checkpoint_state(model, state, quantized=quantized)
         model.norm_stats = norm_stats
         if quantized:
