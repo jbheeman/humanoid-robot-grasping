@@ -36,6 +36,20 @@ AMBER = "\033[38;5;179m"
 RED = "\033[38;5;203m"
 CYAN = "\033[38;5;110m"
 MAX_OBSERVATION_AGE_MS = 500.0
+EXECUTION_EFFECTORS = ("right hand", "right arm", "right palm")
+EXECUTION_VERBS = (
+    "approach",
+    "extend",
+    "hold",
+    "lift",
+    "lower",
+    "move",
+    "raise",
+    "reach",
+    "retract",
+    "touch",
+)
+GREETING_ONLY = {"hello", "hey", "hi", "sup", "yo"}
 
 
 class VLAError(RuntimeError):
@@ -44,6 +58,17 @@ class VLAError(RuntimeError):
 
 def _color(value: str, code: str, enabled: bool) -> str:
     return f"{code}{value}{RESET}" if enabled else value
+
+
+def _is_explicit_right_arm_instruction(instruction: str) -> bool:
+    normalized = " ".join(instruction.lower().split())
+    return any(name in normalized for name in EXECUTION_EFFECTORS) and any(
+        verb in normalized.split() for verb in EXECUTION_VERBS
+    )
+
+
+def _format_xyz(values: Sequence[float]) -> str:
+    return "[" + ", ".join(f"{float(value):+.3f}" for value in values) + "] m"
 
 
 class G1Pose23Encoder:
@@ -618,6 +643,18 @@ def _run_prompt(
     color: bool,
     executor: GuardedVLAExecutor | None = None,
 ) -> None:
+    normalized_prompt = " ".join(prompt.lower().split()).rstrip("!.,?")
+    if normalized_prompt in GREETING_ONLY:
+        print(
+            _color("This is a robot task policy, not a general chat model.", AMBER, color)
+        )
+        print("Try: raise the right hand slightly while keeping it above the table")
+        return
+    if executor is not None and not _is_explicit_right_arm_instruction(prompt):
+        raise VLAError(
+            "execution requires an explicit right-hand task with a motion verb; "
+            "for example: raise the right hand slightly"
+        )
     if runtime.model is None:
         print(
             _color(
@@ -633,15 +670,26 @@ def _run_prompt(
     action, elapsed = runtime.predict(observation, prompt)
     chunk = parse_action_chunk(action)
     first, last = chunk[0], chunk[-1]
-    delta = np.asarray(last.right_position_m) - np.asarray(first.right_position_m)
+    current = np.asarray(observation.proprio[9:12], dtype=float)
+    first_position = np.asarray(first.right_position_m, dtype=float)
+    last_position = np.asarray(last.right_position_m, dtype=float)
+    initial_jump = first_position - current
+    chunk_delta = last_position - first_position
     print(
         f"proposal     {_color(str(len(chunk)) + ' waypoints', CYAN, color)} · "
         f"{elapsed:.2f}s inference"
     )
     print(
-        "right hand   "
-        f"start [{', '.join(f'{value:+.3f}' for value in first.right_position_m)}] m  →  "
-        f"Δ [{', '.join(f'{value:+.3f}' for value in delta)}] m"
+        "coordinates  torso frame: +x forward · +y left · +z up"
+    )
+    print(f"right hand   measured      {_format_xyz(current)}")
+    print(
+        f"             policy first  {_format_xyz(first_position)}  "
+        f"Δ measured→first {_format_xyz(initial_jump)}"
+    )
+    print(
+        f"             policy last   {_format_xyz(last_position)}  "
+        f"Δ first→last {_format_xyz(chunk_delta)}"
     )
     if executor is None:
         print(

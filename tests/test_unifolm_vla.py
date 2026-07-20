@@ -18,6 +18,8 @@ from object_tracking.unifolm_vla_cli import (
     LiveObservationSource,
     Observation,
     UnifoLMRuntime,
+    _format_xyz,
+    _is_explicit_right_arm_instruction,
     _profile_gripper_means,
 )
 
@@ -95,6 +97,30 @@ def test_runtime_background_load_is_single_and_joined_by_foreground(tmp_path: Pa
 
     assert runtime.load_status() == "ready"
     assert len(calls) == 1
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    (
+        "raise the right hand slightly",
+        "move right arm forward",
+        "touch the plush with the right palm",
+    ),
+)
+def test_explicit_right_arm_instruction_is_accepted(instruction: str) -> None:
+    assert _is_explicit_right_arm_instruction(instruction)
+
+
+@pytest.mark.parametrize(
+    "instruction",
+    ("hi", "grab the plush", "move left hand", "right hand", "be careful"),
+)
+def test_ambiguous_execution_instruction_is_rejected(instruction: str) -> None:
+    assert not _is_explicit_right_arm_instruction(instruction)
+
+
+def test_xyz_display_has_explicit_sign_and_metric_units() -> None:
+    assert _format_xyz((0.02, -0.004, 0.007)) == "[+0.020, -0.004, +0.007] m"
 
 
 def test_guarded_executor_clears_then_streams_bounded_vla_waypoint(monkeypatch: pytest.MonkeyPatch) -> None:
