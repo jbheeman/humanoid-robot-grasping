@@ -200,10 +200,60 @@ class UnifoLMRuntime:
         self.model: Any | None = None
         self.processor: Any | None = None
         self.stats: dict[str, Any] | None = None
+        self._load_lock = threading.Lock()
+        self._load_thread: threading.Thread | None = None
+        self._load_error: Exception | None = None
+        self._load_started_at: float | None = None
+
+    def start_loading(self) -> None:
+        """Warm the model immediately while leaving the task prompt responsive."""
+        if self.model is not None or self._load_error is not None:
+            return
+        if self._load_thread is not None and self._load_thread.is_alive():
+            return
+        self._load_started_at = time.monotonic()
+        self._load_thread = threading.Thread(
+            target=self._load_in_background,
+            name="unifolm-model-loader",
+            daemon=True,
+        )
+        self._load_thread.start()
+
+    def _load_in_background(self) -> None:
+        try:
+            self.load()
+        except Exception:
+            # load() records the original error.  The prompt and /status report
+            # it on the main thread instead of printing a thread traceback.
+            return
+
+    def load_status(self) -> str:
+        if self.model is not None:
+            return "ready"
+        if self._load_error is not None:
+            return f"failed — {self._load_error}"
+        if self._load_thread is not None and self._load_thread.is_alive():
+            elapsed = 0.0
+            if self._load_started_at is not None:
+                elapsed = max(0.0, time.monotonic() - self._load_started_at)
+            return f"loading in background ({elapsed:.0f}s)"
+        return "not loaded"
 
     def load(self) -> None:
-        if self.model is not None:
-            return
+        with self._load_lock:
+            if self.model is not None:
+                return
+            if self._load_error is not None:
+                raise VLAError(f"UnifoLM model load previously failed: {self._load_error}")
+            if self._load_started_at is None:
+                self._load_started_at = time.monotonic()
+            try:
+                self._load_model()
+            except Exception as exc:
+                self._load_error = exc
+                raise
+
+    def _load_model(self) -> None:
         if not self.checkpoint.is_file():
             raise VLAError(f"VLA checkpoint is missing: {self.checkpoint}")
         if not (self.vlm_path / "model.safetensors.index.json").is_file():
@@ -543,7 +593,7 @@ def _status(
     color: bool,
     executor: GuardedVLAExecutor | None,
 ) -> None:
-    model = "loaded" if runtime.model is not None else "not loaded"
+    model = runtime.load_status()
     checkpoint = "ready" if runtime.checkpoint.is_file() else "missing"
     try:
         observation = source.snapshot()
@@ -568,6 +618,16 @@ def _run_prompt(
     color: bool,
     executor: GuardedVLAExecutor | None = None,
 ) -> None:
+    if runtime.model is None:
+        print(
+            _color(
+                f"model {runtime.load_status()}; waiting before capturing a fresh scene…",
+                DIM,
+                color,
+            ),
+            flush=True,
+        )
+        runtime.load()
     observation = source.snapshot()
     print(_color("reading scene and proposing motion…", DIM, color), flush=True)
     action, elapsed = runtime.predict(observation, prompt)
@@ -648,6 +708,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         if args.execute
         else None
     )
+    runtime.start_loading()
     if args.once:
         try:
             _run_prompt(source, runtime, args.once, color, executor)
@@ -656,6 +717,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             return 1
         return 0
     _banner(color, execute=executor is not None)
+    print(_color("model warming in background — /status shows progress", DIM, color))
+    print()
     while True:
         try:
             value = input(_color(">>> ", BOLD, color)).strip()

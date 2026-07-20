@@ -17,6 +17,7 @@ from object_tracking.unifolm_vla_cli import (
     GuardedVLAExecutor,
     LiveObservationSource,
     Observation,
+    UnifoLMRuntime,
     _profile_gripper_means,
 )
 
@@ -70,6 +71,30 @@ def test_no_hand_grippers_use_profile_means(tmp_path: Path) -> None:
     )
 
     assert _profile_gripper_means(checkpoint, "g1_stack_block") == (3.95, 4.03)
+
+
+def test_runtime_background_load_is_single_and_joined_by_foreground(tmp_path: Path) -> None:
+    runtime = UnifoLMRuntime(tmp_path / "checkpoint", tmp_path / "vlm", "profile")
+    entered = threading.Event()
+    release = threading.Event()
+    calls = []
+
+    def load_model() -> None:
+        calls.append(True)
+        entered.set()
+        assert release.wait(1.0)
+        runtime.model = object()
+
+    runtime._load_model = load_model
+    runtime.start_loading()
+    assert entered.wait(1.0)
+    assert runtime.load_status().startswith("loading in background")
+
+    release.set()
+    runtime.load()
+
+    assert runtime.load_status() == "ready"
+    assert len(calls) == 1
 
 
 def test_guarded_executor_clears_then_streams_bounded_vla_waypoint(monkeypatch: pytest.MonkeyPatch) -> None:
