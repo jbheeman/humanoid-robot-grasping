@@ -1,0 +1,399 @@
+From 58f600bbf6e2d785b9ae2d0e4148a50c91502945 Mon Sep 17 00:00:00 2001
+From: theaaravagarwal <theaaravagarwal@gmail.com>
+Date: Mon, 20 Jul 2026 11:24:06 -0700
+Subject: [PATCH] Adapt UniFoLM-VLA training for GB10
+
+---
+ prepare_data/convert_lerobot_to_hdf5.py       | 127 ++++++++++++++----
+ .../rlds_dataset/conversion_utils.py          |  34 +++--
+ .../hdf5_to_rlds/rlds_dataset/rlds_dataset.py |  11 +-
+ src/unifolm_vla/model/modules/vlm/QWen2_5.py  |  44 ++++--
+ .../datasets/rlds/oxe/configs.py              |   2 +-
+ src/unifolm_vla/training/train_unifolm_vla.py |   9 +-
+ 6 files changed, 167 insertions(+), 60 deletions(-)
+
+diff --git a/prepare_data/convert_lerobot_to_hdf5.py b/prepare_data/convert_lerobot_to_hdf5.py
+index edb496f..c492bf1 100644
+--- a/prepare_data/convert_lerobot_to_hdf5.py
++++ b/prepare_data/convert_lerobot_to_hdf5.py
+@@ -10,20 +10,60 @@ python unitree_lerobot/utils/convert_lerobot_to_h5.py \
+ """
+ 
+ import os
++import functools
++import multiprocessing as mp
+ import cv2
+ import h5py
+ import argparse
+ import numpy as np
++import av
++import torch
+ from tqdm import tqdm
+ from pathlib import Path
+ from collections import defaultdict
+ from lerobot.datasets.lerobot_dataset import LeRobotDataset
+ 
+ 
++@functools.lru_cache(maxsize=4)
++def _load_video_pyav(video_path: str) -> tuple[np.ndarray, np.ndarray]:
++    """Decode one episode camera once; torchvision's VideoReader is absent on ARM64."""
++    frames: list[np.ndarray] = []
++    timestamps: list[float] = []
++    with av.open(video_path) as container:
++        stream = container.streams.video[0]
++        fps = float(stream.average_rate) if stream.average_rate else 30.0
++        for index, frame in enumerate(container.decode(stream)):
++            frames.append(frame.to_ndarray(format="rgb24"))
++            timestamps.append(float(frame.time) if frame.time is not None else index / fps)
++    if not frames:
++        raise RuntimeError(f"No video frames decoded from {video_path}")
++    return np.stack(frames), np.asarray(timestamps, dtype=np.float64)
++
++
++def _decode_video_frames_pyav(video_path, timestamps, tolerance_s, backend=None) -> torch.Tensor:
++    """LeRobot-compatible PyAV decoder without torchvision's removed VideoReader API."""
++    frames, frame_timestamps = _load_video_pyav(str(video_path))
++    query_timestamps = np.asarray(timestamps, dtype=np.float64)
++    nearest = np.abs(frame_timestamps[:, None] - query_timestamps[None, :]).argmin(axis=0)
++    distances = np.abs(frame_timestamps[nearest] - query_timestamps)
++    if np.any(distances >= tolerance_s):
++        raise RuntimeError(
++            f"Video timestamp mismatch for {video_path}: max error {distances.max():.4f}s "
++            f">= tolerance {tolerance_s:.4f}s"
++        )
++    return torch.from_numpy(frames[nearest]).permute(0, 3, 1, 2).float().div_(255)
++
++
+ class LeRobotDataProcessor:
+     def __init__(self, repo_id: str, root: str = None, image_dtype: str = "to_unit8") -> None:
+         self.image_dtype = image_dtype
+         self.dataset = LeRobotDataset(repo_id=repo_id, root=root, video_backend="pyav")
++        # LeRobot 0.7 routes its documented "pyav" backend through torchvision,
++        # whose ARM64 wheel no longer provides VideoReader. Patch the module-level
++        # function used by LeRobotDataset.__getitem__ with a cached native PyAV path.
++        import lerobot.datasets.lerobot_dataset as lerobot_dataset_module
++
++        lerobot_dataset_module.decode_video_frames = _decode_video_frames_pyav
+ 
+     def process_episode(self, episode_index: int) -> dict:
+         """Process a single episode to extract camera images, state, and action."""
+@@ -131,8 +171,9 @@ class H5Writer:
+         }
+ 
+         h5_path = os.path.join(self.output_dir, f"episode_{episode_index}.hdf5")
++        temporary_path = f"{h5_path}.tmp"
+ 
+-        with h5py.File(h5_path, "w", rdcc_nbytes=1024**2 * 2, libver="latest") as root:
++        with h5py.File(temporary_path, "w", rdcc_nbytes=1024**2 * 2, libver="latest") as root:
+             # Set attributes
+             root.attrs["sim"] = False
+ 
+@@ -147,20 +188,19 @@ class H5Writer:
+                     shape=(episode_length, data_cfg["cam_height"], data_cfg["cam_width"], 3),
+                     dtype="uint8",
+                     chunks=(1, data_cfg["cam_height"], data_cfg["cam_width"], 3),
+-                    compression="gzip",
+                 )
+                 # root[f'/observations/images/{cam_name}'][...] = images
+ 
+             # Write state and action data
+-            obs.create_dataset("qpos", (episode_length, data_cfg["state_dim"]), dtype="float32", compression="gzip")
+-            obs.create_dataset("ee_qpos", (episode_length, data_cfg["ee_state_dim"]), dtype="float32", compression="gzip")
+-            obs.create_dataset("qvel", (episode_length, data_cfg["state_dim"]), dtype="float32", compression="gzip")
+-            root.create_dataset("action", (episode_length, data_cfg["action_dim"]), dtype="float32", compression="gzip")
+-            root.create_dataset("ee_action", (episode_length, data_cfg["ee_action_dim"]), dtype="float32", compression="gzip")
++            obs.create_dataset("qpos", (episode_length, data_cfg["state_dim"]), dtype="float32")
++            obs.create_dataset("ee_qpos", (episode_length, data_cfg["ee_state_dim"]), dtype="float32")
++            obs.create_dataset("qvel", (episode_length, data_cfg["state_dim"]), dtype="float32")
++            root.create_dataset("action", (episode_length, data_cfg["action_dim"]), dtype="float32")
++            root.create_dataset("ee_action", (episode_length, data_cfg["ee_action_dim"]), dtype="float32")
+             # Write metadata
+             root.create_dataset("is_edited", (1,), dtype="uint8")
+             substep_reasonings = root.create_dataset(
+-                "substep_reasonings", (episode_length,), dtype=h5py.string_dtype(encoding="utf-8"), compression="gzip"
++                "substep_reasonings", (episode_length,), dtype=h5py.string_dtype(encoding="utf-8")
+             )
+             root.create_dataset("language_raw", data=task)
+             substep_reasonings[:] = [task] * episode_length
+@@ -168,35 +208,70 @@ class H5Writer:
+             # Write additional data
+             for name, array in data_dict.items():
+                 root[name][...] = array
++        os.replace(temporary_path, h5_path)
+ 
+ 
++def _is_complete_hdf5(path: str) -> bool:
++    try:
++        with h5py.File(path, "r") as root:
++            return all(name in root for name in ("action", "ee_action", "observations/qpos", "observations/images"))
++    except OSError:
++        return False
+ 
+-def lerobot_to_h5(repo_id: str, output_dir: Path, root: str = None) -> None:
+-    """Main function to process and write LeRobot data to HDF5 format."""
+ 
+-    # Initialize data processor and H5 writer
+-    data_processor = LeRobotDataProcessor(
+-        repo_id, root, image_dtype="to_unit8"
+-    )  # image_dtype Options: "to_unit8", "to_bytes"
+-    h5_writer = H5Writer(output_dir)
++_WORKER_PROCESSOR: LeRobotDataProcessor | None = None
++_WORKER_WRITER: H5Writer | None = None
++
++
++def _initialize_worker(repo_id: str, root: str, output_dir: str) -> None:
++    global _WORKER_PROCESSOR, _WORKER_WRITER
++    _WORKER_PROCESSOR = LeRobotDataProcessor(repo_id, root, image_dtype="to_unit8")
++    _WORKER_WRITER = H5Writer(Path(output_dir))
++
+ 
+-    # Process each episode
+-    for episode_index in tqdm(
+-        range(data_processor.dataset.num_episodes), desc="Episodes", position=0, dynamic_ncols=True
+-    ):
+-        if os.path.exists(os.path.join(output_dir, f"episode_{episode_index}.hdf5")):
+-            print(f"Episode {episode_index} already exists")
+-            continue
+-        episode = data_processor.process_episode(episode_index)
+-        h5_writer.write_to_h5(episode)
++def _convert_episode_worker(episode_index: int) -> int:
++    assert _WORKER_PROCESSOR is not None and _WORKER_WRITER is not None
++    output_path = os.path.join(_WORKER_WRITER.output_dir, f"episode_{episode_index}.hdf5")
++    if _is_complete_hdf5(output_path):
++        return episode_index
++    episode = _WORKER_PROCESSOR.process_episode(episode_index)
++    _WORKER_WRITER.write_to_h5(episode)
++    return episode_index
++
++
++
++def lerobot_to_h5(repo_id: str, output_dir: Path, root: str = None, workers: int = 1) -> None:
++    """Main function to process and write LeRobot data to HDF5 format."""
++
++    worker_count = max(1, int(workers))
++    with mp.get_context("spawn").Pool(
++        processes=worker_count,
++        initializer=_initialize_worker,
++        initargs=(repo_id, root, str(output_dir)),
++    ) as pool:
++        for _ in tqdm(
++            pool.imap_unordered(_convert_episode_worker, range(200)),
++            total=200,
++            desc="Episodes",
++            position=0,
++            dynamic_ncols=True,
++        ):
++            pass
+ 
+ 
+ if __name__ == "__main__":
+     parser = argparse.ArgumentParser()
+     parser.add_argument("--data_path", type=str, default="")
+     parser.add_argument("--target_path", type=str, default="")
++    parser.add_argument(
++        "--repo-id",
++        type=str,
++        default="",
++        help="Hugging Face LeRobot dataset ID; required when the local directory name omits the namespace.",
++    )
++    parser.add_argument("--workers", type=int, default=max(1, min(6, os.cpu_count() or 1)))
+     args = parser.parse_args()
+-    repo_id = os.path.basename(args.data_path)
++    repo_id = args.repo_id or os.path.basename(args.data_path)
+     root_path = args.data_path
+     output_dir = args.target_path
+-    lerobot_to_h5(repo_id, output_dir, root_path)
++    lerobot_to_h5(repo_id, output_dir, root_path, workers=args.workers)
+diff --git a/prepare_data/hdf5_to_rlds/rlds_dataset/conversion_utils.py b/prepare_data/hdf5_to_rlds/rlds_dataset/conversion_utils.py
+index 43cfa20..6d38e69 100644
+--- a/prepare_data/hdf5_to_rlds/rlds_dataset/conversion_utils.py
++++ b/prepare_data/hdf5_to_rlds/rlds_dataset/conversion_utils.py
+@@ -171,29 +171,25 @@ class ParallelSplitBuilder(split_builder_lib.SplitBuilder):
+ 
+         del generator  # use parallel generators instead
+         paths = self._split_paths[split_name]
+-        path_lists = chunk_max(paths, self._n_workers, self._max_paths_in_memory)  # generate N file lists
+         print(f"Generating with {self._n_workers} workers!")
+         pool = Pool(processes=self._n_workers)
+-        for i, paths in enumerate(path_lists):
+-            print(f"Processing chunk {i + 1} of {len(path_lists)}.")
+-            results = pool.map(
+-                partial(
+-                    parse_examples_from_generator,
+-                    fcn=self._parse_function,
+-                    split_name=split_name,
+-                    total_num_examples=total_num_examples,
+-                    serializer=writer._serializer,
+-                    features=self._features
+-                ),
+-                paths
+-            )
+-            # write results to shuffler --> this will automatically offload to disk if necessary
+-            print("Writing conversion results...")
+-            for result in itertools.chain(*results):
+-                key, serialized_example = result
++        worker_fn = partial(
++            parse_examples_from_generator,
++            fcn=self._parse_function,
++            split_name=split_name,
++            total_num_examples=total_num_examples,
++            serializer=writer._serializer,
++            features=self._features,
++        )
++        # Stream each completed episode straight into the writer.  Unlike
++        # pool.map in fixed-size chunks, imap_unordered keeps idle workers fed
++        # immediately and does not introduce a CPU-idle write barrier.
++        for result in pool.imap_unordered(worker_fn, chunks(paths, 1), chunksize=1):
++            for key, serialized_example in result:
+                 writer._shuffler.add(key, serialized_example)
+                 writer._num_examples += 1
+         pool.close()
++        pool.join()
+ 
+         print("Finishing split conversion...")
+         shard_lengths, total_size = writer.finalize()
+@@ -223,4 +219,4 @@ def chunk_max(l, n, max_chunk_sum):
+     for _ in range(int(np.ceil(len(l) / max_chunk_sum))):
+         out.append(list(chunks(l[:max_chunk_sum], n)))
+         l = l[max_chunk_sum:]
+-    return out
+\ No newline at end of file
++    return out
+diff --git a/prepare_data/hdf5_to_rlds/rlds_dataset/rlds_dataset.py b/prepare_data/hdf5_to_rlds/rlds_dataset/rlds_dataset.py
+index d59d730..0956b17 100644
+--- a/prepare_data/hdf5_to_rlds/rlds_dataset/rlds_dataset.py
++++ b/prepare_data/hdf5_to_rlds/rlds_dataset/rlds_dataset.py
+@@ -130,8 +130,8 @@ class rlds_dataset(MultiThreadedDatasetBuilder):
+     RELEASE_NOTES = {
+       '1.0.0': 'Initial release.',
+     }
+-    N_WORKERS = 8            # number of parallel workers for data conversion
+-    MAX_PATHS_IN_MEMORY = 8  # number of paths converted & stored in memory before writing to disk
++    N_WORKERS = 20           # number of parallel workers for data conversion
++    MAX_PATHS_IN_MEMORY = 20 # number of paths converted & stored in memory before writing to disk
+                                # -> the higher the faster / more parallel conversion, adjust based on avilable RAM
+                                # note that one path may yield multiple episodes and adjust accordingly
+     PARSE_FCN = _generate_examples      # handle to parse function from file paths to RLDS episodes
+@@ -228,6 +228,9 @@ class rlds_dataset(MultiThreadedDatasetBuilder):
+         
+     def _split_paths(self):
+         """Define filepaths for data splits."""
++        hdf5_root = os.environ.get("HDF5_ROOT")
++        if not hdf5_root:
++            raise RuntimeError("Set HDF5_ROOT to the directory containing converted episode_*.hdf5 files.")
+         return {
+-            'train': glob.glob("/path/to/save/the/converted/data/directory/*.hdf5"),
+-        }
+\ No newline at end of file
++            'train': glob.glob(os.path.join(hdf5_root, "*.hdf5")),
++        }
+diff --git a/src/unifolm_vla/model/modules/vlm/QWen2_5.py b/src/unifolm_vla/model/modules/vlm/QWen2_5.py
+index 8db3b63..d393743 100644
+--- a/src/unifolm_vla/model/modules/vlm/QWen2_5.py
++++ b/src/unifolm_vla/model/modules/vlm/QWen2_5.py
+@@ -2,7 +2,7 @@ import torch
+ import torch.nn as nn
+ from typing import Optional, List
+ from transformers.modeling_outputs import CausalLMOutputWithPast
+-from transformers import Qwen2_5_VLForConditionalGeneration, AutoProcessor
++from transformers import BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration, AutoProcessor
+ from transformers.modeling_outputs import CausalLMOutputWithPast
+ from typing import Dict, Optional, List
+ from qwen_vl_utils import process_vision_info
+@@ -63,12 +63,41 @@ class _QWen_VL_Interface(nn.Module):
+ 
+         qwenvl_config = config.framework.get("qwenvl", {})
+         model_id = qwenvl_config.get("base_vlm", "Qwen/Qwen2.5-VL-7B-Instruct")
+-        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+-            model_id,
+-            attn_implementation="flash_attention_2",
+-            torch_dtype=torch.bfloat16,
+-            device_map="cuda",
+-        )
++        use_lora = bool(qwenvl_config.get("use_lora", False))
++        load_in_4bit = bool(qwenvl_config.get("load_in_4bit", False))
++        load_kwargs = {
++            "attn_implementation": qwenvl_config.get("attn_implementation", "flash_attention_2"),
++            "torch_dtype": torch.bfloat16,
++            "device_map": "cuda",
++        }
++        if load_in_4bit:
++            load_kwargs["quantization_config"] = BitsAndBytesConfig(
++                load_in_4bit=True,
++                bnb_4bit_quant_type="nf4",
++                bnb_4bit_use_double_quant=True,
++                bnb_4bit_compute_dtype=torch.bfloat16,
++            )
++        model = Qwen2_5_VLForConditionalGeneration.from_pretrained(model_id, **load_kwargs)
++        if use_lora:
++            from peft import LoraConfig, get_peft_model, prepare_model_for_kbit_training
++
++            if load_in_4bit:
++                model = prepare_model_for_kbit_training(
++                    model,
++                    use_gradient_checkpointing=bool(qwenvl_config.get("gradient_checkpointing", True)),
++                )
++            lora_config = LoraConfig(
++                r=int(qwenvl_config.get("lora_rank", 16)),
++                lora_alpha=int(qwenvl_config.get("lora_alpha", 32)),
++                lora_dropout=float(qwenvl_config.get("lora_dropout", 0.05)),
++                bias="none",
++                target_modules=qwenvl_config.get(
++                    "lora_target_modules",
++                    ["q_proj", "k_proj", "v_proj", "o_proj", "gate_proj", "up_proj", "down_proj"],
++                ),
++            )
++            model = get_peft_model(model, lora_config)
++            model.print_trainable_parameters()
+         processor = AutoProcessor.from_pretrained(model_id)
+         processor.tokenizer.padding_side = "left"
+         
+@@ -296,4 +325,3 @@ def get_qwen2_5_interface(config=None, **kwargs):
+ 
+     return model
+ 
+-
+diff --git a/src/unifolm_vla/rlds_dataloader/datasets/rlds/oxe/configs.py b/src/unifolm_vla/rlds_dataloader/datasets/rlds/oxe/configs.py
+index f705152..36bb804 100644
+--- a/src/unifolm_vla/rlds_dataloader/datasets/rlds/oxe/configs.py
++++ b/src/unifolm_vla/rlds_dataloader/datasets/rlds/oxe/configs.py
+@@ -57,7 +57,7 @@ class ActionEncoding(IntEnum):
+ OXE_DATASET_CONFIGS = {
+     # === g1_plug_charger Fine-Tuning Datasets ===
+     "g1_stack_block": {
+-        "image_obs_keys": {"primary": "images_left_top", "secondary": None, "left_wrist": "image_left_wrist", "right_wrist": "image_right_wrist"},
++        "image_obs_keys": {"primary": "image_left_top", "secondary": None, "left_wrist": "image_left_wrist", "right_wrist": "image_right_wrist"},
+         "depth_obs_keys": {"primary": None, "secondary": None, "wrist": None},
+         "state_obs_keys": ["state"],
+         "state_encoding": StateEncoding.EE_R6_G1,  
+diff --git a/src/unifolm_vla/training/train_unifolm_vla.py b/src/unifolm_vla/training/train_unifolm_vla.py
+index c472eb5..8ca0901 100644
+--- a/src/unifolm_vla/training/train_unifolm_vla.py
++++ b/src/unifolm_vla/training/train_unifolm_vla.py
+@@ -163,6 +163,12 @@ def setup_optimizer_and_scheduler(model, cfg) -> Tuple[torch.optim.Optimizer, to
+         scheduler_specific_kwargs=cfg.trainer.scheduler_specific_kwargs,  # minimum learning rate
+     )
+ 
++    # Checkpoints in this training loop persist model weights only. Align a
++    # restarted scheduler with the update count already represented by them.
++    resume_step = int(getattr(cfg.trainer, "resume_step", 0) or 0)
++    if resume_step:
++        lr_scheduler.step(resume_step)
++
+     return optimizer, lr_scheduler
+ 
+ 
+@@ -174,7 +180,7 @@ class VLATrainer(TrainerUtils):
+         self.optimizer = optimizer
+         self.lr_scheduler = lr_scheduler
+         self.accelerator = accelerator
+-        self.completed_steps = 0
++        self.completed_steps = int(getattr(cfg.trainer, "resume_step", 0) or 0)
+         self.total_batch_size = self._calculate_total_batch_size()
+ 
+     def prepare_training(self):
+@@ -482,4 +488,3 @@ if __name__ == "__main__":
+ 
+ 
+     main(cfg)
+-

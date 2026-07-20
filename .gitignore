@@ -6,6 +6,10 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .deps/
+meta/
+third_party/
+.unifolm-vla-venv/
+.omni-venv/
 .ros/
 ros_ws/build/
 ros_ws/install/
