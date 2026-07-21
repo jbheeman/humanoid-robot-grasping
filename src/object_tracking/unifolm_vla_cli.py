@@ -966,7 +966,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     while True:
         try:
             value = input(_color(">>> ", BOLD, color)).strip()
-        except (EOFError, KeyboardInterrupt):
+        except KeyboardInterrupt:
+            print()
+            print(_color("request canceled; model remains loaded (/exit shuts it down)", AMBER, color))
+            continue
+        except EOFError:
             print()
             return 0
         if not value:
@@ -994,6 +998,9 @@ def main(argv: Sequence[str] | None = None) -> int:
             continue
         try:
             _run_prompt(source, runtime, value, color, executor)
+        except KeyboardInterrupt:
+            print()
+            print(_color("request canceled; model remains loaded", AMBER, color))
         except Exception as exc:
             print(_color(f"error: {type(exc).__name__}: {exc}", RED, color))
         print()
