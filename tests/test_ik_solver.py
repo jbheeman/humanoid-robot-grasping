@@ -139,3 +139,45 @@ def test_g1_rest_pose_can_detour_around_right_hip_for_pointing() -> None:
     assert len(route.q_path) >= 3
     assert route.position_error_m < 0.005
     assert solver.validate_joint_path(route.q_path, support_plane=support) is None
+
+
+def test_current_g1_hip_rest_pose_has_bounded_guided_table_clearance() -> None:
+    pytest.importorskip("pinocchio")
+    pytest.importorskip("scipy")
+    repo_root = Path(__file__).resolve().parents[1]
+    urdf = default_urdf_path(repo_root)
+    if not urdf.is_file():
+        pytest.skip("pinned G1 arm assets are not installed")
+    solver = G1RightArmIK(urdf)
+    # Read-only lowstate captured from the stock hip-rest pose.  It contains a
+    # shallow 0.21 mm hand/hip mesh overlap that must use the exit-only path.
+    start_q = (
+        -0.0963891223,
+        0.0183118954,
+        0.2851406634,
+        1.4834433794,
+        -0.0324293151,
+        -0.2624904811,
+        -0.0487997644,
+    )
+    plane = Plane((0.0, 0.0, 1.0), -0.05)
+    support = SupportRegion.from_ordered_corners(
+        plane,
+        (
+            (0.37, 0.35, 0.05),
+            (0.37, -0.35, 0.05),
+            (0.80, -0.35, 0.05),
+            (0.80, 0.35, 0.05),
+        ),
+    )
+
+    route = solver.plan_guided_clearance(start_q, support_plane=support)
+
+    assert route.ok, route.reason
+    assert route.q_path is not None
+    assert len(route.q_path) > 2
+    assert max(
+        max(abs(actual - previous) for actual, previous in zip(end, begin))
+        for begin, end in zip(route.q_path, route.q_path[1:])
+    ) <= 0.04 + 1e-9
+    assert solver.validate_joint_path(route.q_path, support_plane=support) is None

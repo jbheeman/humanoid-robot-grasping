@@ -177,12 +177,19 @@ def test_guarded_executor_clears_then_streams_bounded_vla_waypoint(monkeypatch: 
     class Transport:
         def __init__(self) -> None:
             self.targets: list[tuple[float, ...]] = []
-            self.stopped = False
+            self.stops: list[str] = []
             self.heartbeats = 0
+            self.state = "DISARMED"
+            self.sessions: list[str] = []
 
         def enable_arm(self, session: str, calibration: str) -> dict[str, object]:
             assert session.startswith("vla-") and calibration == "calibration"
+            self.sessions.append(session)
+            self.state = "ARMED"
             return {"ok": True}
+
+        def arm_state(self) -> dict[str, object]:
+            return {"state": self.state}
 
         def publish_target(self, *args: object, **kwargs: object) -> None:
             del kwargs
@@ -193,8 +200,8 @@ def test_guarded_executor_clears_then_streams_bounded_vla_waypoint(monkeypatch: 
             self.heartbeats += 1
 
         def stop_arm(self, reason: str) -> None:
-            assert reason == "vla_smoke_test_complete"
-            self.stopped = True
+            self.stops.append(reason)
+            self.state = "DISARMED"
 
     source = LiveObservationSource.__new__(LiveObservationSource)
     source.last_state = {
@@ -228,5 +235,9 @@ def test_guarded_executor_clears_then_streams_bounded_vla_waypoint(monkeypatch: 
 
     assert executor.execute(source, runtime, "move the hand") == (1, 0.1)
     assert executor.transport.targets == [cleared, moved]
-    assert executor.transport.heartbeats >= 1
-    assert executor.transport.stopped is True
+    assert executor.transport.heartbeats >= 2
+    assert len(set(executor.transport.sessions)) == 2
+    assert executor.transport.stops == [
+        "vla_clearance_complete",
+        "vla_smoke_test_complete",
+    ]

@@ -15,6 +15,7 @@ XR_TELEOPERATE_REVISION = "7dc9aa1a6edbf4a9f4f887d8ab6fc449ea5135f6"
 UNITREE_ROS_REVISION = "d96d8f63ae17a7108d4f7229c00ef875ba7129c9"
 RIGHT_ARM_JOINTS = RIGHT_ARM_JOINT_NAMES
 _MAX_START_ESCAPE_PENETRATION_M = 0.005
+_MAX_STREAM_JOINT_STEP_RAD = 0.04
 
 # These collision meshes overlap at the G1's factory shoulder articulation
 # range.  They are kinematic neighbours, not an arm-through-torso route.  The
@@ -34,7 +35,12 @@ _ADJACENT_G1_COLLISION_PAIRS = {
 # every application against the current pose, full collision model, bounded
 # support region, 5 mm penetration ceiling, collision-free latch, and 10 mm exit gate.
 _G1_HIP_ESCAPE_DELTAS = (
+    # The stock hip-rest pose needs a small simultaneous shoulder-pitch
+    # change to clear the thumb mesh by the required 10 mm.  The full edge is
+    # still densely checked below before any interpolated waypoint is used.
+    (-0.10, -0.28, 0.0, 0.0, 0.0, 0.0, 0.0),
     (0.0, -0.20, 0.0, 0.0, 0.0, 0.0, 0.0),
+    (-0.10, -0.20, 0.0, 0.0, 0.0, 0.0, 0.0),
     (0.0, -0.20, 0.0, 0.0, 0.0, 0.03, 0.0),
     (0.0, -0.20, 0.0, 0.0, 0.0, -0.03, 0.0),
     (0.0, -0.20, 0.0, 0.0, 0.0, 0.0, 0.03),
@@ -656,6 +662,7 @@ class G1RightArmIK:
         *,
         step_rad: float = 0.0005,
         numerical_tolerance_m: float = 0.00005,
+        require_cleared_end: bool = True,
     ) -> str | None:
         """Permit only shallow measured contacts until they clear, with no re-entry.
 
@@ -683,7 +690,9 @@ class G1RightArmIK:
                 for distance in distances.values()
             ):
                 return "hand_hip_penetration_limit"
-        if not escaped or self._right_hand_hip_clearance(end) < 0.01:
+        if require_cleared_end and (
+            not escaped or self._right_hand_hip_clearance(end) < 0.01
+        ):
             return "start_collision_not_cleared"
         return None
 
@@ -798,9 +807,29 @@ class G1RightArmIK:
                 self.upper,
             )
             if edge_is_exit_only(candidate):
-                return (
-                    start_tuple,
-                    tuple(float(value) for value in candidate),
+                # The bridge accepts at most 0.05 rad between targets.  Keep
+                # a margin below that hard gate and retain the already
+                # validated straight edge as bounded streaming waypoints.
+                steps = max(
+                    1,
+                    int(
+                        np.ceil(
+                            np.max(np.abs(candidate - start_q))
+                            / _MAX_STREAM_JOINT_STEP_RAD
+                        )
+                    ),
+                )
+                return tuple(
+                    start_tuple
+                    if index == 0
+                    else tuple(
+                        float(value)
+                        for value in (
+                            (1.0 - index / steps) * start_q
+                            + (index / steps) * candidate
+                        )
+                    )
+                    for index in range(steps + 1)
                 ), None
 
         if time.monotonic() >= deadline:
@@ -821,7 +850,7 @@ class G1RightArmIK:
         start_q_rad: Sequence[float],
         *,
         support_plane: Any | None,
-        lift_m: float = 0.18,
+        lift_m: float = 0.25,
         forward_m: float = 0.06,
         position_tolerance_m: float = 0.006,
         max_steps_per_phase: int = 100,
@@ -861,6 +890,9 @@ class G1RightArmIK:
         path = list(escape_path)
         q = np.asarray(path[-1], dtype=float)
         for phase_name, delta_xyz in (
+            # Keep the long XR finger meshes behind the tabletop's 7 cm
+            # uncertainty margin during the subsequent vertical lift.
+            ("retract", np.asarray((-0.015, 0.0, 0.0), dtype=float)),
             ("lift", np.asarray((0.0, 0.0, lift_m), dtype=float)),
             ("forward", np.asarray((forward_m, 0.0, 0.0), dtype=float)),
         ):
@@ -882,6 +914,15 @@ class G1RightArmIK:
                     q,
                     support_plane=support_plane,
                     maximum_joint_step_rad=0.025,
+                    # Clearance is a large Cartesian relocation.  Prefer the
+                    # shoulder/elbow chain so the long finger meshes do not
+                    # swing forward through the tabletop boundary while the
+                    # hand is still below it.
+                    inverse_joint_cost_weights=(
+                        (2.0, 2.0, 1.5, 2.0, 0.01, 0.01, 0.01)
+                        if phase_name == "lift"
+                        else (1.0, 1.0, 1.0, 1.2, 0.6, 3.0, 3.0)
+                    ),
                 )
                 if not result.ok or result.q_rad is None:
                     return IKPathResult(
@@ -1227,6 +1268,15 @@ class G1RightArmIK:
         support_plane: Any | None = None,
         maximum_joint_step_rad: float = 0.040,
         damping: float = 0.01,
+        inverse_joint_cost_weights: Sequence[float] = (
+            1.0,
+            1.0,
+            1.0,
+            1.2,
+            0.6,
+            3.0,
+            3.0,
+        ),
     ) -> IKResult:
         """Compute one fast warm-started Cartesian servo step.
 
@@ -1247,6 +1297,11 @@ class G1RightArmIK:
             or not 0.0 < maximum_joint_step_rad <= 0.05
             or not math.isfinite(damping)
             or damping <= 0.0
+            or len(inverse_joint_cost_weights) != 7
+            or not all(
+                math.isfinite(float(value)) and float(value) > 0.0
+                for value in inverse_joint_cost_weights
+            )
         ):
             return IKResult(False, None, float("inf"), float("inf"), "invalid_local_step")
         current = self.forward_kinematics(last_q)
@@ -1269,7 +1324,7 @@ class G1RightArmIK:
         # Weighted minimum-norm solution. The short hand offset makes wrist
         # pitch/yaw genuinely useful for translation; prefer them when safe
         # instead of forcing every correction through shoulder and elbow.
-        inverse_joint_cost = np.diag((1.0, 1.0, 1.0, 1.2, 0.6, 3.0, 3.0))
+        inverse_joint_cost = np.diag(tuple(float(value) for value in inverse_joint_cost_weights))
         system = jacobian @ inverse_joint_cost @ jacobian.T
         system += np.eye(3) * (damping * damping)
         try:
@@ -1353,6 +1408,7 @@ class G1RightArmIK:
         if initial_clearance < -_MAX_START_ESCAPE_PENETRATION_M:
             return f"start_hand_hip_penetration:{initial_clearance:.5f}"
         escaping = bool(initial_collisions)
+        started_escaping = escaping
         for begin, end in zip(path, path[1:]):
             if deadline_s is not None and time.monotonic() >= deadline_s:
                 return "validation_timeout"
@@ -1363,6 +1419,7 @@ class G1RightArmIK:
                     end,
                     initial_collisions,
                     baseline_distances,
+                    require_cleared_end=False,
                 )
                 if escape_error:
                     return escape_error
@@ -1397,7 +1454,9 @@ class G1RightArmIK:
                 if not self._arm_has_support_clearance(q, support_plane):
                     return "link_support_region_clearance"
             if escaping:
-                escaping = False
-        if escaping:
+                escaping = bool(self._collision_pairs(end))
+        if escaping or (
+            started_escaping and self._right_hand_hip_clearance(path[-1]) < 0.01
+        ):
             return "start_collision_not_cleared"
         return None

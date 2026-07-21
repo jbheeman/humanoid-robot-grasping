@@ -589,6 +589,47 @@ class GuardedVLAExecutor:
         if errors:
             raise VLAError(f"arm keepalive failed: {errors[0]}")
 
+    def _wait_for_arm_state(self, expected: str, *, timeout_s: float = 2.0) -> None:
+        deadline = time.monotonic() + timeout_s
+        latest = "unknown"
+        while time.monotonic() < deadline:
+            report = self.transport.arm_state()
+            latest = str(report.get("state") or "unknown")
+            if latest == expected:
+                return
+            if latest in {"FAULT", "unreachable"}:
+                reason = report.get("fault_reason") or report.get("reason") or "unknown"
+                raise VLAError(f"arm entered {latest} while waiting for {expected}: {reason}")
+            time.sleep(0.02)
+        raise VLAError(f"arm did not reach {expected} within {timeout_s:.1f}s (state={latest})")
+
+    def _execute_guarded_path(
+        self,
+        path: Sequence[Sequence[float]],
+        calibration_id: str,
+        *,
+        stop_reason: str,
+    ) -> None:
+        if not path:
+            return
+        session_id = f"vla-{secrets.token_urlsafe(8)}"
+        self.transport.enable_arm(session_id, calibration_id)
+        # Make the intended enable -> heartbeat -> target ordering explicit,
+        # even when the ARMING ramp completes faster than the keepalive tick.
+        self.transport.heartbeat_arm(session_id)
+        keepalive_stop, keepalive_thread, keepalive_errors = self._start_keepalive(session_id)
+        try:
+            self._wait_for_arm_state("ARMED")
+            self._stream(session_id, calibration_id, path, 0)
+            self._check_keepalive(keepalive_errors)
+        finally:
+            keepalive_stop.set()
+            keepalive_thread.join(timeout=1.0)
+            try:
+                self.transport.stop_arm(stop_reason)
+            except Exception:
+                pass
+
     def execute(
         self,
         source: LiveObservationSource,
@@ -599,51 +640,46 @@ class GuardedVLAExecutor:
         clearance = self.solver.plan_guided_clearance(measured_q, support_plane=support)
         if not clearance.ok or not clearance.q_path:
             raise VLAError(f"could not plan 5 cm table/hip clearance: {clearance.reason}")
-        session_id = f"vla-{secrets.token_urlsafe(8)}"
-        self.transport.enable_arm(session_id, calibration_id)
-        keepalive_stop, keepalive_thread, keepalive_errors = self._start_keepalive(session_id)
-        sequence = 0
-        try:
-            sequence = self._stream(
-                session_id, calibration_id, clearance.q_path[1:], sequence
+        self._execute_guarded_path(
+            clearance.q_path[1:],
+            calibration_id,
+            stop_reason="vla_clearance_complete",
+        )
+        self._wait_for_arm_state("DISARMED")
+
+        # Re-observe and re-run inference only after releasing arm ownership.
+        # A tracking heartbeat intentionally cannot keep a stale target alive,
+        # so inference must never run inside the target deadman window.
+        observation = source.snapshot()
+        action, inference_s = runtime.predict(observation, instruction)
+        chunk = parse_action_chunk(action)
+        _state, live_support, seed_q, live_calibration = self._motion_context(source)
+        if live_calibration != calibration_id:
+            raise VLAError("calibration changed after clearance")
+        path_start = seed_q
+        planned: list[tuple[float, ...]] = []
+        for waypoint in chunk[: self.max_waypoints]:
+            result = self.solver.solve_local_translation(
+                waypoint.right_transform(),
+                seed_q,
+                support_plane=live_support,
+                maximum_joint_step_rad=0.025,
             )
-            self._check_keepalive(keepalive_errors)
-            # Re-observe and re-run the policy from the raised physical pose.
-            time.sleep(max(0.25, self.period_s * 2))
-            observation = source.snapshot()
-            action, inference_s = runtime.predict(observation, instruction)
-            self._check_keepalive(keepalive_errors)
-            chunk = parse_action_chunk(action)
-            _state, live_support, seed_q, live_calibration = self._motion_context(source)
-            if live_calibration != calibration_id:
-                raise VLAError("calibration changed after clearance")
-            planned: list[tuple[float, ...]] = []
-            for waypoint in chunk[: self.max_waypoints]:
-                result = self.solver.solve_local_translation(
-                    waypoint.right_transform(),
-                    seed_q,
-                    support_plane=live_support,
-                    maximum_joint_step_rad=0.025,
-                )
-                if not result.ok or result.q_rad is None:
-                    raise VLAError(f"VLA waypoint rejected by guarded IK: {result.reason}")
-                seed_q = result.q_rad
-                planned.append(seed_q)
-            path_error = self.solver.validate_joint_path(
-                (clearance.q_path[-1], *planned), support_plane=live_support
-            )
-            if path_error:
-                raise VLAError(f"VLA joint path rejected: {path_error}")
-            self._stream(session_id, calibration_id, planned, sequence)
-            self._check_keepalive(keepalive_errors)
-            return len(planned), inference_s
-        finally:
-            keepalive_stop.set()
-            keepalive_thread.join(timeout=1.0)
-            try:
-                self.transport.stop_arm("vla_smoke_test_complete")
-            except Exception:
-                pass
+            if not result.ok or result.q_rad is None:
+                raise VLAError(f"VLA waypoint rejected by guarded IK: {result.reason}")
+            seed_q = result.q_rad
+            planned.append(seed_q)
+        path_error = self.solver.validate_joint_path(
+            (path_start, *planned), support_plane=live_support
+        )
+        if path_error:
+            raise VLAError(f"VLA joint path rejected: {path_error}")
+        self._execute_guarded_path(
+            planned,
+            calibration_id,
+            stop_reason="vla_smoke_test_complete",
+        )
+        return len(planned), inference_s
 
 
 def build_parser() -> argparse.ArgumentParser:
