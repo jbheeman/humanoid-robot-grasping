@@ -3,6 +3,8 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 ROBOT_PYTHON="${ROBOT_PYTHON:-${ROOT_DIR}/robot/.venv/bin/python}"
+NATIVE_ARM_PYTHON="${NATIVE_ARM_PYTHON:-${HOME}/Documents/repos/xr_teleoperate/.venv/bin/python}"
+NATIVE_ARM_SOCKET="${NATIVE_ARM_SOCKET:-${XDG_RUNTIME_DIR:-/tmp}/g1-native-arm-${UID}.sock}"
 CLIENT_IP="${CLIENT_IP:-${GB10_HOST:-192.168.0.66}}"
 ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0}"
 HARDWARE_INTERFACE="${HARDWARE_INTERFACE:-eth0}"
@@ -33,9 +35,7 @@ DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS:-15}"
 REALSENSE_RGB_PORT="${CLIENT_PORT:-5600}"
 REALSENSE_RGB_FPS="${REALSENSE_RGB_FPS:-60}"
 DEPTH_SERIAL="${DEPTH_SERIAL:-}"
-# Keep rclpy separate from the native SDK2 CycloneDDS domain in this process.
-export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-
+DISABLE_DEPTH="${DISABLE_DEPTH:-0}"
 usage() {
   echo "Usage: scripts/robot/start.sh [--arm-commissioning|--vision-pointing]" >&2
 }
@@ -63,6 +63,14 @@ if [[ "${VISION_POINTING}" == "1" ]]; then
   RGB_MODE="highfps-service"
   DEPTH_SOURCE="librealsense"
 fi
+# The split tracking relay matches GB10's CycloneDDS RMW.  Native SDK2 owns a
+# different CycloneDDS process and domain, so the two implementations no
+# longer load into one interpreter.  Legacy combined modes retain Fast DDS.
+if [[ "${CONTROL_MODE}" == "tracking" ]]; then
+  export RMW_IMPLEMENTATION="${G1_ARM_RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
+else
+  export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
+fi
 
 if [[ -z "${CLIENT_IP}" ]]; then
   echo "CLIENT_IP (the GB10 address) is required." >&2
@@ -70,6 +78,10 @@ if [[ -z "${CLIENT_IP}" ]]; then
 fi
 if [[ ! -x "${ROBOT_PYTHON}" ]]; then
   echo "Missing robot environment. Run: uv run g1 setup robot" >&2
+  exit 1
+fi
+if [[ "${CONTROL_MODE}" == "tracking" && ! -x "${NATIVE_ARM_PYTHON}" ]]; then
+  echo "Missing XR Python 3.10 environment: ${NATIVE_ARM_PYTHON}" >&2
   exit 1
 fi
 if [[ "${ALLOW_MOVEMENT}" == "1" && -z "${EXPECTED_MOTION_MODE}" ]]; then
@@ -86,6 +98,60 @@ if [[ "${VISION_POINTING}" == "1" ]]; then
   exec "${ROOT_DIR}/scripts/robot/vision-pointing.sh"
 fi
 
+pids=()
+cleanup() {
+  local pid
+  for pid in "${pids[@]:-}"; do
+    kill "${pid}" 2>/dev/null || true
+  done
+  wait "${pids[@]:-}" 2>/dev/null || true
+}
+trap cleanup EXIT INT TERM
+
+# Start native DDS before sourcing Foxy.  This child gets only the project
+# package path and XR's Python 3.10 environment; it never imports rclpy or any
+# ROS-generated type support.
+if [[ "${CONTROL_MODE}" == "tracking" ]]; then
+  native_args=(
+    --socket "${NATIVE_ARM_SOCKET}"
+    --hardware-interface "${HARDWARE_INTERFACE}"
+    --hardware-domain-id "${HARDWARE_DOMAIN_ID}"
+  )
+  if [[ -n "${CALIBRATION}" ]]; then
+    native_args+=(--calibration "${CALIBRATION}")
+  fi
+  if [[ "${ALLOW_MOVEMENT}" == "1" ]]; then
+    native_args+=(--allow-movement --expected-motion-mode "${EXPECTED_MOTION_MODE}")
+  fi
+  env \
+    -u AMENT_PREFIX_PATH \
+    -u COLCON_PREFIX_PATH \
+    -u ROS_DISTRO \
+    -u ROS_DOMAIN_ID \
+    -u RMW_IMPLEMENTATION \
+    -u FASTRTPS_DEFAULT_PROFILES_FILE \
+    -u FASTDDS_DEFAULT_PROFILES_FILE \
+    -u CYCLONEDDS_URI \
+    PYTHONPATH="${ROOT_DIR}/src" \
+    LD_LIBRARY_PATH="${UNITREE_SDK_DDS_LIBRARY_DIR:-/usr/local/lib}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}" \
+    "${NATIVE_ARM_PYTHON}" "${ROOT_DIR}/scripts/robot/native_arm_worker.py" \
+    "${native_args[@]}" &
+  pids+=("$!")
+  native_pid="$!"
+  for _ in {1..100}; do
+    [[ -S "${NATIVE_ARM_SOCKET}" ]] && break
+    if ! kill -0 "${native_pid}" 2>/dev/null; then
+      echo "Native arm worker exited during startup." >&2
+      exit 1
+    fi
+    sleep 0.05
+  done
+  if [[ ! -S "${NATIVE_ARM_SOCKET}" ]]; then
+    echo "Native arm worker did not create ${NATIVE_ARM_SOCKET}." >&2
+    exit 1
+  fi
+fi
+
 source "${ROOT_DIR}/scripts/shared/ros-env.sh"
 g1_source_ros "${ROOT_DIR}" foxy
 g1_configure_cyclonedds \
@@ -95,18 +161,6 @@ pkill -TERM -u "$(id -u)" -f \
 export ROS2CLI_NO_DAEMON=1
 
 export PYTHONPATH="${ROOT_DIR}:${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
-UNITREE_SDK_PYTHONPATH="${UNITREE_SDK_PYTHONPATH:-${HOME}/unitree_sdk2_python}"
-if [[ ! -f "${UNITREE_SDK_PYTHONPATH}/unitree_sdk2py/__init__.py" ]]; then
-  echo "Native Unitree SDK2 was not found at ${UNITREE_SDK_PYTHONPATH}." >&2
-  exit 1
-fi
-export PYTHONPATH="${UNITREE_SDK_PYTHONPATH}:${PYTHONPATH}"
-UNITREE_SDK_DDS_LIBRARY_DIR="${UNITREE_SDK_DDS_LIBRARY_DIR:-/usr/local/lib}"
-if [[ ! -f "${UNITREE_SDK_DDS_LIBRARY_DIR}/libddsc.so.0" ]]; then
-  echo "Native Unitree CycloneDDS library not found: ${UNITREE_SDK_DDS_LIBRARY_DIR}/libddsc.so.0" >&2
-  exit 1
-fi
-export LD_LIBRARY_PATH="${UNITREE_SDK_DDS_LIBRARY_DIR}${LD_LIBRARY_PATH:+:${LD_LIBRARY_PATH}}"
 
 node_args=(
   --control-mode "${CONTROL_MODE}"
@@ -131,6 +185,9 @@ fi
 if [[ -n "${DEPTH_SERIAL}" ]]; then
   node_args+=(--depth-serial "${DEPTH_SERIAL}")
 fi
+if [[ "${DISABLE_DEPTH}" == "1" ]]; then
+  node_args+=(--disable-depth)
+fi
 if [[ "${ALLOW_MOVEMENT}" == "1" ]]; then
   node_args+=(--allow-movement --expected-motion-mode "${EXPECTED_MOTION_MODE}")
 fi
@@ -141,16 +198,6 @@ if [[ "${RGB_MODE}" == "realsense" ]]; then
     --realsense-rgb-fps "${REALSENSE_RGB_FPS}"
   )
 fi
-
-pids=()
-cleanup() {
-  local pid
-  for pid in "${pids[@]:-}"; do
-    kill "${pid}" 2>/dev/null || true
-  done
-  wait "${pids[@]:-}" 2>/dev/null || true
-}
-trap cleanup EXIT INT TERM
 
 case "${RGB_MODE}" in
   unitree)
@@ -178,10 +225,40 @@ case "${RGB_MODE}" in
     ;;
 esac
 
-"${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${node_args[@]}" &
-pids+=("$!")
+if [[ "${CONTROL_MODE}" == "tracking" ]]; then
+  "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/arm_ros_relay.py" \
+    --socket "${NATIVE_ARM_SOCKET}" &
+  pids+=("$!")
+  if [[ "${DISABLE_DEPTH}" != "1" ]]; then
+    depth_args=(
+      --depth-only
+      --depth-source "${DEPTH_SOURCE}"
+      --ros-image-topic "${ROS_IMAGE_TOPIC}"
+      --ros-camera-info-topic "${ROS_CAMERA_INFO_TOPIC}"
+      --ros-depth-scale "${ROS_DEPTH_SCALE}"
+      --depth-width "${DEPTH_WIDTH}"
+      --depth-height "${DEPTH_HEIGHT}"
+      --depth-capture-fps "${DEPTH_CAPTURE_FPS}"
+      --depth-publish-fps "${DEPTH_PUBLISH_FPS}"
+    )
+    if [[ -n "${CALIBRATION}" ]]; then
+      depth_args+=(--calibration "${CALIBRATION}")
+    fi
+    if [[ -n "${DEPTH_SERIAL}" ]]; then
+      depth_args+=(--depth-serial "${DEPTH_SERIAL}")
+    fi
+    "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${depth_args[@]}" &
+    pids+=("$!")
+  fi
+else
+  "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${node_args[@]}" &
+  pids+=("$!")
+fi
 
 echo "Robot ROS 2 node started control_mode=${CONTROL_MODE} movement_permitted=${ALLOW_MOVEMENT} initial_state=DISARMED."
+if [[ "${CONTROL_MODE}" == "tracking" ]]; then
+  echo "Arm transport split: XR Python native worker ${NATIVE_ARM_SOCKET}; Foxy ROS JSON relay."
+fi
 if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
   echo "Arm commissioning enabled: manual ROS commands are allowed but remain disarmed until a client enables a session."
 fi

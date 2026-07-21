@@ -125,9 +125,6 @@ def build_parser() -> argparse.ArgumentParser:
 def _imports() -> dict[str, Any]:
     try:
         from g1_control_interfaces.msg import (
-            ArmManualRequest,
-            ArmManualResponse,
-            ArmSideTarget,
             CommissioningRequest,
             CommissioningResponse,
             CommissioningState,
@@ -146,9 +143,6 @@ def _imports() -> dict[str, Any]:
             "ROS 2 project interfaces are unavailable; source ros_ws/install/setup.bash"
         ) from exc
     return {
-        "ArmManualRequest": ArmManualRequest,
-        "ArmManualResponse": ArmManualResponse,
-        "ArmSideTarget": ArmSideTarget,
         "CommissioningState": CommissioningState,
         "CommissioningRequest": CommissioningRequest,
         "CommissioningResponse": CommissioningResponse,

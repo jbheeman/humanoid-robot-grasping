@@ -113,19 +113,24 @@ class UnitreeArmHardware:
         interface = self.interface.split(",", 1)[0].strip()
         if not interface:
             raise ValueError("native Unitree interface must not be empty")
-        ChannelFactoryInitialize(self.domain_id, interface)
+        # Match xr_teleoperate's real-robot initialization exactly; the
+        # keyword form selects the intended native DDS NIC on the stock G1.
+        ChannelFactoryInitialize(self.domain_id, networkInterface=interface)
         publisher = ChannelPublisher(ARM_COMMAND_TOPIC, LowCmd_)
         publisher.Init()
         subscriber = ChannelSubscriber(LOW_STATE_TOPIC, LowState_)
         subscriber.Init(self._low_state_callback, 10)
-        arm_subscriber = ChannelSubscriber(ARM_COMMAND_TOPIC, LowCmd_)
-        arm_subscriber.Init(self._arm_command_callback, 10)
         motion_client = MotionSwitcherClient()
         motion_client.SetTimeout(1.0)
         motion_client.Init()
         self._publisher = publisher
         self._subscriber = subscriber
-        self._arm_subscriber = arm_subscriber
+        # Do not subscribe to rt/arm_sdk here.  The stock G1 can have another
+        # arm producer with a firmware-specific DDS layout; decoding that
+        # foreign command frame crashes the SDK process.  XR Teleoperate uses
+        # the same safe pattern: publish arm_sdk and subscribe only to
+        # rt/lowstate.
+        self._arm_subscriber = None
         self._motion_client = motion_client
         self._low_cmd = unitree_hg_msg_dds__LowCmd_()
         self._crc = CRC()
