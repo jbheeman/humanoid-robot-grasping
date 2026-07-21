@@ -650,7 +650,6 @@ class GuardedVLAExecutor:
                 )
                 _state, _support, measured_q, calibration_id = self._motion_context(source)
             chunk = parse_action_chunk(proposed_action)
-            path_start = measured_q
             seed_q = measured_q
             planned: list[tuple[float, ...]] = []
             for waypoint in chunk[: self.max_waypoints]:
@@ -659,6 +658,7 @@ class GuardedVLAExecutor:
                     seed_q,
                     support_plane=None,
                     maximum_joint_step_rad=0.025,
+                    validate_path=False,
                 )
                 if not result.ok or result.q_rad is None:
                     raise VLAError(
@@ -666,11 +666,6 @@ class GuardedVLAExecutor:
                     )
                 seed_q = result.q_rad
                 planned.append(seed_q)
-            path_error = self.solver.validate_joint_path(
-                (path_start, *planned), support_plane=None
-            )
-            if path_error:
-                raise VLAError(f"direct VLA joint path rejected: {path_error}")
             self._execute_guarded_path(
                 planned,
                 calibration_id,

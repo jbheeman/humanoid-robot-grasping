@@ -1277,6 +1277,7 @@ class G1RightArmIK:
             3.0,
             3.0,
         ),
+        validate_path: bool = True,
     ) -> IKResult:
         """Compute one fast warm-started Cartesian servo step.
 
@@ -1344,6 +1345,13 @@ class G1RightArmIK:
             if candidate_error >= initial_error - 1e-5:
                 last_reason = "local_step_no_progress"
                 continue
+            if not validate_path:
+                return IKResult(
+                    True,
+                    tuple(float(value) for value in candidate),
+                    candidate_error,
+                    0.0,
+                )
             validation_error = self.validate_joint_path(
                 (last_q, candidate),
                 support_plane=support_plane,

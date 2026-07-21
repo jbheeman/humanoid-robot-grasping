@@ -256,12 +256,12 @@ def test_direct_vla_waypoint_skips_table_clearance_but_keeps_bounded_ik(
             assert tuple(q) == start
             assert kwargs["support_plane"] is None
             assert kwargs["maximum_joint_step_rad"] == 0.025
+            assert kwargs["validate_path"] is False
             return SimpleNamespace(ok=True, q_rad=moved, reason=None)
 
         def validate_joint_path(self, path: object, *, support_plane: object) -> None:
-            assert tuple(path) == (start, moved)
-            assert support_plane is None
-            return None
+            del path, support_plane
+            raise AssertionError("direct mode must not run path validation")
 
         def plan_guided_clearance(self, *args: object, **kwargs: object) -> object:
             del args, kwargs
