@@ -80,6 +80,26 @@ On the GB10:
 uv run g1 gb10 start --robot-host <ROBOT_IP> --dry-run
 ```
 
+### Make robot observations persistent
+
+For a lab G1 that should always provide camera and read-only ROS observations
+after boot, install the observation bridge once on the robot:
+
+```bash
+bash scripts/robot/install-observation-bridge-service.sh
+```
+
+It starts the native RGB relay and robot observation node for GB10
+`192.168.0.66`, remains disarmed, and never sets movement permission. After
+that one-time install, normal VLA preview on the GB10 needs only:
+
+```bash
+uv run g1 gb10 start --robot-host 192.168.0.213 --dry-run --vla-preview
+```
+
+To remove it later, run
+`bash scripts/robot/uninstall-observation-bridge-service.sh` on the robot.
+
 Open the single UI:
 
 ```text

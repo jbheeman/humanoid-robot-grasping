@@ -83,6 +83,19 @@ def test_robot_role_uses_lab_gb10_default() -> None:
     assert env["CLIENT_IP"] == "192.168.0.66"
 
 
+def test_gb10_vla_preview_configures_observation_only_launcher() -> None:
+    launcher, forwarded, env = _role_launcher(
+        ROUTES[("gb10", "start")],
+        ["--robot-host", "192.168.0.213", "--dry-run", "--vla-preview"],
+    )
+
+    assert launcher.name == "start.sh"
+    assert forwarded == []
+    assert env["ROBOT_HOST"] == "192.168.0.213"
+    assert env["EXECUTE"] == "0"
+    assert env["VLA_PREVIEW"] == "1"
+
+
 def test_removed_robot_http_flags_have_migration_error() -> None:
     with pytest.raises(SystemExit):
         _role_launcher(

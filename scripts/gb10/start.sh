@@ -54,7 +54,10 @@ TRAJECTORY_MODEL="${TRAJECTORY_MODEL:-${ROOT_DIR}/models/plushie_detector/trajec
 GB10_LAN_IP="${GB10_LAN_IP:-}"
 ARM_COMMISSIONING=0
 VISION_POINTING=0
-VLA_PREVIEW=0
+# This is also set by the unified `g1 gb10 start --vla-preview` wrapper.
+# Preserve an explicit environment value so that wrapper does not need to
+# forward an implementation-only script flag.
+VLA_PREVIEW="${VLA_PREVIEW:-0}"
 server_args=()
 
 while (($#)); do

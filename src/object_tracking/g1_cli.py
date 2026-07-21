@@ -269,6 +269,11 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
         parser.add_argument("--no-research-record", action="store_true")
         parser.add_argument("--dry-run", action="store_true")
         parser.add_argument("--execute", action="store_true")
+        parser.add_argument(
+            "--vla-preview",
+            action="store_true",
+            help="subscribe to live RGB and arm state without creating an arm command publisher",
+        )
         obsolete = {"--viewer-port", "--arm-url", "--arm-token-file", "--depth-ws"}
         used_obsolete = sorted(
             token.split("=", 1)[0] for token in args if token.split("=", 1)[0] in obsolete
@@ -294,6 +299,7 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
             "RESEARCH_NOTES": namespace.research_notes,
             "RESEARCH_RECORD": "0" if namespace.no_research_record else None,
             "EXECUTE": "1" if namespace.execute else ("0" if namespace.dry_run else None),
+            "VLA_PREVIEW": "1" if namespace.vla_preview else None,
         }
     elif route.target == "scripts/local/start.sh":
         parser.add_argument("--source", choices=("camera", "opencv", "realsense", "file"), default="camera")
