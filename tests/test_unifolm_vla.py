@@ -230,6 +230,7 @@ def test_guarded_executor_clears_then_streams_bounded_vla_waypoint(monkeypatch: 
     executor.calibrated_support = support
     executor.period_s = 0.1
     executor.max_waypoints = 1
+    executor.direct_vla_waypoint = False
     executor.transport = Transport()
     monkeypatch.setattr("object_tracking.unifolm_vla_cli.time.sleep", lambda _: None)
 
@@ -241,3 +242,82 @@ def test_guarded_executor_clears_then_streams_bounded_vla_waypoint(monkeypatch: 
         "vla_clearance_complete",
         "vla_smoke_test_complete",
     ]
+
+
+def test_direct_vla_waypoint_skips_table_clearance_but_keeps_bounded_ik(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    start = (0.0,) * 7
+    moved = (0.01,) * 7
+
+    class Solver:
+        def solve_local_translation(self, target: object, q: object, **kwargs: object) -> object:
+            del target
+            assert tuple(q) == start
+            assert kwargs["support_plane"] is None
+            assert kwargs["maximum_joint_step_rad"] == 0.025
+            return SimpleNamespace(ok=True, q_rad=moved, reason=None)
+
+        def validate_joint_path(self, path: object, *, support_plane: object) -> None:
+            assert tuple(path) == (start, moved)
+            assert support_plane is None
+            return None
+
+        def plan_guided_clearance(self, *args: object, **kwargs: object) -> object:
+            del args, kwargs
+            raise AssertionError("direct mode must not plan table/hip clearance")
+
+    class Transport:
+        def __init__(self) -> None:
+            self.targets = []
+            self.state = "DISARMED"
+
+        def enable_arm(self, session: str, calibration: str) -> dict[str, object]:
+            del session, calibration
+            self.state = "ARMED"
+            return {"ok": True}
+
+        def heartbeat_arm(self, session: str) -> dict[str, object]:
+            del session
+            return {"ok": True}
+
+        def arm_state(self) -> dict[str, object]:
+            return {"state": self.state}
+
+        def publish_target(self, *args: object, **kwargs: object) -> None:
+            del kwargs
+            self.targets.append(tuple(args[3]))
+
+        def stop_arm(self, reason: str) -> None:
+            assert reason == "direct_vla_smoke_test_complete"
+            self.state = "DISARMED"
+
+    source = LiveObservationSource.__new__(LiveObservationSource)
+    source.last_state = {
+        "calibration_id": "calibration",
+        "measured_arm_q": [0.0] * 14,
+        "visualization": {},
+    }
+    action = np.asarray(
+        [compose_pose23(np.eye(4), np.eye(4), right_gripper=4.0, left_gripper=4.0, waist_yaw_roll_pitch=(0, 0, 0))]
+    )
+    executor = GuardedVLAExecutor.__new__(GuardedVLAExecutor)
+    executor.solver = Solver()
+    executor.calibration_id = "calibration"
+    executor.calibrated_support = SimpleNamespace(
+        certified_edges=("u_min", "u_max", "v_min", "v_max")
+    )
+    executor.period_s = 0.1
+    executor.max_waypoints = 1
+    executor.direct_vla_waypoint = True
+    executor.transport = Transport()
+    monkeypatch.setattr("object_tracking.unifolm_vla_cli.time.sleep", lambda _: None)
+
+    assert executor.execute(
+        source,
+        SimpleNamespace(),
+        "raise the right hand",
+        proposed_action=action,
+        proposal_inference_s=0.2,
+    ) == (1, 0.2)
+    assert executor.transport.targets == [moved]

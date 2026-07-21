@@ -13,6 +13,11 @@ if [[ ! -d "${VLA_ROOT}/src/unifolm_vla" ]]; then
   exit 1
 fi
 
+source "${ROOT_DIR}/scripts/shared/run-logging.sh"
+export G1_LOG_CONSOLE_MODE="${G1_LOG_CONSOLE_MODE:-full}"
+g1_begin_run_log "${ROOT_DIR}" "vla/chat"
+g1_log_command "$0" "$@"
+
 export PYTHONPATH="${ROOT_DIR}/src:${VLA_ROOT}/src${PYTHONPATH:+:${PYTHONPATH}}"
 export TOKENIZERS_PARALLELISM=false
 ROBOT_HOST="${ROBOT_HOST:-192.168.0.213}"

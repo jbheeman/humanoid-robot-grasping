@@ -493,6 +493,7 @@ class GuardedVLAExecutor:
         *,
         period_s: float,
         max_waypoints: int,
+        direct_vla_waypoint: bool = False,
     ) -> None:
         self.solver = G1RightArmIK(urdf)
         try:
@@ -518,6 +519,7 @@ class GuardedVLAExecutor:
         )
         self.period_s = period_s
         self.max_waypoints = max_waypoints
+        self.direct_vla_waypoint = direct_vla_waypoint
         self.transport = RosTrackingTransport(service_timeout_s=3.0)
         self.transport.start()
 
@@ -635,8 +637,47 @@ class GuardedVLAExecutor:
         source: LiveObservationSource,
         runtime: UnifoLMRuntime,
         instruction: str,
+        *,
+        proposed_action: np.ndarray | None = None,
+        proposal_inference_s: float | None = None,
     ) -> tuple[int, float]:
         _state, support, measured_q, calibration_id = self._motion_context(source)
+        if self.direct_vla_waypoint:
+            if proposed_action is None or proposal_inference_s is None:
+                observation = source.snapshot()
+                proposed_action, proposal_inference_s = runtime.predict(
+                    observation, instruction
+                )
+                _state, _support, measured_q, calibration_id = self._motion_context(source)
+            chunk = parse_action_chunk(proposed_action)
+            path_start = measured_q
+            seed_q = measured_q
+            planned: list[tuple[float, ...]] = []
+            for waypoint in chunk[: self.max_waypoints]:
+                result = self.solver.solve_local_translation(
+                    waypoint.right_transform(),
+                    seed_q,
+                    support_plane=None,
+                    maximum_joint_step_rad=0.025,
+                )
+                if not result.ok or result.q_rad is None:
+                    raise VLAError(
+                        f"direct VLA waypoint rejected by bounded IK: {result.reason}"
+                    )
+                seed_q = result.q_rad
+                planned.append(seed_q)
+            path_error = self.solver.validate_joint_path(
+                (path_start, *planned), support_plane=None
+            )
+            if path_error:
+                raise VLAError(f"direct VLA joint path rejected: {path_error}")
+            self._execute_guarded_path(
+                planned,
+                calibration_id,
+                stop_reason="direct_vla_smoke_test_complete",
+            )
+            return len(planned), float(proposal_inference_s)
+
         clearance = self.solver.plan_guided_clearance(measured_q, support_plane=support)
         if not clearance.ok or not clearance.q_path:
             raise VLAError(f"could not plan 5 cm table/hip clearance: {clearance.reason}")
@@ -706,6 +747,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--no-color", action="store_true")
     parser.add_argument("--execute", action="store_true", help="run a guarded right-arm smoke test")
+    parser.add_argument(
+        "--direct-vla-waypoint",
+        action="store_true",
+        help=(
+            "skip table/hip pre-clearance and table-plane validation; retain bounded IK, "
+            "joint limits, self-collision checks, deadman, and stop ramp"
+        ),
+    )
     parser.add_argument("--max-waypoints", type=int, default=3)
     parser.add_argument("--motion-period", type=float, default=0.15)
     return parser
@@ -759,7 +808,17 @@ def _status(
     print(f"model       {model}; checkpoint {checkpoint}")
     print(f"profile     {runtime.profile}")
     print(f"observation {observation_text}")
-    execution = _color("guarded right arm", GREEN, color) if executor else _color("locked", AMBER, color)
+    execution = (
+        _color(
+            "direct bounded VLA waypoint"
+            if executor.direct_vla_waypoint
+            else "guarded right arm",
+            GREEN,
+            color,
+        )
+        if executor
+        else _color("locked", AMBER, color)
+    )
     print(f"execution   {execution}")
 
 
@@ -826,11 +885,23 @@ def _run_prompt(
     else:
         if not isinstance(source, LiveObservationSource):
             raise VLAError("execution requires fresh live RGB and robot state")
-        print(_color("planning clearance and guarded right-arm motion…", DIM, color), flush=True)
-        moved, reinference_s = executor.execute(source, runtime, prompt)
+        planning_text = (
+            "planning one direct bounded right-arm waypoint…"
+            if executor.direct_vla_waypoint
+            else "planning clearance and guarded right-arm motion…"
+        )
+        print(_color(planning_text, DIM, color), flush=True)
+        moved, execution_inference_s = executor.execute(
+            source,
+            runtime,
+            prompt,
+            proposed_action=action,
+            proposal_inference_s=elapsed,
+        )
+        inference_label = "inference" if executor.direct_vla_waypoint else "re-inference"
         print(
             f"execution    {_color('complete', GREEN, color)} · "
-            f"{moved} bounded VLA waypoints · {reinference_s:.2f}s re-inference"
+            f"{moved} bounded VLA waypoints · {execution_inference_s:.2f}s {inference_label}"
         )
 
 
@@ -840,6 +911,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     runtime = UnifoLMRuntime(args.checkpoint.expanduser(), args.vlm.expanduser(), args.profile)
     if args.execute and (args.vision_only or args.image):
         raise SystemExit("--execute requires live RGB and measured robot state")
+    if args.direct_vla_waypoint and not args.execute:
+        raise SystemExit("--direct-vla-waypoint requires --execute")
     if not 1 <= args.max_waypoints <= 5:
         raise SystemExit("--max-waypoints must be between 1 and 5")
     if not 0.1 <= args.motion_period <= 0.5:
@@ -879,6 +952,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             args.calibration,
             period_s=args.motion_period,
             max_waypoints=args.max_waypoints,
+            direct_vla_waypoint=args.direct_vla_waypoint,
         )
         if args.execute
         else None
@@ -925,8 +999,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             continue
         try:
             _run_prompt(source, runtime, value, color, executor)
-        except VLAError as exc:
-            print(_color(f"error: {exc}", RED, color))
+        except Exception as exc:
+            print(_color(f"error: {type(exc).__name__}: {exc}", RED, color))
         print()
     return 0
 
