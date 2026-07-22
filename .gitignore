@@ -6,6 +6,7 @@ __pycache__/
 *.py[cod]
 *.egg-info/
 .deps/
+.DS_Store
 .ros/
 ros_ws/build/
 ros_ws/install/
@@ -17,6 +18,7 @@ scripts/gb10/web/visual/
 *calibration*.yml
 
 # Local datasets, model artifacts, and training outputs.
+artifacts/
 data/
 models/
 *.pt

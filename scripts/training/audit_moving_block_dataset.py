@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import itertools
 import json
 from pathlib import Path
@@ -44,6 +45,7 @@ def main() -> int:
         errors.append(f"accepted_count={len(paths)} expected={args.expected_count}")
     records = []
     hashes = []
+    exact_hashes = []
     languages = set()
     for path in paths:
         with h5py.File(path, "r") as root:
@@ -53,14 +55,22 @@ def main() -> int:
             aliases = [h5py.h5o.get_info(root[f"observations/images/{name}"].id).addr for name in CAMERAS]
             first_contact = int(root.attrs.get("first_contact_frame", -1))
             image_index = first_contact if first_contact >= 0 else len(root["timestamp"]) // 2
-            hashes.append(average_hash(root["observations/images/cam_left_high"][image_index]))
+            contact_image = np.asarray(
+                root["observations/images/cam_left_high"][image_index]
+            )
+            hashes.append(average_hash(contact_image))
+            exact_hashes.append(hashlib.sha256(contact_image.tobytes()).hexdigest())
             checks = {
                 "contact": value(root, "contact_frames", 0) >= 1,
                 "clearance": value(root, "min_enabled_palm_clearance_m", -1) >= 0.05,
                 "left_force": value(root, "maximum_left_hand_object_force_n", float("inf")) <= 0.25,
                 "right_table_force": value(root, "maximum_right_hand_table_force_n", float("inf")) <= 0.50,
+                "contact_extension": value(root, "actual_palm_extension_at_contact_m", -1)
+                >= value(root, "minimum_contact_extension_m", 0.12),
                 "absolute_stop": value(root, "post_contact_path_speed_m_s", float("inf")) <= 0.035,
                 "relative_stop": value(root, "stop_fraction", -float("inf")) >= 0.70,
+                "postcontact_spin": value(root, "maximum_postcontact_spin_rad_s", float("inf"))
+                <= value(root, "maximum_allowed_postcontact_spin_rad_s", 0.35),
                 "on_table": not bool(root.attrs.get("table_exit", True)),
                 "single_physical_camera": len(set(aliases)) == 1,
             }
@@ -74,8 +84,12 @@ def main() -> int:
                     "camera": str(root.attrs["camera_variant"]),
                     "speed_m_s": value(root, "launch_speed_m_s", 0),
                     "heading_deg": value(root, "launch_heading_deg", 0),
+                    "object_initial_yaw_deg": value(root, "object_initial_yaw_deg", 0),
                     "contact_frames": int(root.attrs["contact_frames"]),
                     "post_contact_speed_m_s": value(root, "post_contact_path_speed_m_s", 0),
+                    "maximum_postcontact_spin_rad_s": value(
+                        root, "maximum_postcontact_spin_rad_s", float("inf")
+                    ),
                     "minimum_clearance_m": value(root, "min_enabled_palm_clearance_m", 0),
                     "checks": checks,
                 }
@@ -86,16 +100,39 @@ def main() -> int:
         int(np.count_nonzero(left != right))
         for left, right in itertools.combinations(hashes, 2)
     ]
-    exact_duplicate_pairs = sum(distance == 0 for distance in distances)
+    perceptual_hash_collision_pairs = sum(distance == 0 for distance in distances)
+    exact_duplicate_pairs = sum(
+        left == right for left, right in itertools.combinations(exact_hashes, 2)
+    )
     if exact_duplicate_pairs:
         errors.append(f"exact_duplicate_contact_views={exact_duplicate_pairs}")
+    heading_span_deg = None
+    yaw_bin_count = None
+    if records:
+        headings = [record["heading_deg"] for record in records]
+        heading_span_deg = max(headings) - min(headings)
+        yaw_bins = {
+            int(record["object_initial_yaw_deg"] % 360.0 // 30.0)
+            for record in records
+        }
+        yaw_bin_count = len(yaw_bins)
+        # Small one-off smoke runs should remain usable, while review and full
+        # datasets must demonstrate genuine path and appearance diversity.
+        if len(records) >= 12:
+            if heading_span_deg < 25.0:
+                errors.append(f"heading_span_deg={heading_span_deg:.3f} expected>=25")
+            if yaw_bin_count < 8:
+                errors.append(f"object_yaw_bins={yaw_bin_count} expected>=8")
     report = {
         "passed": not errors,
         "errors": errors,
         "accepted_count": len(paths),
         "languages": sorted(languages),
         "exact_duplicate_contact_views": exact_duplicate_pairs,
+        "perceptual_hash_collision_pairs": perceptual_hash_collision_pairs,
         "minimum_contact_view_hash_distance": min(distances) if distances else None,
+        "heading_span_deg": heading_span_deg,
+        "object_yaw_30deg_bin_count": yaw_bin_count,
         "records": records,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

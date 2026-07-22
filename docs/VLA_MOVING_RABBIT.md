@@ -11,10 +11,27 @@ connect to the physical G1.
 
 ## Review and generation gates
 
-The final 12-case visual review is stored under
-`artifacts/vla_dataset_review/moving_block_review_v10_fxaa`. Do not start the
-policy-ready or 480-episode run until those videos and contact frames are
-approved.
+The current 12-case visual review is stored under
+`artifacts/vla_dataset_review/moving_block_review_v19_locked_yaw_noaa`. Do not start
+the policy-ready or 480-episode run until those videos and contact frames are
+approved. The older `v10_fxaa` set is retained as failure documentation; it
+contains temporal rendering artifacts and must not be used for training.
+
+The generator assigns each episode an independent bunny body yaw and a bounded
+straight-line travel heading. A low-discrepancy yaw sequence prevents small
+batches from clustering around one orientation, while five balanced heading
+bins cover approximately -21 to +21 degrees. The entire path is translated as
+needed to keep its original speed/distance while retaining the launch point on
+the table and the intercept inside the right-arm workspace. Review/full-batch
+audits require at least 25 degrees of heading span and eight 30-degree yaw bins
+for any dataset of 12 or more episodes.
+
+The real demonstrations slide the weighted plush without changing its body
+orientation. Synthetic episodes therefore sample an independent initial bunny
+yaw and lock rotational degrees of freedom while leaving planar translation
+dynamic. This avoids a synthetic-only spin cue while retaining full viewpoint
+diversity. Rendering uses non-temporal AA mode `0`; temporal DLSS/TAA is
+forbidden because it leaves detached dark eye/nose trails on moving frames.
 
 After approval, start a 24-episode policy-ready gate with eight workers (four
 per GPU):
