@@ -34,16 +34,29 @@ class EpisodeWriter:
         self._root.attrs.update({"sim": True, "fps": contract.fps, **(metadata or {})})
         obs = self._root.create_group("observations")
         images = obs.create_group("images")
-        for name in CAMERA_NAMES:
-            images.create_dataset(
-                name,
-                shape=(0, contract.image_height, contract.image_width, 3),
-                maxshape=(None, contract.image_height, contract.image_width, 3),
-                chunks=(1, contract.image_height, contract.image_width, 3),
-                dtype="uint8",
-                compression="gzip",
-                compression_opts=1,
-            )
+        # This task has one physical head camera.  Preserve Unitree's frozen
+        # four-key HDF5 interface with hard links rather than materializing the
+        # same pixels four times.  Existing converters still see every camera
+        # path while HDF5 stores and appends only one dataset.
+        self._primary_camera = CAMERA_NAMES[0]
+        primary = images.create_dataset(
+            self._primary_camera,
+            shape=(0, contract.image_height, contract.image_width, 3),
+            maxshape=(None, contract.image_height, contract.image_width, 3),
+            chunks=(1, contract.image_height, contract.image_width, 3),
+            dtype="uint8",
+            compression="gzip",
+            compression_opts=1,
+        )
+        for name in CAMERA_NAMES[1:]:
+            images[name] = primary
+        self._root.attrs.update(
+            {
+                "physical_camera_count": 1,
+                "primary_camera": self._primary_camera,
+                "camera_aliases_are_hard_links": True,
+            }
+        )
         self._vector_dataset(obs, "qpos", contract.qpos_dim)
         self._vector_dataset(obs, "qvel", contract.qpos_dim)
         self._vector_dataset(obs, "ee_qpos", contract.ee_dim)
@@ -82,8 +95,10 @@ class EpisodeWriter:
         self._length += 1
         self._last_timestamp = sample.timestamp
 
-        for name in CAMERA_NAMES:
-            self._append(self._root[f"observations/images/{name}"], sample.images[name])
+        self._append(
+            self._root[f"observations/images/{self._primary_camera}"],
+            sample.images[self._primary_camera],
+        )
         for name in ("qpos", "qvel", "ee_qpos"):
             self._append(self._root[f"observations/{name}"], getattr(sample, name))
         self._append(self._root["action"], sample.action)
@@ -115,4 +130,3 @@ class EpisodeWriter:
 
     def __exit__(self, exc_type: Any, exc: Any, traceback: Any) -> None:
         self.close(success=False if exc_type else None)
-

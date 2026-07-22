@@ -1,0 +1,94 @@
+#usda 1.0
+(
+    defaultPrim = "RealDemoTable"
+    metersPerUnit = 1
+    upAxis = "Z"
+)
+
+def Xform "RealDemoTable" (kind = "component")
+{
+    def Scope "Looks"
+    {
+        def Material "BrushedInsert"
+        {
+            token outputs:surface.connect = </RealDemoTable/Looks/BrushedInsert/PreviewSurface.outputs:surface>
+            def Shader "PreviewSurface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.13, 0.145, 0.145)
+                float inputs:metallic = 0.08
+                float inputs:roughness = 0.62
+                token outputs:surface
+            }
+        }
+        def Material "BlackRail"
+        {
+            token outputs:surface.connect = </RealDemoTable/Looks/BlackRail/PreviewSurface.outputs:surface>
+            def Shader "PreviewSurface"
+            {
+                uniform token info:id = "UsdPreviewSurface"
+                color3f inputs:diffuseColor = (0.018, 0.021, 0.022)
+                float inputs:metallic = 0.18
+                float inputs:roughness = 0.38
+                token outputs:surface
+            }
+        }
+    }
+
+    def Cube "CollisionTop" (prepend apiSchemas = ["PhysicsCollisionAPI"])
+    {
+        double size = 1
+        float3 xformOp:scale = (0.90, 0.74, 0.030)
+        double3 xformOp:translate = (0, 0, 0.995)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+        token visibility = "invisible"
+    }
+    def Cube "GrayInsert" (prepend apiSchemas = ["MaterialBindingAPI"])
+    {
+        rel material:binding = </RealDemoTable/Looks/BrushedInsert>
+        double size = 1
+        float3 xformOp:scale = (0.82, 0.66, 0.012)
+        double3 xformOp:translate = (0, 0, 1.004)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+    def Cube "NearRail" (prepend apiSchemas = ["MaterialBindingAPI"])
+    {
+        rel material:binding = </RealDemoTable/Looks/BlackRail>
+        double size = 1
+        float3 xformOp:scale = (0.90, 0.040, 0.022)
+        double3 xformOp:translate = (0, 0.350, 1.006)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+    def Cube "FarRail" (prepend apiSchemas = ["MaterialBindingAPI"])
+    {
+        rel material:binding = </RealDemoTable/Looks/BlackRail>
+        double size = 1
+        float3 xformOp:scale = (0.90, 0.040, 0.022)
+        double3 xformOp:translate = (0, -0.350, 1.006)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+    def Cube "LeftRail" (prepend apiSchemas = ["MaterialBindingAPI"])
+    {
+        rel material:binding = </RealDemoTable/Looks/BlackRail>
+        double size = 1
+        float3 xformOp:scale = (0.040, 0.66, 0.022)
+        double3 xformOp:translate = (-0.430, 0, 1.006)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+    def Cube "RightRail" (prepend apiSchemas = ["MaterialBindingAPI"])
+    {
+        rel material:binding = </RealDemoTable/Looks/BlackRail>
+        double size = 1
+        float3 xformOp:scale = (0.040, 0.66, 0.022)
+        double3 xformOp:translate = (0.430, 0, 1.006)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+    def Cube "CenterRail" (prepend apiSchemas = ["MaterialBindingAPI"])
+    {
+        rel material:binding = </RealDemoTable/Looks/BlackRail>
+        double size = 1
+        float3 xformOp:scale = (0.025, 0.66, 0.016)
+        double3 xformOp:translate = (0.18, 0, 1.003)
+        uniform token[] xformOpOrder = ["xformOp:translate", "xformOp:scale"]
+    }
+}

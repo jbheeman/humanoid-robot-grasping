@@ -34,19 +34,21 @@ class G1BunnyStop(tfds.core.GeneratorBasedBuilder):
     VERSION = tfds.core.Version("1.0.0")
 
     def _info(self) -> tfds.core.DatasetInfo:
-        image = lambda doc: tfds.features.Image(  # noqa: E731
-            shape=(480, 640, 3), dtype=np.uint8, encoding_format="jpeg", doc=doc
-        )
         return self.dataset_info_from_configs(
             features=tfds.features.FeaturesDict(
                 {
                     "steps": tfds.features.Dataset(
                         {
                             "observation": {
-                                "image_left_top": image("Left head RGB observation."),
-                                "image_right_top": image("Right head RGB observation."),
-                                "image_left_wrist": image("Left wrist RGB observation."),
-                                "image_right_wrist": image("Right wrist RGB observation."),
+                                # The robot exposes one physical head camera.
+                                # Do not re-materialize HDF5 compatibility
+                                # aliases as four JPEG streams in TFDS.
+                                "image_left_top": tfds.features.Image(
+                                    shape=(480, 640, 3),
+                                    dtype=np.uint8,
+                                    encoding_format="jpeg",
+                                    doc="Physical head RGB observation.",
+                                ),
                                 "state": tfds.features.Tensor(shape=(19,), dtype=np.float32),
                                 "ee_state": tfds.features.Tensor(shape=(17,), dtype=np.float32),
                                 "ee_state_6d": tfds.features.Tensor(shape=(23,), dtype=np.float32),
@@ -76,19 +78,15 @@ class G1BunnyStop(tfds.core.GeneratorBasedBuilder):
         return {"train": self._generate_examples(paths)}
 
     def _generate_examples(self, paths):
-        cameras = {
-            "image_left_top": "cam_left_high",
-            "image_right_top": "cam_right_high",
-            "image_left_wrist": "cam_left_wrist",
-            "image_right_wrist": "cam_right_wrist",
-        }
         for path in paths:
             with h5py.File(path, "r") as root:
                 states = root["observations/qpos"][:]
                 ee_states = root["observations/ee_qpos"][:]
                 actions = root["action"][:]
                 ee_actions = root["ee_action"][:]
-                frames = {key: root[f"observations/images/{value}"][:] for key, value in cameras.items()}
+                frames = np.asarray(
+                    root["observations/images/cam_left_high"][:], dtype=np.uint8
+                )
                 raw_language = root["language_raw"][()]
                 language = raw_language.decode("utf-8") if isinstance(raw_language, bytes) else str(raw_language)
                 count = actions.shape[0]
@@ -99,7 +97,7 @@ class G1BunnyStop(tfds.core.GeneratorBasedBuilder):
                     steps.append(
                         {
                             "observation": {
-                                **{key: values[i] for key, values in frames.items()},
+                                "image_left_top": frames[i],
                                 "state": states[i],
                                 "ee_state": ee_states[i],
                                 "ee_state_6d": ee_states_6d[i],
