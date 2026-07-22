@@ -438,6 +438,14 @@ class UnifoLMRuntime:
         return np.where(mask, 0.5 * (values + 1) * (high - low + 1e-8) + low, values)
 
     def predict(self, observation: Observation, instruction: str) -> tuple[np.ndarray, float]:
+        return self.predict_window((observation,), instruction)
+
+    def predict_window(
+        self, observations: Sequence[Observation], instruction: str
+    ) -> tuple[np.ndarray, float]:
+        """Predict from one or more causal RGB observations, newest last."""
+        if not observations:
+            raise VLAError("VLA temporal window cannot be empty")
         self.load()
         assert self.model is not None and self.processor is not None and self.stats is not None
         try:
@@ -445,11 +453,14 @@ class UnifoLMRuntime:
             from qwen_vl_utils import process_vision_info
         except Exception as exc:  # pragma: no cover - GB10 dependency
             raise VLAError(f"UnifoLM inference dependency is unavailable: {exc}") from exc
-        image = observation.image.resize((224, 224), Image.Resampling.LANCZOS)
+        images = [
+            observation.image.resize((224, 224), Image.Resampling.LANCZOS)
+            for observation in observations
+        ]
         message = {
             "role": "user",
             "content": [
-                {"type": "image", "image": image},
+                *({"type": "image", "image": image} for image in images),
                 {"type": "text", "text": f'The task is "{instruction.strip().lower()}".'},
             ],
         }
@@ -463,7 +474,11 @@ class UnifoLMRuntime:
             padding=True,
             return_tensors="pt",
         )
-        state = self._normalize(np.asarray(observation.proprio, dtype=float), self.stats["proprio"])
+        # Images encode motion history; proprioception corresponds to the
+        # newest frame, matching the RLDS window transform used for training.
+        state = self._normalize(
+            np.asarray(observations[-1].proprio, dtype=float), self.stats["proprio"]
+        )
         batch["state"] = torch.from_numpy(state.astype(np.float32)).unsqueeze(0).unsqueeze(0).to("cuda")
         for key in ("input_ids", "attention_mask", "pixel_values", "image_grid_thw"):
             batch[key] = batch[key].to("cuda")
