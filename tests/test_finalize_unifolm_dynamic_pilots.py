@@ -8,6 +8,7 @@ def test_finalizer_is_event_driven_and_never_authorizes_robot() -> None:
     ).read_text()
 
     assert "wait_for_completion.py" in script
+    assert 'WAIT_PYTHON="${WAIT_PYTHON:-/usr/bin/python3}"' in script
     assert "sleep " not in script
     assert "physical_robot_authorized" in script
     assert "evaluate_unifolm_dynamic_pilots.py" in script

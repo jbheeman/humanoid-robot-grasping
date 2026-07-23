@@ -6,6 +6,7 @@ set -uo pipefail
 
 ROOT_DIR="${ROOT_DIR:-/home/aarav/Documents/g1-bunny-vla-workspace}"
 TRAIN_ENV="${TRAIN_ENV:-/home/aarav/miniconda3/envs/g1-unifolm-train}"
+WAIT_PYTHON="${WAIT_PYTHON:-/usr/bin/python3}"
 RUNNER_PID="${1:?usage: finalize_unifolm_dynamic_pilots.sh RUNNER_PID}"
 TRAIN_STATUS="${ROOT_DIR}/runs/unifolm_plush_touch/dynamic-pilots.status.json"
 WAIT_STATUS="${ROOT_DIR}/runs/diagnostics/dynamic_pilots/TRAINING_WAIT.json"
@@ -16,7 +17,7 @@ mkdir -p "$(dirname "${FINAL_STATUS}")" "$(dirname "${EVAL_LOG}")"
 rm -f "${FINAL_STATUS}"
 
 wait_rc=0
-"${TRAIN_ENV}/bin/python" "${ROOT_DIR}/scripts/wait_for_completion.py" \
+"${WAIT_PYTHON}" "${ROOT_DIR}/scripts/wait_for_completion.py" \
     --pid "${RUNNER_PID}" \
     --marker "${TRAIN_STATUS}" \
     --output "${WAIT_STATUS}" || wait_rc=$?
