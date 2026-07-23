@@ -1,4 +1,9 @@
-from scripts.training.evaluate_unifolm_dynamic_pilots import score
+import pytest
+
+from scripts.training.evaluate_unifolm_dynamic_pilots import (
+    assign_variants_to_gpus,
+    score,
+)
 
 
 def test_dynamic_pilot_score_prioritizes_real_validation() -> None:
@@ -9,3 +14,23 @@ def test_dynamic_pilot_score_prioritizes_real_validation() -> None:
         }
     }
     assert score(report) == 0.05
+
+
+def test_dynamic_pilots_are_balanced_across_two_gpus() -> None:
+    queues = assign_variants_to_gpus(
+        ("t1-all23", "t1-right9", "t5s3-right9"),
+        (0, 1),
+    )
+
+    assert queues == {
+        0: ("t5s3-right9",),
+        1: ("t1-all23", "t1-right9"),
+    }
+
+
+@pytest.mark.parametrize("gpus", ((), (0, 0), (-1, 0)))
+def test_dynamic_pilot_gpu_assignments_reject_invalid_indices(
+    gpus: tuple[int, ...],
+) -> None:
+    with pytest.raises(ValueError):
+        assign_variants_to_gpus(("t1-all23",), gpus)

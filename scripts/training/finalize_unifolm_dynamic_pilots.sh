@@ -35,7 +35,7 @@ if [[ "${training_ok}" -eq 1 ]]; then
     CUDA_VISIBLE_DEVICES=0 "${TRAIN_ENV}/bin/python" \
         "${ROOT_DIR}/scripts/evaluate_unifolm_dynamic_pilots.py" \
         --root "${ROOT_DIR}" \
-        --gpu 0 > "${EVAL_LOG}" 2>&1 || eval_rc=$?
+        --gpus 0 1 > "${EVAL_LOG}" 2>&1 || eval_rc=$?
 fi
 
 temporary="${FINAL_STATUS}.partial"
