@@ -149,6 +149,11 @@ def main() -> int:
     parser.add_argument("--stats", type=Path, required=True)
     parser.add_argument("--split", choices=("val", "test"), default="val")
     parser.add_argument("--seed", type=int, default=20260723)
+    parser.add_argument(
+        "--skip-visual-perturbations",
+        action="store_true",
+        help="run only original-image inference for fast calibration diagnostics",
+    )
     args = parser.parse_args()
 
     os.environ["G1_PLUSH_SHARED_STATS"] = str(args.stats.resolve())
@@ -247,6 +252,7 @@ def main() -> int:
         occluded_predictions: list[np.ndarray] = []
         normalized_saturation: list[float] = []
         valid_masks: list[np.ndarray] = []
+        relative_predictions: list[np.ndarray] = []
 
         for index, cpu_batch in enumerate(batches):
             batch = to_device(cpu_batch, device)
@@ -283,33 +289,45 @@ def main() -> int:
                     dtype=np.float32,
                 )
 
-            shuffled = dict(batch)
-            donor = batches[(index + 1) % len(batches)]
-            for key in ("pixel_values", "image_grid_thw"):
-                if key in donor:
-                    shuffled[key] = donor[key].to(device)
-            torch.manual_seed(args.seed + index)
-            with torch.inference_mode():
-                shuffled_normalized = np.asarray(
-                    model.predict_action(qwen_inputs=shuffled)["normalized_actions"],
-                    dtype=np.float32,
-                )
+            if args.skip_visual_perturbations:
+                shuffled_normalized = original_normalized
+                occluded_normalized = original_normalized
+            else:
+                shuffled = dict(batch)
+                donor = batches[(index + 1) % len(batches)]
+                for key in ("pixel_values", "image_grid_thw"):
+                    if key in donor:
+                        shuffled[key] = donor[key].to(device)
+                torch.manual_seed(args.seed + index)
+                with torch.inference_mode():
+                    shuffled_normalized = np.asarray(
+                        model.predict_action(qwen_inputs=shuffled)[
+                            "normalized_actions"
+                        ],
+                        dtype=np.float32,
+                    )
 
-            occluded = dict(batch)
-            if "pixel_values" in occluded:
-                occluded["pixel_values"] = torch.zeros_like(occluded["pixel_values"])
-            torch.manual_seed(args.seed + index)
-            with torch.inference_mode():
-                occluded_normalized = np.asarray(
-                    model.predict_action(qwen_inputs=occluded)["normalized_actions"],
-                    dtype=np.float32,
-                )
+                occluded = dict(batch)
+                if "pixel_values" in occluded:
+                    occluded["pixel_values"] = torch.zeros_like(
+                        occluded["pixel_values"]
+                    )
+                torch.manual_seed(args.seed + index)
+                with torch.inference_mode():
+                    occluded_normalized = np.asarray(
+                        model.predict_action(qwen_inputs=occluded)[
+                            "normalized_actions"
+                        ],
+                        dtype=np.float32,
+                    )
 
             targets.append(target[0, :, RIGHT_XYZ])
             valid_masks.append(
                 batch["action_valid_mask"].bool().cpu().numpy()[0]
             )
             original = denormalize(original_normalized, action_stats)
+            if action_representation == RELATIVE_POSE23_V1:
+                relative_predictions.append(original[0, :, RIGHT_XYZ].copy())
             shuffled_action = denormalize(shuffled_normalized, action_stats)
             occluded_action = denormalize(occluded_normalized, action_stats)
             if action_representation == RELATIVE_POSE23_V1:
@@ -421,6 +439,44 @@ def main() -> int:
             "worst_sample_indices": worst.tolist(),
             "worst_sample_ade_m": per_sample_model_error[worst].tolist(),
         }
+        if action_representation == RELATIVE_POSE23_V1:
+            relative_prediction_values = np.stack(relative_predictions)
+            target_relative_values = target_values - current_values
+            gain_sweep = {}
+            for gain in np.linspace(0.0, 1.25, 26):
+                calibrated = current_values + float(gain) * relative_prediction_values
+                calibrated_errors = np.linalg.norm(
+                    calibrated - target_values,
+                    axis=-1,
+                )
+                gain_sweep[f"{gain:.2f}"] = summarize_errors(
+                    calibrated_errors,
+                    valid,
+                )
+            best_gain = min(
+                gain_sweep,
+                key=lambda item: gain_sweep[item]["ade_m"],
+            )
+            predicted_valid = relative_prediction_values[valid]
+            target_relative_valid = target_relative_values[valid]
+            denominator = np.linalg.norm(
+                predicted_valid, axis=-1
+            ) * np.linalg.norm(target_relative_valid, axis=-1)
+            cosine = np.divide(
+                np.sum(predicted_valid * target_relative_valid, axis=-1),
+                denominator,
+                out=np.zeros_like(denominator),
+                where=denominator > 1e-8,
+            )
+            report["sources"][source]["relative_translation_gain_sweep"] = {
+                "best_gain": float(best_gain),
+                "best": gain_sweep[best_gain],
+                "gain_zero_ade_m": gain_sweep["0.00"]["ade_m"],
+                "gain_one_ade_m": gain_sweep["1.00"]["ade_m"],
+                "direction_cosine_mean": float(np.mean(cosine)),
+                "direction_cosine_positive_fraction": float(np.mean(cosine > 0)),
+                "grid": gain_sweep,
+            }
 
     failures = [
         source
