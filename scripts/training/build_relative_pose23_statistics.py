@@ -25,6 +25,11 @@ from object_tracking.unifolm_relative_actions import (
     reconstruct_anchored_pose23,
     to_anchored_relative_pose23,
 )
+from object_tracking.vla_target_alignment import (
+    FUTURE_STATE_TARGET_V1,
+    align_achieved_future_state,
+    alignment_metadata,
+)
 
 
 def resolve_episode(root: Path, value: str) -> Path:
@@ -106,11 +111,22 @@ def main() -> int:
     parser.add_argument("--horizon", type=int, default=25)
     parser.add_argument("--real-weight", type=float, default=0.75)
     parser.add_argument("--roundtrip-samples", type=int, default=4096)
+    parser.add_argument(
+        "--future-state-lookahead",
+        type=int,
+        default=0,
+        help=(
+            "derive each action target from achieved state[t+N] instead of "
+            "the source-specific recorded command"
+        ),
+    )
     args = parser.parse_args()
     if args.horizon < 1:
         raise ValueError("--horizon must be positive")
     if not 0.0 < args.real_weight < 1.0:
         raise ValueError("--real-weight must be between zero and one")
+    if args.future_state_lookahead < 0:
+        raise ValueError("--future-state-lookahead cannot be negative")
 
     manifest_path = args.canonical_root / "CANONICAL_MANIFEST.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
@@ -130,7 +146,14 @@ def main() -> int:
         path = resolve_episode(args.canonical_root, entry["path"])
         with h5py.File(path, "r") as episode:
             states = pose17_to_pose23(np.asarray(episode["observations/ee_qpos"][:]))
-            targets = pose17_to_pose23(np.asarray(episode["ee_action"][:]))
+            if args.future_state_lookahead:
+                aligned = align_achieved_future_state(
+                    states, args.future_state_lookahead
+                )
+                states = aligned.observations
+                targets = aligned.targets
+            else:
+                targets = pose17_to_pose23(np.asarray(episode["ee_action"][:]))
         if states.shape != targets.shape or len(states) == 0:
             raise ValueError(f"{path}: inconsistent or empty state/action arrays")
 
@@ -209,6 +232,14 @@ def main() -> int:
             "padded_targets_in_statistics": False,
             "controlled_dimensions": list(range(9, 18)),
             "held_dimensions": [*range(0, 9), *range(18, 23)],
+            "target_alignment": (
+                alignment_metadata(args.future_state_lookahead)
+                if args.future_state_lookahead
+                else {
+                    "version": "recorded_command_v1",
+                    "source_independent": False,
+                }
+            ),
         },
         "provenance": {
             "train_only": True,
@@ -220,6 +251,11 @@ def main() -> int:
             "roundtrip_samples": sample_count,
             "roundtrip_max_abs_error": roundtrip_max,
             "per_horizon": per_horizon,
+            "future_state_target_version": (
+                FUTURE_STATE_TARGET_V1
+                if args.future_state_lookahead
+                else None
+            ),
         },
     }
     atomic_json(args.output, payload)
