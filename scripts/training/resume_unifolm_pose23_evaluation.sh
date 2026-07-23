@@ -15,4 +15,5 @@ exec "${TRAIN_ENV}/bin/python" \
     scripts/evaluate_unifolm_pose23_pilots.py \
     --root "${ROOT_DIR}" \
     --samples-per-source 96 \
+    --gpus 1 0 \
     --reuse-existing >"${LOG}" 2>&1

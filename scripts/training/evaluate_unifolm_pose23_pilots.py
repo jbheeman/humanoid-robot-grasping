@@ -47,6 +47,13 @@ def main() -> int:
     )
     parser.add_argument("--samples-per-source", type=int, default=96)
     parser.add_argument(
+        "--gpus",
+        type=int,
+        nargs=2,
+        default=(0, 1),
+        metavar=("ABSOLUTE_GPU", "RELATIVE_GPU"),
+    )
+    parser.add_argument(
         "--reuse-existing",
         action="store_true",
         help="reuse completed per-variant reports and evaluate only missing variants",
@@ -143,9 +150,11 @@ def main() -> int:
             "reused": False,
         }
 
+    if len(set(args.gpus)) != 2 or any(gpu < 0 for gpu in args.gpus):
+        raise ValueError("--gpus must contain two distinct non-negative indices")
     assignments = {
-        0: ("absolute-t1-right9", "absolute-t5s3-right9"),
-        1: ("relative-t1-right9", "relative-t5s3-right9"),
+        args.gpus[0]: ("absolute-t1-right9", "absolute-t5s3-right9"),
+        args.gpus[1]: ("relative-t1-right9", "relative-t5s3-right9"),
     }
     records: list[dict[str, Any]] = []
     with ThreadPoolExecutor(max_workers=2) as executor:
