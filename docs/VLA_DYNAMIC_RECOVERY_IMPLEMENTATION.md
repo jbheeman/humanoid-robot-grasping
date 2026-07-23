@@ -123,3 +123,25 @@ remained worse than holding the current pose:
 
 The next model experiment therefore targets temporal motion information and
 action magnitude/normalization. It does not add a table-clearance loss.
+
+## Research basis
+
+- [VLSA / AEGIS](https://arxiv.org/abs/2512.11891) treats geometric safety as
+  a plug-and-play control-barrier layer around a VLA, rather than as another
+  behavior label.
+- [Path-Consistent Safety Filtering](https://arxiv.org/abs/2511.06385) argues
+  that a safety filter should preserve the policy's intended path where
+  possible. This is why the gateway applies a minimal plane-normal projection
+  before rejecting an unsafe chunk.
+- [Real-Time Execution of Action Chunking Flow Policies](https://arxiv.org/abs/2506.07339)
+  motivates asynchronous inference and receding-horizon chunk consumption for
+  inference-limited VLAs.
+- [SmolVLA](https://arxiv.org/abs/2506.01844) independently reports the value
+  of asynchronous inference for responsive robot control.
+- Unitree's [UniFoLM-VLA repository](https://github.com/unitreerobotics/unifolm-vla)
+  and [public G1 datasets](https://huggingface.co/unitreerobotics/datasets)
+  establish the 30 Hz imitation-learning contract used here. Their
+  [G1 Dex1 Conveyor Sorting dataset](https://huggingface.co/datasets/unitreerobotics/G1_Dex1_ConveyorSorting)
+  is a candidate dynamic-task auxiliary dataset, but it must pass action,
+  camera, rate, frame, and normalization round-trip tests before any
+  low-weight ablation.
