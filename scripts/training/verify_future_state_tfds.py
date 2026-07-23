@@ -27,11 +27,13 @@ def verify_episode(
             f"{source_path}: metadata {version}/{lookahead}, expected "
             f"{FUTURE_STATE_TARGET_V1}/{expected_lookahead}"
         )
-    steps = episode["steps"]
-    state = np.asarray(steps["observation"]["state"])
-    ee_state = np.asarray(steps["observation"]["ee_state"])
-    action = np.asarray(steps["action"])
-    ee_action = np.asarray(steps["ee_action"])
+    steps = list(tfds.as_numpy(episode["steps"]))
+    if not steps:
+        raise AssertionError(f"{source_path}: episode contains no steps")
+    state = np.stack([step["observation"]["state"] for step in steps])
+    ee_state = np.stack([step["observation"]["ee_state"] for step in steps])
+    action = np.stack([step["action"] for step in steps])
+    ee_action = np.stack([step["ee_action"] for step in steps])
     with h5py.File(source_path, "r") as source:
         source_state = np.asarray(source["observations/qpos"][:])
         source_ee_state = np.asarray(source["observations/ee_qpos"][:])
