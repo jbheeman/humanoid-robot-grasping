@@ -56,7 +56,7 @@ source /home/aarav/miniconda3/etc/profile.d/conda.sh
 conda activate unitree_sim_env_isaac50
 cd "$root"
 write_status false auditing 0
-python scripts/audit_moving_block_dataset.py "datasets/$run_id" \
+python scripts/training/audit_moving_block_dataset.py "datasets/$run_id" \
   --expected-count "$total" --output "artifacts/vla_dataset_review/$run_id/dataset_audit.json"
 free_gb=$(df -BG --output=avail "$root" | tail -1 | tr -dc '0-9')
 python - "$status" "$run_id" "$total" "$free_gb" <<'PY'

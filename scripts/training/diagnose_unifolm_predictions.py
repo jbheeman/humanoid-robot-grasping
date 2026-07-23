@@ -1,0 +1,352 @@
+#!/usr/bin/env python3
+"""Diagnose UniFoLM outputs against trivial baselines and visual perturbations."""
+
+from __future__ import annotations
+
+import argparse
+import gc
+import json
+import os
+from pathlib import Path
+import sys
+from typing import Any
+
+import numpy as np
+
+
+RIGHT_XYZ = slice(9, 12)
+
+
+def denormalize(values: np.ndarray, stats: dict[str, Any]) -> np.ndarray:
+    low = np.asarray(stats["q01"], dtype=np.float32)
+    high = np.asarray(stats["q99"], dtype=np.float32)
+    mask = np.asarray(stats.get("mask", np.ones_like(low)), dtype=bool)
+    return np.where(
+        mask,
+        (np.clip(values, -1.0, 1.0) + 1.0) * 0.5 * (high - low) + low,
+        values,
+    )
+
+
+def summarize_errors(errors: np.ndarray) -> dict[str, Any]:
+    values = np.asarray(errors, dtype=np.float64)
+    return {
+        "ade_m": float(np.mean(values)),
+        "fde_m": float(np.mean(values[:, -1])),
+        "median_m": float(np.median(values)),
+        "p95_m": float(np.percentile(values, 95)),
+        "per_horizon_mean_m": np.mean(values, axis=0).tolist(),
+    }
+
+
+def collate_one(example: dict, pad_token_id: int) -> dict:
+    import torch
+
+    input_ids = example["input_ids"].squeeze(0)
+    output = {
+        "input_ids": input_ids.unsqueeze(0),
+        "attention_mask": input_ids.ne(pad_token_id).unsqueeze(0),
+        "action": torch.as_tensor(np.stack([example["actions"]])),
+    }
+    proprio = np.stack([example["proprio"]])
+    if proprio.ndim == 3 and proprio.shape[1] == 1:
+        proprio = proprio[:, 0, :]
+    output["state"] = torch.as_tensor(proprio)
+    for key in ("pixel_values", "image_grid_thw"):
+        if key in example:
+            output[key] = example[key]
+    return output
+
+
+def to_device(batch: dict, device: Any) -> dict:
+    import torch
+
+    return {
+        key: value.to(device) if torch.is_tensor(value) else value
+        for key, value in batch.items()
+    }
+
+
+def load_action_checkpoint(model: Any, checkpoint: Path) -> None:
+    import torch
+
+    state = torch.load(checkpoint, map_location="cpu", weights_only=True)
+    prefix = "action_model."
+    action_state = {
+        key[len(prefix) :]: value
+        for key, value in state.items()
+        if key.startswith(prefix)
+    }
+    if not action_state:
+        raise ValueError(f"{checkpoint} contains no action_model tensors")
+    model.action_model.load_state_dict(action_state, strict=True)
+    del state, action_state
+    gc.collect()
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--checkpoint", type=Path, required=True)
+    parser.add_argument("--output", type=Path, required=True)
+    parser.add_argument("--samples-per-source", type=int, default=48)
+    parser.add_argument("--config", type=Path, required=True)
+    parser.add_argument("--data-root", type=Path, required=True)
+    parser.add_argument("--stats", type=Path, required=True)
+    parser.add_argument("--split", choices=("val", "test"), default="val")
+    parser.add_argument("--seed", type=int, default=20260723)
+    args = parser.parse_args()
+
+    os.environ["G1_PLUSH_SHARED_STATS"] = str(args.stats.resolve())
+    repo_root = args.config.parents[2]
+    sys.path.insert(0, str((repo_root / "unifolm-vla" / "src").resolve()))
+
+    import tensorflow as tf
+    import torch
+    from omegaconf import OmegaConf
+    from unifolm_vla.model.framework import build_framework
+    from unifolm_vla.rlds_dataloader.datasets.datasets import (
+        RLDSBatchTransform,
+        RLDSDataset,
+    )
+
+    tf.random.set_seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+
+    cfg = OmegaConf.load(args.config)
+    window_size = int(cfg.datasets.vla_data.get("window_size", 1))
+    observation_stride = int(cfg.datasets.vla_data.get("observation_stride", 1))
+    model = build_framework(cfg)
+    load_action_checkpoint(model, args.checkpoint)
+    device = torch.device("cuda:0")
+    model.action_model.to(device=device, dtype=torch.bfloat16)
+    model.eval()
+    processor = model.qwen_vl_interface.processor
+    transform = RLDSBatchTransform(
+        processor=processor,
+        use_wrist_image=False,
+        use_proprio=True,
+    )
+    stats = json.loads(args.stats.read_text())
+    action_stats = stats["action"]
+    proprio_stats = stats["proprio"]
+
+    report: dict[str, Any] = {
+        "schema_version": 1,
+        "checkpoint": str(args.checkpoint.resolve()),
+        "split": args.split,
+        "samples_per_source": args.samples_per_source,
+        "seed": args.seed,
+        "window_size": window_size,
+        "observation_stride": observation_stride,
+        "history_span_s_at_30hz": (window_size - 1)
+        * observation_stride
+        / 30.0,
+        "sources": {},
+        "physical_robot_authorized": False,
+    }
+
+    for source in ("g1_plush_touch_real", "g1_plush_touch_sim"):
+        dataset = RLDSDataset(
+            args.data_root,
+            source,
+            transform,
+            resize_resolution=(224, 224),
+            shuffle_buffer_size=max(args.samples_per_source, 64),
+            train=False,
+            split_override=args.split,
+            image_aug=False,
+            window_size=window_size,
+            observation_stride=observation_stride,
+        )
+        iterator = iter(dataset)
+        batches = [
+            collate_one(next(iterator), processor.tokenizer.pad_token_id)
+            for _ in range(args.samples_per_source)
+        ]
+
+        targets: list[np.ndarray] = []
+        predictions: list[np.ndarray] = []
+        current_predictions: list[np.ndarray] = []
+        mean_predictions: list[np.ndarray] = []
+        shuffled_predictions: list[np.ndarray] = []
+        occluded_predictions: list[np.ndarray] = []
+        normalized_saturation: list[float] = []
+
+        for index, cpu_batch in enumerate(batches):
+            batch = to_device(cpu_batch, device)
+            target_normalized = batch["action"].float().cpu().numpy()
+            target = denormalize(target_normalized, action_stats)
+            state_normalized = batch["state"].float().cpu().numpy()
+            state = denormalize(state_normalized, proprio_stats)
+            current = np.repeat(
+                state[:, None, RIGHT_XYZ],
+                target.shape[1],
+                axis=1,
+            )
+            mean_action = np.asarray(action_stats["mean"], dtype=np.float32)
+            mean_prediction = np.broadcast_to(
+                mean_action[None, None, RIGHT_XYZ],
+                current.shape,
+            )
+
+            torch.manual_seed(args.seed + index)
+            with torch.inference_mode():
+                original_normalized = np.asarray(
+                    model.predict_action(qwen_inputs=batch)["normalized_actions"],
+                    dtype=np.float32,
+                )
+
+            shuffled = dict(batch)
+            donor = batches[(index + 1) % len(batches)]
+            for key in ("pixel_values", "image_grid_thw"):
+                if key in donor:
+                    shuffled[key] = donor[key].to(device)
+            torch.manual_seed(args.seed + index)
+            with torch.inference_mode():
+                shuffled_normalized = np.asarray(
+                    model.predict_action(qwen_inputs=shuffled)["normalized_actions"],
+                    dtype=np.float32,
+                )
+
+            occluded = dict(batch)
+            if "pixel_values" in occluded:
+                occluded["pixel_values"] = torch.zeros_like(occluded["pixel_values"])
+            torch.manual_seed(args.seed + index)
+            with torch.inference_mode():
+                occluded_normalized = np.asarray(
+                    model.predict_action(qwen_inputs=occluded)["normalized_actions"],
+                    dtype=np.float32,
+                )
+
+            targets.append(target[0, :, RIGHT_XYZ])
+            predictions.append(
+                denormalize(original_normalized, action_stats)[0, :, RIGHT_XYZ]
+            )
+            current_predictions.append(current[0])
+            mean_predictions.append(mean_prediction[0])
+            shuffled_predictions.append(
+                denormalize(shuffled_normalized, action_stats)[0, :, RIGHT_XYZ]
+            )
+            occluded_predictions.append(
+                denormalize(occluded_normalized, action_stats)[0, :, RIGHT_XYZ]
+            )
+            normalized_saturation.append(
+                float(np.mean(np.abs(original_normalized) >= 0.999))
+            )
+
+        target_values = np.stack(targets)
+        prediction_values = np.stack(predictions)
+        current_values = np.stack(current_predictions)
+        mean_values = np.stack(mean_predictions)
+        shuffled_values = np.stack(shuffled_predictions)
+        occluded_values = np.stack(occluded_predictions)
+        model_errors = np.linalg.norm(prediction_values - target_values, axis=-1)
+        current_errors = np.linalg.norm(current_values - target_values, axis=-1)
+        mean_errors = np.linalg.norm(mean_values - target_values, axis=-1)
+        signed_bias = prediction_values - target_values
+        image_shuffle_displacement = np.linalg.norm(
+            shuffled_values - prediction_values, axis=-1
+        )
+        occlusion_displacement = np.linalg.norm(
+            occluded_values - prediction_values, axis=-1
+        )
+        initial_state = current_values[:, 0, :]
+        predicted_displacement = np.linalg.norm(
+            prediction_values - initial_state[:, None, :],
+            axis=-1,
+        )
+        target_displacement = np.linalg.norm(
+            target_values - initial_state[:, None, :],
+            axis=-1,
+        )
+        mean_predicted_displacement = float(np.mean(predicted_displacement))
+        mean_target_displacement = float(np.mean(target_displacement))
+        displacement_ratio = mean_predicted_displacement / max(
+            mean_target_displacement,
+            1e-8,
+        )
+
+        model_summary = summarize_errors(model_errors)
+        baseline_summary = summarize_errors(current_errors)
+        mean_summary = summarize_errors(mean_errors)
+        best_baseline_ade = min(
+            baseline_summary["ade_m"],
+            mean_summary["ade_m"],
+        )
+        improvement = (best_baseline_ade - model_summary["ade_m"]) / best_baseline_ade
+        worst = np.argsort(np.mean(model_errors, axis=1))[::-1][:8]
+        report["sources"][source] = {
+            "model": model_summary,
+            "current_pose_baseline": baseline_summary,
+            "mean_action_baseline": mean_summary,
+            "best_baseline_ade_m": float(best_baseline_ade),
+            "relative_improvement_over_best_baseline": float(improvement),
+            "beats_best_baseline_by_10_percent": bool(improvement >= 0.10),
+            "right_xyz_signed_bias_m": np.mean(
+                signed_bias, axis=(0, 1)
+            ).tolist(),
+            "right_xyz_prediction_std_m": np.std(
+                prediction_values, axis=(0, 1)
+            ).tolist(),
+            "right_xyz_target_std_m": np.std(
+                target_values, axis=(0, 1)
+            ).tolist(),
+            "predicted_displacement_from_current_ade_m": mean_predicted_displacement,
+            "target_displacement_from_current_ade_m": mean_target_displacement,
+            "predicted_to_target_displacement_ratio": float(displacement_ratio),
+            "image_shuffle_prediction_change_m": {
+                "mean": float(np.mean(image_shuffle_displacement)),
+                "p95": float(np.percentile(image_shuffle_displacement, 95)),
+            },
+            "image_occlusion_prediction_change_m": {
+                "mean": float(np.mean(occlusion_displacement)),
+                "p95": float(np.percentile(occlusion_displacement, 95)),
+            },
+            "normalized_output_saturation_fraction": float(
+                np.mean(normalized_saturation)
+            ),
+            "diagnosis_flags": {
+                "visually_conditioned": bool(
+                    np.mean(image_shuffle_displacement) >= 0.01
+                    and np.mean(occlusion_displacement) >= 0.01
+                ),
+                "action_magnitude_over_2x_target": bool(displacement_ratio >= 2.0),
+                "normalized_output_saturation_over_5_percent": bool(
+                    np.mean(normalized_saturation) >= 0.05
+                ),
+                "right_xyz_bias_over_3cm": bool(
+                    np.linalg.norm(np.mean(signed_bias, axis=(0, 1))) >= 0.03
+                ),
+            },
+            "worst_sample_indices": worst.tolist(),
+            "worst_sample_ade_m": np.mean(model_errors[worst], axis=1).tolist(),
+        }
+
+    failures = [
+        source
+        for source, metrics in report["sources"].items()
+        if not metrics["beats_best_baseline_by_10_percent"]
+    ]
+    report["gate"] = {
+        "passed": not failures,
+        "criterion": (
+            "model right-XYZ ADE is at least 10% below both current-pose and "
+            "train-mean action baselines"
+        ),
+        "failed_sources": failures,
+    }
+    args.output.parent.mkdir(parents=True, exist_ok=True)
+    temporary = args.output.with_suffix(args.output.suffix + ".partial")
+    temporary.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n")
+    os.replace(temporary, args.output)
+    print(
+        "PREDICTION_DIAGNOSTIC_PASS" if not failures else "PREDICTION_DIAGNOSTIC_FAIL",
+        f"failed_sources={failures}",
+        f"output={args.output}",
+    )
+    return 0 if not failures else 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

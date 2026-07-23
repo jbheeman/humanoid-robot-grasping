@@ -334,6 +334,30 @@ class SupportRegion:
             return True
         return bool(float(self.signed_distance(point)) >= minimum_clearance_m)
 
+    def project_to_clearance(
+        self,
+        point: Iterable[float],
+        *,
+        minimum_clearance_m: float,
+    ) -> np.ndarray:
+        """Project a point onto the tabletop's safe half-space.
+
+        The projection is the minimum Euclidean correction for a plane: move
+        only along the plane normal.  It applies only over the certified table
+        footprint.  Full-link and swept-path clearance remain the IK layer's
+        responsibility; this projection keeps a low VLA end-effector proposal
+        useful instead of immediately rejecting it.
+        """
+
+        value = _vector3(point, "point")
+        if minimum_clearance_m < 0.0 or not np.isfinite(minimum_clearance_m):
+            raise ValueError("minimum clearance must be finite and non-negative")
+        if not self.requires_clearance(value):
+            return value.copy()
+        distance = float(self.signed_distance(value))
+        correction = max(0.0, minimum_clearance_m - distance)
+        return value + correction * self.plane.normal
+
     def to_dict(self) -> dict[str, object]:
         return {
             "normal": self.plane.normal.tolist(),

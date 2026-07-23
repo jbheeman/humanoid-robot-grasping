@@ -7,6 +7,7 @@ import numpy as np
 import pytest
 from PIL import Image
 
+from object_tracking.arm_tracking.geometry import Plane, SupportRegion
 from object_tracking.unifolm_vla import (
     compose_pose23,
     parse_action_chunk,
@@ -24,6 +25,15 @@ from object_tracking.unifolm_vla_cli import (
     _load_checkpoint_state,
     _profile_gripper_means,
 )
+
+
+def _flat_support() -> SupportRegion:
+    return SupportRegion.from_xy_bounds(
+        Plane((0.0, 0.0, 1.0), 0.0),
+        (-1.0, -1.0),
+        (1.0, 1.0),
+        certified_edges=("u_min", "u_max", "v_min", "v_max"),
+    )
 
 
 def test_rotation_6d_round_trip() -> None:
@@ -156,7 +166,7 @@ def test_xyz_display_has_explicit_sign_and_metric_units() -> None:
 
 
 def test_guarded_executor_clears_then_streams_bounded_vla_waypoint(monkeypatch: pytest.MonkeyPatch) -> None:
-    support = SimpleNamespace(certified_edges=("u_min", "u_max", "v_min", "v_max"))
+    support = _flat_support()
     start = (0.0,) * 7
     cleared = (0.01,) * 7
     moved = (0.02,) * 7
@@ -244,24 +254,25 @@ def test_guarded_executor_clears_then_streams_bounded_vla_waypoint(monkeypatch: 
     ]
 
 
-def test_direct_vla_waypoint_skips_table_clearance_but_keeps_bounded_ik(
+def test_direct_vla_waypoint_skips_prelift_but_keeps_geometric_ik(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    support = _flat_support()
     start = (0.0,) * 7
     moved = (0.01,) * 7
 
     class Solver:
         def solve_local_translation(self, target: object, q: object, **kwargs: object) -> object:
-            del target
+            np.testing.assert_allclose(np.asarray(target)[:3, 3], (0.0, 0.0, 0.05))
             assert tuple(q) == start
-            assert kwargs["support_plane"] is None
+            assert kwargs["support_plane"] is support
             assert kwargs["maximum_joint_step_rad"] == 0.025
-            assert kwargs["validate_path"] is False
             return SimpleNamespace(ok=True, q_rad=moved, reason=None)
 
         def validate_joint_path(self, path: object, *, support_plane: object) -> None:
-            del path, support_plane
-            raise AssertionError("direct mode must not run path validation")
+            assert tuple(path) == (start, moved)
+            assert support_plane is support
+            return None
 
         def plan_guided_clearance(self, *args: object, **kwargs: object) -> object:
             del args, kwargs
@@ -304,12 +315,12 @@ def test_direct_vla_waypoint_skips_table_clearance_but_keeps_bounded_ik(
     executor = GuardedVLAExecutor.__new__(GuardedVLAExecutor)
     executor.solver = Solver()
     executor.calibration_id = "calibration"
-    executor.calibrated_support = SimpleNamespace(
-        certified_edges=("u_min", "u_max", "v_min", "v_max")
-    )
+    executor.calibrated_support = support
     executor.period_s = 0.1
     executor.max_waypoints = 1
     executor.direct_vla_waypoint = True
+    executor.minimum_table_clearance_m = 0.05
+    executor.maximum_table_projection_m = 0.10
     executor.transport = Transport()
     monkeypatch.setattr("object_tracking.unifolm_vla_cli.time.sleep", lambda _: None)
 
@@ -321,3 +332,25 @@ def test_direct_vla_waypoint_skips_table_clearance_but_keeps_bounded_ik(
         proposal_inference_s=0.2,
     ) == (1, 0.2)
     assert executor.transport.targets == [moved]
+
+
+def test_executor_rejects_stale_live_table_geometry() -> None:
+    executor = GuardedVLAExecutor.__new__(GuardedVLAExecutor)
+    executor.calibration_id = "calibration"
+    executor.calibrated_support = _flat_support()
+    source = LiveObservationSource.__new__(LiveObservationSource)
+    source.last_state = {
+        "calibration_id": "calibration",
+        "measured_arm_q": [0.0] * 14,
+        "visualization": {
+            "support_plane": _flat_support().to_dict(),
+            "support_plane_status": {
+                "available": True,
+                "age_ms": 750.0,
+                "error": None,
+            },
+        },
+    }
+
+    with pytest.raises(VLAError, match="unavailable or stale"):
+        executor._motion_context(source)

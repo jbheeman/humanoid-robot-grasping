@@ -26,6 +26,7 @@ from object_tracking.arm_tracking.geometry import Plane, SupportRegion
 from object_tracking.arm_tracking.ik_solver import G1RightArmIK, default_urdf_path
 from object_tracking.ros2_tracking import RosTrackingTransport
 from object_tracking.unifolm_vla import compose_pose23, parse_action_chunk
+from object_tracking.vla_ik_gateway import GeometricIKGateway, IKGatewayConfig
 
 
 RESET = "\033[0m"
@@ -474,12 +475,21 @@ class UnifoLMRuntime:
             padding=True,
             return_tensors="pt",
         )
-        # Images encode motion history; proprioception corresponds to the
-        # newest frame, matching the RLDS window transform used for training.
-        state = self._normalize(
-            np.asarray(observations[-1].proprio, dtype=float), self.stats["proprio"]
+        # Preserve the exact RLDS temporal contract: one proprio state per
+        # causal image, oldest to newest. A one-frame model still receives
+        # [B,1,D], while a temporal model receives [B,T,D].
+        state_history = self._normalize(
+            np.asarray(
+                [observation.proprio for observation in observations],
+                dtype=float,
+            ),
+            self.stats["proprio"],
         )
-        batch["state"] = torch.from_numpy(state.astype(np.float32)).unsqueeze(0).unsqueeze(0).to("cuda")
+        batch["state"] = (
+            torch.from_numpy(state_history.astype(np.float32))
+            .unsqueeze(0)
+            .to("cuda")
+        )
         for key in ("input_ids", "attention_mask", "pixel_values", "image_grid_thw"):
             batch[key] = batch[key].to("cuda")
         started = time.monotonic()
@@ -499,7 +509,10 @@ class UnifoLMRuntime:
 
 
 class GuardedVLAExecutor:
-    """Execute only the right-arm translation through existing safety gates."""
+    """Execute right-arm VLA translations through a geometric IK safety layer."""
+
+    minimum_table_clearance_m = 0.05
+    maximum_table_projection_m = 0.10
 
     def __init__(
         self,
@@ -535,8 +548,29 @@ class GuardedVLAExecutor:
         self.period_s = period_s
         self.max_waypoints = max_waypoints
         self.direct_vla_waypoint = direct_vla_waypoint
+        self.gateway = GeometricIKGateway(
+            self.solver,
+            IKGatewayConfig(
+                minimum_table_clearance_m=self.minimum_table_clearance_m,
+                maximum_table_projection_m=self.maximum_table_projection_m,
+                maximum_waypoints=max_waypoints,
+            ),
+        )
         self.transport = RosTrackingTransport(service_timeout_s=3.0)
         self.transport.start()
+
+    def _gateway(self) -> GeometricIKGateway:
+        gateway = getattr(self, "gateway", None)
+        if gateway is None:
+            gateway = GeometricIKGateway(
+                self.solver,
+                IKGatewayConfig(
+                    minimum_table_clearance_m=self.minimum_table_clearance_m,
+                    maximum_table_projection_m=self.maximum_table_projection_m,
+                    maximum_waypoints=self.max_waypoints,
+                ),
+            )
+        return gateway
 
     def _motion_context(
         self, source: LiveObservationSource
@@ -548,6 +582,24 @@ class GuardedVLAExecutor:
         if not isinstance(visualization, dict):
             raise VLAError("robot visualization is unavailable")
         support_raw = visualization.get("support_plane")
+        support_status = visualization.get("support_plane_status")
+        if isinstance(support_status, dict):
+            try:
+                support_available = bool(support_status["available"])
+                support_age_ms = float(support_status["age_ms"])
+            except (KeyError, TypeError, ValueError) as exc:
+                raise VLAError("live tabletop status is malformed") from exc
+            if (
+                not support_available
+                or not np.isfinite(support_age_ms)
+                or support_age_ms > MAX_OBSERVATION_AGE_MS
+            ):
+                raise VLAError(
+                    "live tabletop estimate is unavailable or stale "
+                    f"(age={support_age_ms:.1f} ms)"
+                )
+            if not isinstance(support_raw, dict):
+                raise VLAError("live tabletop status has no support geometry")
         if isinstance(support_raw, dict):
             try:
                 support = SupportRegion.from_dict(support_raw)
@@ -665,28 +717,18 @@ class GuardedVLAExecutor:
                 )
                 _state, _support, measured_q, calibration_id = self._motion_context(source)
             chunk = parse_action_chunk(proposed_action)
-            seed_q = measured_q
-            planned: list[tuple[float, ...]] = []
-            for waypoint in chunk[: self.max_waypoints]:
-                result = self.solver.solve_local_translation(
-                    waypoint.right_transform(),
-                    seed_q,
-                    support_plane=None,
-                    maximum_joint_step_rad=0.025,
-                    validate_path=False,
+            gateway_result = self._gateway().plan(chunk, measured_q, support)
+            if not gateway_result.ok:
+                raise VLAError(
+                    f"direct VLA waypoint rejected by geometric IK: "
+                    f"{gateway_result.reason}"
                 )
-                if not result.ok or result.q_rad is None:
-                    raise VLAError(
-                        f"direct VLA waypoint rejected by bounded IK: {result.reason}"
-                    )
-                seed_q = result.q_rad
-                planned.append(seed_q)
             self._execute_guarded_path(
-                planned,
+                gateway_result.q_path,
                 calibration_id,
                 stop_reason="direct_vla_smoke_test_complete",
             )
-            return len(planned), float(proposal_inference_s)
+            return len(gateway_result.q_path), float(proposal_inference_s)
 
         clearance = self.solver.plan_guided_clearance(measured_q, support_plane=support)
         if not clearance.ok or not clearance.q_path:
@@ -707,30 +749,15 @@ class GuardedVLAExecutor:
         _state, live_support, seed_q, live_calibration = self._motion_context(source)
         if live_calibration != calibration_id:
             raise VLAError("calibration changed after clearance")
-        path_start = seed_q
-        planned: list[tuple[float, ...]] = []
-        for waypoint in chunk[: self.max_waypoints]:
-            result = self.solver.solve_local_translation(
-                waypoint.right_transform(),
-                seed_q,
-                support_plane=live_support,
-                maximum_joint_step_rad=0.025,
-            )
-            if not result.ok or result.q_rad is None:
-                raise VLAError(f"VLA waypoint rejected by guarded IK: {result.reason}")
-            seed_q = result.q_rad
-            planned.append(seed_q)
-        path_error = self.solver.validate_joint_path(
-            (path_start, *planned), support_plane=live_support
-        )
-        if path_error:
-            raise VLAError(f"VLA joint path rejected: {path_error}")
+        gateway_result = self._gateway().plan(chunk, seed_q, live_support)
+        if not gateway_result.ok:
+            raise VLAError(f"VLA waypoint rejected by guarded IK: {gateway_result.reason}")
         self._execute_guarded_path(
-            planned,
+            gateway_result.q_path,
             calibration_id,
             stop_reason="vla_smoke_test_complete",
         )
-        return len(planned), inference_s
+        return len(gateway_result.q_path), inference_s
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -761,8 +788,8 @@ def build_parser() -> argparse.ArgumentParser:
         "--direct-vla-waypoint",
         action="store_true",
         help=(
-            "skip table/hip pre-clearance and table-plane validation; retain bounded IK, "
-            "joint limits, self-collision checks, deadman, and stop ramp"
+            "skip only the deterministic table/hip pre-clearance; retain live table-plane "
+            "projection, full-link swept collision IK, joint limits, deadman, and stop ramp"
         ),
     )
     parser.add_argument("--max-waypoints", type=int, default=3)
@@ -821,6 +848,7 @@ def _status(
     execution = (
         _color(
             "direct bounded VLA waypoint"
+            " with geometric safety filter"
             if executor.direct_vla_waypoint
             else "guarded right arm",
             GREEN,
@@ -896,7 +924,7 @@ def _run_prompt(
         if not isinstance(source, LiveObservationSource):
             raise VLAError("execution requires fresh live RGB and robot state")
         planning_text = (
-            "planning one direct bounded right-arm waypoint…"
+            "projecting and planning direct right-arm waypoints through guarded IK…"
             if executor.direct_vla_waypoint
             else "planning clearance and guarded right-arm motion…"
         )

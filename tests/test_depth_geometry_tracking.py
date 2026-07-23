@@ -157,6 +157,29 @@ class GeometryTests(unittest.TestCase):
         workspace = WorkspaceBounds([0.1, -0.5, 0.1], [0.8, 0.5, 1.0])
         self.assertTrue(workspace.contains(target.position))
 
+    def test_support_region_projects_only_over_certified_table_footprint(self) -> None:
+        support = SupportRegion.from_xy_bounds(
+            Plane((0.0, 0.0, 1.0), 0.0),
+            (0.0, -0.5),
+            (1.0, 0.5),
+            certified_edges=("u_min", "u_max", "v_min", "v_max"),
+            lateral_margin_m=0.05,
+        )
+        np.testing.assert_allclose(
+            support.project_to_clearance(
+                (0.5, 0.0, -0.02),
+                minimum_clearance_m=0.05,
+            ),
+            (0.5, 0.0, 0.05),
+        )
+        np.testing.assert_allclose(
+            support.project_to_clearance(
+                (-0.2, 0.0, -0.02),
+                minimum_clearance_m=0.05,
+            ),
+            (-0.2, 0.0, -0.02),
+        )
+
     def test_extracts_dominant_plane_from_hardware_depth(self) -> None:
         intrinsics = CameraIntrinsics(32, 24, 30, 30, 16, 12)
         depth = np.full((24, 32), 1000, dtype=np.uint16)
