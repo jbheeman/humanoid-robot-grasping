@@ -3,10 +3,14 @@ set -euo pipefail
 
 workspace=/home/aarav/Documents/g1-bunny-vla-workspace
 train_env=/home/aarav/miniconda3/envs/g1-unifolm-train
-mode="${1:-full}"
+mode="${1:-pipeline}"
 config="${workspace}/configs/vla/v29_67real_motion_history.yaml"
 data="${workspace}/datasets/plush_touch_rlds_future1_v29_67real"
 stats="${workspace}/datasets/plush_touch_canonical_v29_67real/SHARED_TRAIN_STATS_75_REAL.json"
+
+if [[ "${mode}" == pipeline ]]; then
+  exec "${workspace}/scripts/training/run_unifolm_v29_67real_pipeline.sh"
+fi
 
 case "${mode}" in
   smoke)
@@ -20,7 +24,7 @@ case "${mode}" in
     save_interval=500
     ;;
   *)
-    echo "usage: $0 {smoke|full}" >&2
+    echo "usage: $0 {pipeline|smoke|full}" >&2
     exit 2
     ;;
 esac
