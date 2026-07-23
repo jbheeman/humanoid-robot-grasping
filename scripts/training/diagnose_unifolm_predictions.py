@@ -58,6 +58,16 @@ def collate_one(example: dict, pad_token_id: int) -> dict:
     return output
 
 
+def latest_right_xyz(state: np.ndarray) -> np.ndarray:
+    """Return the newest right-hand XYZ from [B,D] or causal [B,T,D] state."""
+    values = np.asarray(state)
+    if values.ndim == 2 and values.shape[-1] >= RIGHT_XYZ.stop:
+        return values[:, RIGHT_XYZ]
+    if values.ndim == 3 and values.shape[-1] >= RIGHT_XYZ.stop:
+        return values[:, -1, RIGHT_XYZ]
+    raise ValueError(f"unexpected proprio state shape: {values.shape}")
+
+
 def to_device(batch: dict, device: Any) -> dict:
     import torch
 
@@ -180,7 +190,7 @@ def main() -> int:
             state_normalized = batch["state"].float().cpu().numpy()
             state = denormalize(state_normalized, proprio_stats)
             current = np.repeat(
-                state[:, None, RIGHT_XYZ],
+                latest_right_xyz(state)[:, None, :],
                 target.shape[1],
                 axis=1,
             )
