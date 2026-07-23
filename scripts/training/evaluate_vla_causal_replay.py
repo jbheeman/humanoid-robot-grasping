@@ -24,6 +24,8 @@ def main() -> int:
     counts = {decision.value: 0 for decision in ScheduleDecision}
     reasons: dict[str, int] = {}
     unsafe_allows = 0
+    expired_waypoints = 0
+    executed_waypoint_indices: list[int] = []
     previous_time = float("-inf")
     records = 0
     for line in args.replay.read_text().splitlines():
@@ -40,9 +42,20 @@ def main() -> int:
                 observation_time_s=float(record["observation_time_s"]),
                 inference_completed_time_s=float(record["inference_completed_time_s"]),
                 now_s=now_s,
+                state_anchor_time_s=(
+                    float(record["state_anchor_time_s"])
+                    if "state_anchor_time_s" in record
+                    else None
+                ),
+                inference_started_time_s=(
+                    float(record["inference_started_time_s"])
+                    if "inference_started_time_s" in record
+                    else None
+                ),
             )
             counts[result.decision.value] += 1
             reasons[result.reason] = reasons.get(result.reason, 0) + 1
+            expired_waypoints += result.expired_waypoints
         signal = governor.signal(
             record.get("tracks", []),
             now_s=now_s,
@@ -52,6 +65,9 @@ def main() -> int:
         result = scheduler.tick(now_s=now_s, safety=signal)
         counts[result.decision.value] += 1
         reasons[result.reason] = reasons.get(result.reason, 0) + 1
+        expired_waypoints += result.expired_waypoints
+        if result.waypoint_index is not None:
+            executed_waypoint_indices.append(result.waypoint_index)
         if result.decision is ScheduleDecision.EXECUTE and bool(record.get("unsafe", False)):
             unsafe_allows += 1
         records += 1
@@ -61,6 +77,8 @@ def main() -> int:
         "decisions": counts,
         "reasons": reasons,
         "unsafe_allows": unsafe_allows,
+        "expired_waypoints": expired_waypoints,
+        "executed_waypoint_indices": executed_waypoint_indices,
         "passed": unsafe_allows <= args.maximum_unsafe_allows,
         "causal": True,
     }

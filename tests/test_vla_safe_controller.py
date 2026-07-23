@@ -28,18 +28,14 @@ def support() -> SupportRegion:
 def action(right_xyz: tuple[float, float, float]) -> np.ndarray:
     right = np.eye(4)
     right[:3, 3] = right_xyz
-    return np.asarray(
-        [
-            compose_pose23(
-                np.eye(4),
-                right,
-                right_gripper=4.0,
-                left_gripper=4.0,
-                waist_yaw_roll_pitch=(0.0, 0.0, 0.0),
-            )
-        ],
-        dtype=float,
+    waypoint = compose_pose23(
+        np.eye(4),
+        right,
+        right_gripper=4.0,
+        left_gripper=4.0,
+        waist_yaw_roll_pitch=(0.0, 0.0, 0.0),
     )
+    return np.repeat(np.asarray([waypoint], dtype=float), 25, axis=0)
 
 
 class Solver:

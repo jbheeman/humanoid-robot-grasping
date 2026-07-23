@@ -50,7 +50,11 @@ def summarize_errors(
     if valid.shape != values.shape or not np.any(valid):
         raise ValueError("error validity mask must match errors and contain valid targets")
     final = np.asarray(
-        [row[np.flatnonzero(mask)[-1]] for row, mask in zip(values, valid)]
+        [
+            row[np.flatnonzero(mask)[-1]]
+            for row, mask in zip(values, valid)
+            if np.any(mask)
+        ]
     )
     horizon_counts = np.sum(valid, axis=0)
     horizon_means = np.divide(
@@ -69,6 +73,56 @@ def summarize_errors(
             for value, count in zip(horizon_means, horizon_counts)
         ],
         "per_horizon_valid_count": horizon_counts.tolist(),
+    }
+
+
+def active_motion_mask(
+    target_xyz: np.ndarray,
+    current_xyz: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    minimum_motion_m: float = 0.01,
+) -> np.ndarray:
+    """Select action-active targets so hold-heavy windows cannot dominate ADE."""
+
+    targets = np.asarray(target_xyz, dtype=np.float64)
+    current = np.asarray(current_xyz, dtype=np.float64)
+    valid = np.asarray(valid_mask, dtype=bool)
+    if targets.shape != current.shape or valid.shape != targets.shape[:-1]:
+        raise ValueError("target, current, and validity shapes do not agree")
+    return valid & (np.linalg.norm(targets - current, axis=-1) >= minimum_motion_m)
+
+
+def execution_horizon_summary(
+    errors: np.ndarray,
+    valid_mask: np.ndarray,
+    *,
+    latency_s: float,
+    action_hz: float = 30.0,
+) -> dict[str, Any]:
+    """Score the first target still executable after capture-to-command latency."""
+
+    if latency_s < 0.0 or action_hz <= 0.0:
+        raise ValueError("latency must be non-negative and action rate positive")
+    values = np.asarray(errors, dtype=np.float64)
+    valid = np.asarray(valid_mask, dtype=bool)
+    if values.shape != valid.shape or values.ndim != 2:
+        raise ValueError("errors and validity must be matching [batch,horizon] arrays")
+    index = min(int(latency_s * action_hz), values.shape[1] - 1)
+    selected = valid[:, index]
+    if not np.any(selected):
+        return {
+            "waypoint_index": index,
+            "samples": 0,
+            "mean_error_m": None,
+            "p95_error_m": None,
+        }
+    chosen = values[selected, index]
+    return {
+        "waypoint_index": index,
+        "samples": int(np.count_nonzero(selected)),
+        "mean_error_m": float(np.mean(chosen)),
+        "p95_error_m": float(np.percentile(chosen, 95)),
     }
 
 
@@ -149,6 +203,12 @@ def main() -> int:
     parser.add_argument("--stats", type=Path, required=True)
     parser.add_argument("--split", choices=("val", "test"), default="val")
     parser.add_argument("--seed", type=int, default=20260723)
+    parser.add_argument(
+        "--execution-latency-s",
+        type=float,
+        default=0.37,
+        help="capture-to-command delay used to select the first executable horizon",
+    )
     parser.add_argument(
         "--skip-visual-perturbations",
         action="store_true",
@@ -383,6 +443,13 @@ def main() -> int:
         model_summary = summarize_errors(model_errors, valid)
         baseline_summary = summarize_errors(current_errors, valid)
         mean_summary = summarize_errors(mean_errors, valid)
+        active = active_motion_mask(target_values, current_values, valid)
+        active_model_summary = (
+            summarize_errors(model_errors, active) if np.any(active) else None
+        )
+        active_baseline_summary = (
+            summarize_errors(current_errors, active) if np.any(active) else None
+        )
         best_baseline_ade = min(
             baseline_summary["ade_m"],
             mean_summary["ade_m"],
@@ -401,6 +468,14 @@ def main() -> int:
             "model": model_summary,
             "current_pose_baseline": baseline_summary,
             "mean_action_baseline": mean_summary,
+            "action_active_frames": int(np.count_nonzero(active)),
+            "action_active_model": active_model_summary,
+            "action_active_current_pose_baseline": active_baseline_summary,
+            "first_post_latency_waypoint": execution_horizon_summary(
+                model_errors,
+                valid,
+                latency_s=args.execution_latency_s,
+            ),
             "best_baseline_ade_m": float(best_baseline_ade),
             "relative_improvement_over_best_baseline": float(improvement),
             "beats_best_baseline_by_10_percent": bool(improvement >= 0.10),

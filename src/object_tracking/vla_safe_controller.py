@@ -46,6 +46,9 @@ class SafeControlResult:
     reason: str
     observation_age_s: float | None = None
     projected: bool = False
+    waypoint_index: int | None = None
+    waypoint_time_s: float | None = None
+    expired_waypoints: int = 0
 
 
 class SafeVLAControllerCore:
@@ -72,6 +75,8 @@ class SafeVLAControllerCore:
         observation_time_s: float,
         inference_completed_time_s: float,
         now_s: float,
+        state_anchor_time_s: float | None = None,
+        inference_started_time_s: float | None = None,
     ) -> ScheduledAction:
         # Parse before queueing so malformed 6D rotations never become active.
         try:
@@ -87,6 +92,8 @@ class SafeVLAControllerCore:
             observation_time_s=observation_time_s,
             inference_completed_time_s=inference_completed_time_s,
             now_s=now_s,
+            state_anchor_time_s=state_anchor_time_s,
+            inference_started_time_s=inference_started_time_s,
         )
 
     def tick(
@@ -118,6 +125,9 @@ class SafeVLAControllerCore:
                 None,
                 scheduled.reason,
                 scheduled.observation_age_s,
+                waypoint_index=scheduled.waypoint_index,
+                waypoint_time_s=scheduled.waypoint_time_s,
+                expired_waypoints=scheduled.expired_waypoints,
             )
         assert scheduled.action is not None
         try:
@@ -129,6 +139,9 @@ class SafeVLAControllerCore:
                 None,
                 "scheduled_waypoint_invalid",
                 scheduled.observation_age_s,
+                waypoint_index=scheduled.waypoint_index,
+                waypoint_time_s=scheduled.waypoint_time_s,
+                expired_waypoints=scheduled.expired_waypoints,
             )
         result: IKGatewayResult = self.gateway.plan(
             (waypoint,),
@@ -142,6 +155,9 @@ class SafeVLAControllerCore:
                 None,
                 f"geometric_ik_rejected:{result.reason}",
                 scheduled.observation_age_s,
+                waypoint_index=scheduled.waypoint_index,
+                waypoint_time_s=scheduled.waypoint_time_s,
+                expired_waypoints=scheduled.expired_waypoints,
             )
         return SafeControlResult(
             ScheduleDecision.EXECUTE,
@@ -149,4 +165,7 @@ class SafeVLAControllerCore:
             "guarded",
             scheduled.observation_age_s,
             projected=result.projected_waypoints > 0,
+            waypoint_index=scheduled.waypoint_index,
+            waypoint_time_s=scheduled.waypoint_time_s,
+            expired_waypoints=scheduled.expired_waypoints,
         )
