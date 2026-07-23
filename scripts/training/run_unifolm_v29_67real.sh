@@ -4,6 +4,9 @@ set -euo pipefail
 workspace=/home/aarav/Documents/g1-bunny-vla-workspace
 train_env=/home/aarav/miniconda3/envs/g1-unifolm-train
 mode="${1:-pipeline}"
+run_id="${RUN_ID:-v29-67real-motion-mixed-4k}"
+smoke_run_id="${SMOKE_RUN_ID:-${run_id}-smoke}"
+full_steps="${MAX_TRAIN_STEPS:-4000}"
 config="${workspace}/configs/vla/v29_67real_motion_history.yaml"
 data="${workspace}/datasets/plush_touch_rlds_future1_v29_67real"
 stats="${workspace}/datasets/plush_touch_canonical_v29_67real/SHARED_TRAIN_STATS_75_REAL.json"
@@ -14,13 +17,12 @@ fi
 
 case "${mode}" in
   smoke)
-    run_id=v29-67real-motion-smoke
+    run_id="${smoke_run_id}"
     steps=20
     save_interval=20
     ;;
   full)
-    run_id=v29-67real-motion-mixed-4k
-    steps=4000
+    steps="${full_steps}"
     save_interval=500
     ;;
   *)
