@@ -16,35 +16,12 @@ from typing import Any, Iterable
 
 import numpy as np
 
+from object_tracking.unifolm_relative_actions import pose17_to_pose23
 
 RIGHT_XYZ_17 = slice(6, 9)
 LEFT_POSE_17 = slice(0, 6)
 WAIST_AND_GRIPPERS_17 = slice(12, 17)
 RIGHT_XYZ_23 = slice(9, 12)
-
-
-def pose17_to_pose23(values: np.ndarray) -> np.ndarray:
-    """Convert xyz+rpy poses to the Unitree two-column rotation representation."""
-
-    poses = np.asarray(values, dtype=np.float32)
-    if poses.shape[-1] != 17:
-        raise ValueError(f"expected pose17, received {poses.shape}")
-
-    def rotation6d(rpy: np.ndarray) -> np.ndarray:
-        roll, pitch, yaw = np.moveaxis(rpy, -1, 0)
-        cr, sr = np.cos(roll), np.sin(roll)
-        cp, sp = np.cos(pitch), np.sin(pitch)
-        cy, sy = np.cos(yaw), np.sin(yaw)
-        first = np.stack((cy * cp, sy * cp, -sp), axis=-1)
-        second = np.stack(
-            (cy * sp * sr - sy * cr, sy * sp * sr + cy * cr, cp * sr),
-            axis=-1,
-        )
-        return np.concatenate((first, second), axis=-1).astype(np.float32)
-
-    left = np.concatenate((poses[..., 0:3], rotation6d(poses[..., 3:6])), axis=-1)
-    right = np.concatenate((poses[..., 6:9], rotation6d(poses[..., 9:12])), axis=-1)
-    return np.concatenate((left, right, poses[..., 12:17]), axis=-1).astype(np.float32)
 
 
 def padded_action_chunks(actions: np.ndarray, horizon: int) -> np.ndarray:
