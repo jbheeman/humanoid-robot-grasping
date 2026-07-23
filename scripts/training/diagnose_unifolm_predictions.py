@@ -32,14 +32,38 @@ def denormalize(values: np.ndarray, stats: dict[str, Any]) -> np.ndarray:
     )
 
 
-def summarize_errors(errors: np.ndarray) -> dict[str, Any]:
+def summarize_errors(
+    errors: np.ndarray,
+    valid_mask: np.ndarray | None = None,
+) -> dict[str, Any]:
     values = np.asarray(errors, dtype=np.float64)
+    valid = (
+        np.ones(values.shape, dtype=bool)
+        if valid_mask is None
+        else np.asarray(valid_mask, dtype=bool)
+    )
+    if valid.shape != values.shape or not np.any(valid):
+        raise ValueError("error validity mask must match errors and contain valid targets")
+    final = np.asarray(
+        [row[np.flatnonzero(mask)[-1]] for row, mask in zip(values, valid)]
+    )
+    horizon_counts = np.sum(valid, axis=0)
+    horizon_means = np.divide(
+        np.sum(np.where(valid, values, 0.0), axis=0),
+        horizon_counts,
+        out=np.full(values.shape[1], np.nan),
+        where=horizon_counts > 0,
+    )
     return {
-        "ade_m": float(np.mean(values)),
-        "fde_m": float(np.mean(values[:, -1])),
-        "median_m": float(np.median(values)),
-        "p95_m": float(np.percentile(values, 95)),
-        "per_horizon_mean_m": np.mean(values, axis=0).tolist(),
+        "ade_m": float(np.mean(values[valid])),
+        "fde_m": float(np.mean(final)),
+        "median_m": float(np.median(values[valid])),
+        "p95_m": float(np.percentile(values[valid], 95)),
+        "per_horizon_mean_m": [
+            float(value) if count else None
+            for value, count in zip(horizon_means, horizon_counts)
+        ],
+        "per_horizon_valid_count": horizon_counts.tolist(),
     }
 
 
@@ -51,6 +75,9 @@ def collate_one(example: dict, pad_token_id: int) -> dict:
         "input_ids": input_ids.unsqueeze(0),
         "attention_mask": input_ids.ne(pad_token_id).unsqueeze(0),
         "action": torch.as_tensor(np.stack([example["actions"]])),
+        "action_valid_mask": torch.as_tensor(
+            np.stack([example["action_valid_mask"]])
+        ),
     }
     proprio = np.stack([example["proprio"]])
     if proprio.ndim == 3 and proprio.shape[1] == 1:
@@ -214,6 +241,7 @@ def main() -> int:
         shuffled_predictions: list[np.ndarray] = []
         occluded_predictions: list[np.ndarray] = []
         normalized_saturation: list[float] = []
+        valid_masks: list[np.ndarray] = []
 
         for index, cpu_batch in enumerate(batches):
             batch = to_device(cpu_batch, device)
@@ -273,6 +301,9 @@ def main() -> int:
                 )
 
             targets.append(target[0, :, RIGHT_XYZ])
+            valid_masks.append(
+                batch["action_valid_mask"].bool().cpu().numpy()[0]
+            )
             original = denormalize(original_normalized, action_stats)
             shuffled_action = denormalize(shuffled_normalized, action_stats)
             occluded_action = denormalize(occluded_normalized, action_stats)
@@ -299,6 +330,7 @@ def main() -> int:
         mean_values = np.stack(mean_predictions)
         shuffled_values = np.stack(shuffled_predictions)
         occluded_values = np.stack(occluded_predictions)
+        valid = np.stack(valid_masks)
         model_errors = np.linalg.norm(prediction_values - target_values, axis=-1)
         current_errors = np.linalg.norm(current_values - target_values, axis=-1)
         mean_errors = np.linalg.norm(mean_values - target_values, axis=-1)
@@ -318,22 +350,30 @@ def main() -> int:
             target_values - initial_state[:, None, :],
             axis=-1,
         )
-        mean_predicted_displacement = float(np.mean(predicted_displacement))
-        mean_target_displacement = float(np.mean(target_displacement))
+        mean_predicted_displacement = float(np.mean(predicted_displacement[valid]))
+        mean_target_displacement = float(np.mean(target_displacement[valid]))
         displacement_ratio = mean_predicted_displacement / max(
             mean_target_displacement,
             1e-8,
         )
 
-        model_summary = summarize_errors(model_errors)
-        baseline_summary = summarize_errors(current_errors)
-        mean_summary = summarize_errors(mean_errors)
+        model_summary = summarize_errors(model_errors, valid)
+        baseline_summary = summarize_errors(current_errors, valid)
+        mean_summary = summarize_errors(mean_errors, valid)
         best_baseline_ade = min(
             baseline_summary["ade_m"],
             mean_summary["ade_m"],
         )
         improvement = (best_baseline_ade - model_summary["ade_m"]) / best_baseline_ade
-        worst = np.argsort(np.mean(model_errors, axis=1))[::-1][:8]
+        per_sample_model_error = np.asarray(
+            [np.mean(row[mask]) for row, mask in zip(model_errors, valid)]
+        )
+        worst = np.argsort(per_sample_model_error)[::-1][:8]
+        signed_bias_valid = signed_bias[valid]
+        prediction_valid = prediction_values[valid]
+        target_valid = target_values[valid]
+        shuffle_valid = image_shuffle_displacement[valid]
+        occlusion_valid = occlusion_displacement[valid]
         report["sources"][source] = {
             "model": model_summary,
             "current_pose_baseline": baseline_summary,
@@ -341,44 +381,40 @@ def main() -> int:
             "best_baseline_ade_m": float(best_baseline_ade),
             "relative_improvement_over_best_baseline": float(improvement),
             "beats_best_baseline_by_10_percent": bool(improvement >= 0.10),
-            "right_xyz_signed_bias_m": np.mean(
-                signed_bias, axis=(0, 1)
-            ).tolist(),
+            "right_xyz_signed_bias_m": np.mean(signed_bias_valid, axis=0).tolist(),
             "right_xyz_prediction_std_m": np.std(
-                prediction_values, axis=(0, 1)
+                prediction_valid, axis=0
             ).tolist(),
-            "right_xyz_target_std_m": np.std(
-                target_values, axis=(0, 1)
-            ).tolist(),
+            "right_xyz_target_std_m": np.std(target_valid, axis=0).tolist(),
             "predicted_displacement_from_current_ade_m": mean_predicted_displacement,
             "target_displacement_from_current_ade_m": mean_target_displacement,
             "predicted_to_target_displacement_ratio": float(displacement_ratio),
             "image_shuffle_prediction_change_m": {
-                "mean": float(np.mean(image_shuffle_displacement)),
-                "p95": float(np.percentile(image_shuffle_displacement, 95)),
+                "mean": float(np.mean(shuffle_valid)),
+                "p95": float(np.percentile(shuffle_valid, 95)),
             },
             "image_occlusion_prediction_change_m": {
-                "mean": float(np.mean(occlusion_displacement)),
-                "p95": float(np.percentile(occlusion_displacement, 95)),
+                "mean": float(np.mean(occlusion_valid)),
+                "p95": float(np.percentile(occlusion_valid, 95)),
             },
             "normalized_output_saturation_fraction": float(
                 np.mean(normalized_saturation)
             ),
             "diagnosis_flags": {
                 "visually_conditioned": bool(
-                    np.mean(image_shuffle_displacement) >= 0.01
-                    and np.mean(occlusion_displacement) >= 0.01
+                    np.mean(shuffle_valid) >= 0.01
+                    and np.mean(occlusion_valid) >= 0.01
                 ),
                 "action_magnitude_over_2x_target": bool(displacement_ratio >= 2.0),
                 "normalized_output_saturation_over_5_percent": bool(
                     np.mean(normalized_saturation) >= 0.05
                 ),
                 "right_xyz_bias_over_3cm": bool(
-                    np.linalg.norm(np.mean(signed_bias, axis=(0, 1))) >= 0.03
+                    np.linalg.norm(np.mean(signed_bias_valid, axis=0)) >= 0.03
                 ),
             },
             "worst_sample_indices": worst.tolist(),
-            "worst_sample_ade_m": np.mean(model_errors[worst], axis=1).tolist(),
+            "worst_sample_ade_m": per_sample_model_error[worst].tolist(),
         }
 
     failures = [

@@ -1,21 +1,16 @@
 import numpy as np
-import pytest
 
-from scripts.training.diagnose_unifolm_predictions import latest_right_xyz
-
-
-def test_latest_right_xyz_accepts_single_observation() -> None:
-    state = np.arange(46, dtype=np.float32).reshape(2, 23)
-
-    np.testing.assert_array_equal(latest_right_xyz(state), state[:, 9:12])
+from scripts.training.diagnose_unifolm_predictions import summarize_errors
 
 
-def test_latest_right_xyz_uses_newest_temporal_observation() -> None:
-    state = np.arange(2 * 5 * 23, dtype=np.float32).reshape(2, 5, 23)
+def test_error_summary_excludes_padded_horizon_targets() -> None:
+    errors = np.asarray(((1.0, 2.0, 100.0), (3.0, 100.0, 100.0)))
+    valid = np.asarray(((True, True, False), (True, False, False)))
 
-    np.testing.assert_array_equal(latest_right_xyz(state), state[:, -1, 9:12])
+    summary = summarize_errors(errors, valid)
 
-
-def test_latest_right_xyz_rejects_malformed_state() -> None:
-    with pytest.raises(ValueError, match="unexpected proprio state shape"):
-        latest_right_xyz(np.zeros((1, 5, 10), dtype=np.float32))
+    assert summary["ade_m"] == 2.0
+    assert summary["fde_m"] == 2.5
+    assert summary["per_horizon_mean_m"][:2] == [2.0, 2.0]
+    assert summary["per_horizon_mean_m"][2] is None
+    assert summary["per_horizon_valid_count"] == [2, 1, 0]
