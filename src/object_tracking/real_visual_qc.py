@@ -14,7 +14,7 @@ class RealVisualQCConfig:
     maximum_episode_s: float = 30.0
     minimum_visible_fraction: float = 0.60
     minimum_path_displacement_px: float = 30.0
-    post_contact_trim_frames: int = 6
+    post_contact_trim_frames: int = 9
     maximum_contact_transitions: int = 4
 
 

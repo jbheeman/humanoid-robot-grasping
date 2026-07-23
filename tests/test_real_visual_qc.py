@@ -24,7 +24,7 @@ def metrics(**updates: object) -> dict[str, object]:
 
 def test_contact_runs_and_trim_exclude_human_reset_tail() -> None:
     assert contact_runs([False, True, True, False, True]) == ((1, 3), (4, 5))
-    assert training_frame_range(200, 120) == (0, 127)
+    assert training_frame_range(200, 120) == (0, 130)
 
 
 def test_missing_or_early_contact_is_automatic_reject() -> None:

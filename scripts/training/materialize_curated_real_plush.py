@@ -52,6 +52,8 @@ def read_manifest(path: Path) -> list[dict[str, Any]]:
 def materialize_episode(
     record: dict[str, Any],
     output_root: Path,
+    *,
+    post_contact_frames: int | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, object]]]:
     source = Path(record["path"])
     destination = output_root / str(record["episode"])
@@ -61,6 +63,14 @@ def materialize_episode(
     start = int(frame_range["start"])
     end = int(frame_range["end_exclusive"])
     payload = json.loads((source / "data.json").read_text(encoding="utf-8"))
+    if post_contact_frames is not None:
+        metrics = record.get("metrics")
+        if not isinstance(metrics, dict):
+            raise ValueError(f"{source}: missing metrics for contact-frame override")
+        first_contact = int(metrics["first_contact_frame"])
+        if first_contact < 0:
+            raise ValueError(f"{source}: cannot extend episode without contact")
+        end = min(len(payload["data"]), first_contact + post_contact_frames + 1)
     frames = payload["data"][start:end]
     if not frames:
         raise ValueError(f"{source}: empty curated frame range")
@@ -133,7 +143,15 @@ def main() -> int:
         default=["accepted"],
         help="repeat to include additional statuses; accepted is always included",
     )
+    parser.add_argument(
+        "--post-contact-frames",
+        type=int,
+        default=9,
+        help="retain this many frames after first contact; default satisfies sustained-contact QC",
+    )
     args = parser.parse_args()
+    if args.post_contact_frames < 0:
+        raise ValueError("--post-contact-frames cannot be negative")
     if args.output_root.exists():
         raise SystemExit(f"refusing to overwrite existing output: {args.output_root}")
 
@@ -149,7 +167,11 @@ def main() -> int:
     episodes: list[dict[str, Any]] = []
     files: list[dict[str, object]] = []
     for record in selected:
-        episode, episode_files = materialize_episode(record, args.output_root)
+        episode, episode_files = materialize_episode(
+            record,
+            args.output_root,
+            post_contact_frames=args.post_contact_frames,
+        )
         episodes.append(episode)
         files.extend(episode_files)
 

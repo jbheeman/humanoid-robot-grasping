@@ -44,3 +44,37 @@ def test_materializer_trims_reset_tail_and_omits_unused_modalities(
     assert payload["data"][-1]["audios"] == {}
     assert payload["curation"]["human_reset_tail_excluded"]
     assert len(files) == 8
+
+
+def test_materializer_can_extend_from_raw_contact_metrics(tmp_path: Path) -> None:
+    source = tmp_path / "raw" / "episode_0001"
+    colors = source / "colors"
+    colors.mkdir(parents=True)
+    frames = []
+    for index in range(20):
+        image = colors / f"{index:06d}.jpg"
+        image.write_bytes(str(index).encode())
+        frames.append(
+            {
+                "idx": index,
+                "colors": {"color_0": f"colors/{image.name}"},
+                "depths": {},
+                "audios": {},
+            }
+        )
+    (source / "data.json").write_text(json.dumps({"data": frames}))
+    record = {
+        "episode_id": 1,
+        "episode": "episode_0001",
+        "path": str(source),
+        "status": "accepted",
+        "reasons": [],
+        "metrics": {"first_contact_frame": 8},
+        "training_frame_range": {"start": 0, "end_exclusive": 15},
+    }
+    episode, _files = materialize_episode(
+        record,
+        tmp_path / "curated",
+        post_contact_frames=9,
+    )
+    assert episode["frames"] == 18
