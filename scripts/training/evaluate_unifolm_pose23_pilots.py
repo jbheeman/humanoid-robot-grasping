@@ -92,6 +92,13 @@ def main() -> int:
         ]
         environment = dict(os.environ)
         environment["CUDA_VISIBLE_DEVICES"] = str(gpu)
+        environment["PYTHONPATH"] = os.pathsep.join(
+            (
+                str(args.root / "src"),
+                str(args.root / "unifolm-vla/src"),
+                environment.get("PYTHONPATH", ""),
+            )
+        )
         with log.open("w", encoding="utf-8") as stream:
             result = subprocess.run(
                 command,

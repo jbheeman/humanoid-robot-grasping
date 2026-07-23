@@ -13,7 +13,12 @@ from typing import Any
 
 import numpy as np
 
-from object_tracking.unifolm_relative_actions import (
+for _parent in Path(__file__).resolve().parents:
+    if (_parent / "src/object_tracking").is_dir():
+        sys.path.insert(0, str(_parent / "src"))
+        break
+
+from object_tracking.unifolm_relative_actions import (  # noqa: E402
     RELATIVE_POSE23_V1,
     reconstruct_anchored_pose23,
 )
