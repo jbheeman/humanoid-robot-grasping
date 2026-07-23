@@ -46,6 +46,11 @@ def main() -> int:
         default=Path("/home/aarav/Documents/g1-bunny-vla-workspace"),
     )
     parser.add_argument("--samples-per-source", type=int, default=96)
+    parser.add_argument(
+        "--reuse-existing",
+        action="store_true",
+        help="reuse completed per-variant reports and evaluate only missing variants",
+    )
     args = parser.parse_args()
 
     python = Path("/home/aarav/miniconda3/envs/g1-unifolm-train/bin/python")
@@ -72,6 +77,20 @@ def main() -> int:
         log = output_dir / f"{variant}_val.log"
         if not checkpoint.is_file():
             raise RuntimeError(f"missing checkpoint: {checkpoint}")
+        if args.reuse_existing and report.is_file():
+            payload = json.loads(report.read_text(encoding="utf-8"))
+            if payload.get("split") != "val":
+                raise RuntimeError(f"existing report is not validation-only: {report}")
+            return {
+                "variant": variant,
+                "representation": representation,
+                "gpu": None,
+                "score": weighted_ade(payload),
+                "gate_passed": bool(payload["gate"]["passed"]),
+                "report": str(report),
+                "sources": payload["sources"],
+                "reused": True,
+            }
         command = [
             str(python),
             str(args.root / "scripts/diagnose_unifolm_predictions.py"),
@@ -121,6 +140,7 @@ def main() -> int:
             "gate_passed": bool(payload["gate"]["passed"]),
             "report": str(report),
             "sources": payload["sources"],
+            "reused": False,
         }
 
     assignments = {
