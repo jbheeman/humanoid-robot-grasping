@@ -197,6 +197,14 @@ def main() -> int:
     run_dir = root / "runs/unifolm_plush_touch" / args.run_id
     output_dir = root / "runs/diagnostics" / args.run_id
     status_path = output_dir / "PIPELINE_STATUS.json"
+    if status_path.is_file():
+        previous = json.loads(status_path.read_text(encoding="utf-8"))
+        if previous.get("complete") is True:
+            print(
+                "UNIFOLM_PIPELINE_ALREADY_COMPLETE "
+                f"phase={previous.get('phase')} status={status_path}"
+            )
+            return 0 if previous.get("offline_promotion_passed") is True else 2
     status: dict[str, Any] = {
         "schema_version": 1,
         "run_id": args.run_id,
