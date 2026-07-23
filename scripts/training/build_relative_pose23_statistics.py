@@ -172,6 +172,7 @@ def main() -> int:
         horizon_values = values[mask]
         per_horizon[str(horizon)] = {
             "count": int(np.count_nonzero(mask)),
+            "action": summarize(horizon_values, horizon_weights),
             "right_translation_norm": summarize(
                 np.linalg.norm(horizon_values[:, 9:12], axis=1)[:, None],
                 horizon_weights,

@@ -25,6 +25,7 @@ from object_tracking.unifolm_vla_cli import (
     _load_checkpoint_state,
     _profile_gripper_means,
 )
+from object_tracking.unifolm_relative_actions import RELATIVE_POSE23_V1
 
 
 def _flat_support() -> SupportRegion:
@@ -109,6 +110,13 @@ def test_runtime_background_load_is_single_and_joined_by_foreground(tmp_path: Pa
 
     assert runtime.load_status() == "ready"
     assert len(calls) == 1
+
+
+def test_runtime_defaults_to_absolute_action_contract(tmp_path: Path) -> None:
+    runtime = UnifoLMRuntime(tmp_path / "checkpoint", tmp_path / "vlm", "profile")
+
+    assert runtime.action_representation == "absolute_pose23"
+    assert RELATIVE_POSE23_V1 != runtime.action_representation
 
 
 def test_quantized_checkpoint_accepts_only_bitsandbytes_metadata() -> None:

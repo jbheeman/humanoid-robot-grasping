@@ -25,6 +25,10 @@ from object_tracking.arm_tracking.calibration import load_calibration
 from object_tracking.arm_tracking.geometry import Plane, SupportRegion
 from object_tracking.arm_tracking.ik_solver import G1RightArmIK, default_urdf_path
 from object_tracking.ros2_tracking import RosTrackingTransport
+from object_tracking.unifolm_relative_actions import (
+    RELATIVE_POSE23_V1,
+    reconstruct_anchored_pose23,
+)
 from object_tracking.unifolm_vla import compose_pose23, parse_action_chunk
 from object_tracking.vla_ik_gateway import GeometricIKGateway, IKGatewayConfig
 
@@ -262,6 +266,7 @@ class UnifoLMRuntime:
         self.model: Any | None = None
         self.processor: Any | None = None
         self.stats: dict[str, Any] | None = None
+        self.action_representation = "absolute_pose23"
         self._load_lock = threading.Lock()
         self._load_thread: threading.Thread | None = None
         self._load_error: Exception | None = None
@@ -419,6 +424,27 @@ class UnifoLMRuntime:
             self.model = model.to(torch.bfloat16).to("cuda").eval()
         self.processor = self.model.qwen_vl_interface.processor
         self.stats = norm_stats[self.profile]
+        representation = self.stats.get("representation")
+        if representation is not None:
+            version = representation.get("version")
+            if version != RELATIVE_POSE23_V1:
+                raise VLAError(f"unsupported action representation: {version!r}")
+            expected = {
+                "anchor": "newest_raw_observation_proprio",
+                "rotation_6d": "concat_first_then_second_matrix_columns",
+                "rotation_delta": "R_anchor_transpose_times_R_target",
+                "translation_frame": "anchor_torso",
+            }
+            mismatches = {
+                key: (representation.get(key), value)
+                for key, value in expected.items()
+                if representation.get(key) != value
+            }
+            if mismatches:
+                raise VLAError(
+                    f"relative action checkpoint contract mismatch: {mismatches}"
+                )
+            self.action_representation = version
 
     @staticmethod
     def _normalize(values: np.ndarray, stats: dict[str, Any]) -> np.ndarray:
@@ -504,6 +530,14 @@ class UnifoLMRuntime:
             normalized_result = normalized_result.detach().float().cpu().numpy()
         normalized = np.asarray(normalized_result[0], dtype=float)
         action = self._unnormalize(normalized, self.stats["action"])
+        if self.action_representation == RELATIVE_POSE23_V1:
+            # Reconstruct against the exact observation that generated this
+            # request, never a later live state. Only the right-hand Pose9 is
+            # controlled for this task; all other dimensions are held.
+            anchor = np.asarray(observations[-1].proprio, dtype=float)
+            action = reconstruct_anchored_pose23(anchor, action)
+            action[:, 0:9] = anchor[0:9]
+            action[:, 18:23] = anchor[18:23]
         parse_action_chunk(action)
         return action, elapsed
 

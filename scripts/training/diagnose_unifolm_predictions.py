@@ -13,6 +13,10 @@ from typing import Any
 
 import numpy as np
 
+from object_tracking.unifolm_relative_actions import (
+    RELATIVE_POSE23_V1,
+    reconstruct_anchored_pose23,
+)
 
 RIGHT_XYZ = slice(9, 12)
 
@@ -23,7 +27,7 @@ def denormalize(values: np.ndarray, stats: dict[str, Any]) -> np.ndarray:
     mask = np.asarray(stats.get("mask", np.ones_like(low)), dtype=bool)
     return np.where(
         mask,
-        (np.clip(values, -1.0, 1.0) + 1.0) * 0.5 * (high - low) + low,
+        (values + 1.0) * 0.5 * (high - low) + low,
         values,
     )
 
@@ -65,6 +69,15 @@ def latest_right_xyz(state: np.ndarray) -> np.ndarray:
         return values[:, RIGHT_XYZ]
     if values.ndim == 3 and values.shape[-1] >= RIGHT_XYZ.stop:
         return values[:, -1, RIGHT_XYZ]
+    raise ValueError(f"unexpected proprio state shape: {values.shape}")
+
+
+def latest_pose23(state: np.ndarray) -> np.ndarray:
+    values = np.asarray(state)
+    if values.ndim == 2 and values.shape[-1] == 23:
+        return values
+    if values.ndim == 3 and values.shape[-1] == 23:
+        return values[:, -1, :]
     raise ValueError(f"unexpected proprio state shape: {values.shape}")
 
 
@@ -140,6 +153,18 @@ def main() -> int:
     stats = json.loads(args.stats.read_text())
     action_stats = stats["action"]
     proprio_stats = stats["proprio"]
+    action_representation = stats.get("representation", {}).get(
+        "version", "absolute_pose23"
+    )
+    if action_representation not in ("absolute_pose23", RELATIVE_POSE23_V1):
+        raise ValueError(f"unsupported action representation: {action_representation}")
+    per_horizon_mean = None
+    if action_representation == RELATIVE_POSE23_V1:
+        horizon_stats = stats["provenance"]["per_horizon"]
+        per_horizon_mean = np.asarray(
+            [horizon_stats[str(index)]["action"]["mean"] for index in range(25)],
+            dtype=np.float32,
+        )
 
     report: dict[str, Any] = {
         "schema_version": 1,
@@ -149,6 +174,7 @@ def main() -> int:
         "seed": args.seed,
         "window_size": window_size,
         "observation_stride": observation_stride,
+        "action_representation": action_representation,
         "history_span_s_at_30hz": (window_size - 1)
         * observation_stride
         / 30.0,
@@ -168,6 +194,12 @@ def main() -> int:
             image_aug=False,
             window_size=window_size,
             observation_stride=observation_stride,
+            action_representation=action_representation,
+            relative_action_statistics=(
+                str(args.stats)
+                if action_representation == RELATIVE_POSE23_V1
+                else None
+            ),
         )
         iterator = iter(dataset)
         batches = [
@@ -189,16 +221,27 @@ def main() -> int:
             target = denormalize(target_normalized, action_stats)
             state_normalized = batch["state"].float().cpu().numpy()
             state = denormalize(state_normalized, proprio_stats)
+            anchor = latest_pose23(state)
+            if action_representation == RELATIVE_POSE23_V1:
+                target = reconstruct_anchored_pose23(anchor[:, None, :], target)
             current = np.repeat(
                 latest_right_xyz(state)[:, None, :],
                 target.shape[1],
                 axis=1,
             )
-            mean_action = np.asarray(action_stats["mean"], dtype=np.float32)
-            mean_prediction = np.broadcast_to(
-                mean_action[None, None, RIGHT_XYZ],
-                current.shape,
-            )
+            if action_representation == RELATIVE_POSE23_V1:
+                assert per_horizon_mean is not None
+                mean_absolute = reconstruct_anchored_pose23(
+                    anchor[:, None, :],
+                    per_horizon_mean[None, :, :],
+                )
+                mean_prediction = mean_absolute[:, :, RIGHT_XYZ]
+            else:
+                mean_action = np.asarray(action_stats["mean"], dtype=np.float32)
+                mean_prediction = np.broadcast_to(
+                    mean_action[None, None, RIGHT_XYZ],
+                    current.shape,
+                )
 
             torch.manual_seed(args.seed + index)
             with torch.inference_mode():
@@ -230,17 +273,22 @@ def main() -> int:
                 )
 
             targets.append(target[0, :, RIGHT_XYZ])
-            predictions.append(
-                denormalize(original_normalized, action_stats)[0, :, RIGHT_XYZ]
-            )
+            original = denormalize(original_normalized, action_stats)
+            shuffled_action = denormalize(shuffled_normalized, action_stats)
+            occluded_action = denormalize(occluded_normalized, action_stats)
+            if action_representation == RELATIVE_POSE23_V1:
+                original = reconstruct_anchored_pose23(anchor[:, None, :], original)
+                shuffled_action = reconstruct_anchored_pose23(
+                    anchor[:, None, :], shuffled_action
+                )
+                occluded_action = reconstruct_anchored_pose23(
+                    anchor[:, None, :], occluded_action
+                )
+            predictions.append(original[0, :, RIGHT_XYZ])
             current_predictions.append(current[0])
             mean_predictions.append(mean_prediction[0])
-            shuffled_predictions.append(
-                denormalize(shuffled_normalized, action_stats)[0, :, RIGHT_XYZ]
-            )
-            occluded_predictions.append(
-                denormalize(occluded_normalized, action_stats)[0, :, RIGHT_XYZ]
-            )
+            shuffled_predictions.append(shuffled_action[0, :, RIGHT_XYZ])
+            occluded_predictions.append(occluded_action[0, :, RIGHT_XYZ])
             normalized_saturation.append(
                 float(np.mean(np.abs(original_normalized) >= 0.999))
             )
