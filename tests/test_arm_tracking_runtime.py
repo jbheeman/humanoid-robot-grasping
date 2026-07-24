@@ -1,5 +1,6 @@
 from dataclasses import replace
 from pathlib import Path
+import time
 from typing import Any, Sequence
 
 import numpy as np
@@ -268,3 +269,27 @@ def test_runtime_receives_depth_from_injected_transport(tmp_path: Path) -> None:
     assert runtime.last_depth.sequence == 7
     runtime.stop()
     assert transport.closed is True
+
+
+def test_runtime_reuses_recent_support_plane_after_one_bad_frame(tmp_path: Path) -> None:
+    calibration_path = tmp_path / "calibration.yaml"
+    save_calibration_atomic(_calibration(), calibration_path)
+    runtime = ArmTrackingRuntime(
+        RuntimeConfig(calibration_path=calibration_path),
+        lambda: {},
+        lambda status, depth: None,
+        transport=FakeTrackingTransport(),
+        repo_root=tmp_path,
+    )
+    cached = SupportRegion.from_xy_bounds(
+        Plane((0.0, 0.0, 1.0), 0.0),
+        (0.35, -0.35),
+        (0.80, 0.35),
+    )
+    runtime.last_support_plane = cached
+    runtime.last_support_plane_at = time.monotonic()
+
+    result = runtime._support_plane(np.ones((3, 4), dtype=np.uint16), 0.001)
+
+    assert result is cached
+    assert runtime.last_support_plane_error is not None

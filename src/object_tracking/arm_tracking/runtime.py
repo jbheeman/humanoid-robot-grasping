@@ -28,6 +28,7 @@ from .visualization import visualization_state
 
 StatusCallback = Callable[[dict[str, Any], bytes | None], None]
 SnapshotCallback = Callable[[], dict[str, Any]]
+_SUPPORT_PLANE_GRACE_S = 0.250
 
 
 class TrackingTransport(Protocol):
@@ -294,8 +295,9 @@ class ArmTrackingRuntime:
         self.last_target_track: int | None = None
         self.last_process_at = 0.0
         # A support plane is a live safety input, not a calibration constant.
-        # Keep the most recent extraction result only for endpoint diagnostics;
-        # callers must still receive a fresh plane from the current depth frame.
+        # Keep the most recent valid extraction so one noisy RANSAC frame does
+        # not release an otherwise healthy tracking session. The fallback is
+        # bounded to _SUPPORT_PLANE_GRACE_S and therefore still fails closed.
         self.last_support_plane: Any | None = None
         self.last_support_plane_error: str | None = None
         self.last_support_plane_at = 0.0
@@ -880,6 +882,12 @@ class ArmTrackingRuntime:
             return support
         except ValueError as exc:
             self.last_support_plane_error = f"{type(exc).__name__}: {exc}"
+            if (
+                self.last_support_plane is not None
+                and time.monotonic() - self.last_support_plane_at
+                <= _SUPPORT_PLANE_GRACE_S
+            ):
+                return self.last_support_plane
             return None
 
     def _expected_table_height_m(self) -> float:
