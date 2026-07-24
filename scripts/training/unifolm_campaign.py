@@ -60,11 +60,16 @@ def report_group(report: dict[str, Any], path: Path) -> str:
     representation = report.get("action_representation", "unknown")
     window = report.get("window_size", "unknown")
     stride = report.get("observation_stride", "unknown")
+    normalization = report.get("normalization_version", "global_bounds_q99")
+    gate_scope = report.get("gate_scope", "all")
     if "v29-67real" in str(path):
         benchmark = "v29-67real-val96"
     else:
         benchmark = f"legacy-{path.parent.name}"
-    return f"{benchmark}:{representation}:w{window}s{stride}"
+    return (
+        f"{benchmark}:{representation}:{normalization}:"
+        f"gate-{gate_scope}:w{window}s{stride}"
+    )
 
 
 def report_metrics(report: dict[str, Any]) -> tuple[float, float, dict[str, dict[str, Any]]]:

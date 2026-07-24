@@ -202,6 +202,12 @@ def main() -> int:
     parser.add_argument("--data-root", type=Path, required=True)
     parser.add_argument("--stats", type=Path, required=True)
     parser.add_argument("--split", choices=("val", "test"), default="val")
+    parser.add_argument(
+        "--gate-scope",
+        choices=("all", "active"),
+        default="all",
+        help="score all targets or only targets moving at least one centimeter",
+    )
     parser.add_argument("--seed", type=int, default=20260723)
     parser.add_argument(
         "--execution-latency-s",
@@ -248,7 +254,7 @@ def main() -> int:
         use_proprio=True,
     )
     stats = json.loads(args.stats.read_text())
-    action_stats = stats["action"]
+    action_stats = stats.get("horizon_action", stats["action"])
     proprio_stats = stats["proprio"]
     action_representation = stats.get("representation", {}).get(
         "version", "absolute_pose23"
@@ -257,11 +263,19 @@ def main() -> int:
         raise ValueError(f"unsupported action representation: {action_representation}")
     per_horizon_mean = None
     if action_representation == RELATIVE_POSE23_V1:
-        horizon_stats = stats["provenance"]["per_horizon"]
-        per_horizon_mean = np.asarray(
-            [horizon_stats[str(index)]["action"]["mean"] for index in range(25)],
-            dtype=np.float32,
-        )
+        if "horizon_action" in stats:
+            per_horizon_mean = np.asarray(
+                stats["horizon_action"]["mean"], dtype=np.float32
+            )
+        else:
+            horizon_stats = stats["provenance"]["per_horizon"]
+            per_horizon_mean = np.asarray(
+                [
+                    horizon_stats[str(index)]["action"]["mean"]
+                    for index in range(25)
+                ],
+                dtype=np.float32,
+            )
 
     report: dict[str, Any] = {
         "schema_version": 1,
@@ -272,6 +286,10 @@ def main() -> int:
         "window_size": window_size,
         "observation_stride": observation_stride,
         "action_representation": action_representation,
+        "normalization_version": stats.get("representation", {})
+        .get("normalization", {})
+        .get("version", "global_bounds_q99"),
+        "gate_scope": args.gate_scope,
         "history_span_s_at_30hz": (window_size - 1)
         * observation_stride
         / 30.0,
@@ -450,6 +468,9 @@ def main() -> int:
         active_baseline_summary = (
             summarize_errors(current_errors, active) if np.any(active) else None
         )
+        active_mean_summary = (
+            summarize_errors(mean_errors, active) if np.any(active) else None
+        )
         best_baseline_ade = min(
             baseline_summary["ade_m"],
             mean_summary["ade_m"],
@@ -471,6 +492,7 @@ def main() -> int:
             "action_active_frames": int(np.count_nonzero(active)),
             "action_active_model": active_model_summary,
             "action_active_current_pose_baseline": active_baseline_summary,
+            "action_active_mean_action_baseline": active_mean_summary,
             "first_post_latency_waypoint": execution_horizon_summary(
                 model_errors,
                 valid,
@@ -553,17 +575,44 @@ def main() -> int:
                 "grid": gain_sweep,
             }
 
-    failures = [
-        source
-        for source, metrics in report["sources"].items()
-        if not metrics["beats_best_baseline_by_10_percent"]
-    ]
-    report["gate"] = {
-        "passed": not failures,
-        "criterion": (
+    if args.gate_scope == "active":
+        failures = []
+        for source, metrics in report["sources"].items():
+            model = metrics["action_active_model"]
+            baselines = (
+                metrics["action_active_current_pose_baseline"],
+                metrics["action_active_mean_action_baseline"],
+            )
+            if model is None or any(value is None for value in baselines):
+                failures.append(source)
+                continue
+            best = min(value["ade_m"] for value in baselines)
+            metrics["action_active_best_baseline_ade_m"] = best
+            metrics["action_active_relative_improvement_over_best_baseline"] = (
+                best - model["ade_m"]
+            ) / best
+            if metrics[
+                "action_active_relative_improvement_over_best_baseline"
+            ] < 0.10:
+                failures.append(source)
+        criterion = (
+            "active-motion right-XYZ ADE is at least 10% below both "
+            "active current-pose and active train-mean baselines"
+        )
+    else:
+        failures = [
+            source
+            for source, metrics in report["sources"].items()
+            if not metrics["beats_best_baseline_by_10_percent"]
+        ]
+        criterion = (
             "model right-XYZ ADE is at least 10% below both current-pose and "
             "train-mean action baselines"
-        ),
+        )
+    report["gate"] = {
+        "passed": not failures,
+        "scope": args.gate_scope,
+        "criterion": criterion,
         "failed_sources": failures,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)

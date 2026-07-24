@@ -1,0 +1,181 @@
+diff --git a/src/unifolm_vla/training/train_unifolm_vla.py b/src/unifolm_vla/training/train_unifolm_vla.py
+--- a/src/unifolm_vla/training/train_unifolm_vla.py
++++ b/src/unifolm_vla/training/train_unifolm_vla.py
+@@ -124,9 +124,15 @@ def prepare_data(cfg, accelerator, processor) -> Tuple[DataLoader, DataLoader]:
+         batch_transform,
+         resize_resolution=(224, 224),
+         shuffle_buffer_size=cfg.trainer.shuffle_buffer_size,
+-        image_aug=False,
++        image_aug=bool(cfg.datasets.vla_data.get("image_aug", False)),
+         window_size=cfg.datasets.vla_data.window_size,
+         observation_stride=cfg.datasets.vla_data.observation_stride,
++        active_motion_threshold_m=float(
++            cfg.datasets.vla_data.get("active_motion_threshold_m", 0.0)
++        ),
++        inactive_keep_probability=float(
++            cfg.datasets.vla_data.get("inactive_keep_probability", 1.0)
++        ),
+         action_representation=cfg.datasets.vla_data.get(
+             "action_representation", "absolute_pose23"
+         ),
+diff --git a/src/unifolm_vla/rlds_dataloader/datasets/datasets.py b/src/unifolm_vla/rlds_dataloader/datasets/datasets.py
+--- a/src/unifolm_vla/rlds_dataloader/datasets/datasets.py
++++ b/src/unifolm_vla/rlds_dataloader/datasets/datasets.py
+@@ -100,6 +100,8 @@ class RLDSDataset(IterableDataset):
+         image_aug: bool = False,
+         window_size: int = 1,
+         observation_stride: int = 1,
++        active_motion_threshold_m: float = 0.0,
++        inactive_keep_probability: float = 1.0,
+         action_representation: str = "absolute_pose23",
+         relative_action_statistics: str | dict | None = None,
+     ) -> None:
+@@ -148,6 +150,8 @@ class RLDSDataset(IterableDataset):
+                 observation_stride=observation_stride,
+                 future_action_window_size=NUM_ACTIONS_CHUNK-1,      # For action chunking
+                 skip_unlabeled=True,                                # Skip trajectories without language labels
++                active_motion_threshold_m=active_motion_threshold_m,
++                inactive_keep_probability=inactive_keep_probability,
+                 goal_relabeling_strategy="uniform",                 # Goals are currently unused
+                 action_representation=action_representation,
+             ),
+@@ -186,7 +190,11 @@ class RLDSDataset(IterableDataset):
+                 **relative_action_statistics,
+                 "action": tree_map(
+                     np.asarray, relative_action_statistics["action"]
+                 ),
++                "horizon_action": tree_map(
++                    lambda values: np.asarray(values, dtype=np.float32),
++                    relative_action_statistics.get("horizon_action", {}),
++                ),
+             }
+             rlds_config["traj_transform_kwargs"][
+                 "relative_action_statistics"
+diff --git a/src/unifolm_vla/rlds_dataloader/datasets/rlds/traj_transforms.py b/src/unifolm_vla/rlds_dataloader/datasets/rlds/traj_transforms.py
+--- a/src/unifolm_vla/rlds_dataloader/datasets/rlds/traj_transforms.py
++++ b/src/unifolm_vla/rlds_dataloader/datasets/rlds/traj_transforms.py
+@@ -41,7 +41,12 @@ def _matrix_to_rotation6d(values: tf.Tensor) -> tf.Tensor:
+     return tf.concat((values[..., :, 0], values[..., :, 1]), axis=-1)
+ 
+ 
+-def anchored_relative_pose23(traj: Dict) -> Dict:
++def anchored_relative_pose23(
++    traj: Dict,
++    *,
++    window_size: int,
++    active_motion_threshold_m: float,
++) -> Dict:
+     """Relabel every raw absolute chunk target against its newest raw state."""
+     actions = tf.convert_to_tensor(traj["action"], dtype=tf.float32)
+     anchor = tf.convert_to_tensor(
+@@ -61,4 +66,11 @@ def anchored_relative_pose23(traj: Dict) -> Dict:
+         parts.extend((translation, _matrix_to_rotation6d(delta_rotation)))
+     auxiliary = actions[..., 18:23] - anchor[..., 18:23]
+     traj["action"] = tf.concat((*parts, auxiliary), axis=-1)
++    future_right_xyz = traj["action"][:, window_size - 1 :, 9:12]
++    maximum_displacement = tf.reduce_max(
++        tf.linalg.norm(future_right_xyz, axis=-1), axis=-1
++    )
++    traj["active_motion"] = maximum_displacement >= tf.cast(
++        active_motion_threshold_m, tf.float32
++    )
+     return traj
+diff --git a/src/unifolm_vla/rlds_dataloader/datasets/rlds/dataset.py b/src/unifolm_vla/rlds_dataloader/datasets/rlds/dataset.py
+--- a/src/unifolm_vla/rlds_dataloader/datasets/rlds/dataset.py
++++ b/src/unifolm_vla/rlds_dataloader/datasets/rlds/dataset.py
+@@ -278,6 +278,8 @@ def apply_trajectory_transforms(
+     window_size: int = 1,
+     observation_stride: int = 1,
+     future_action_window_size: int = 0,
++    active_motion_threshold_m: float = 0.0,
++    inactive_keep_probability: float = 1.0,
+     subsample_length: Optional[int] = None,
+     skip_unlabeled: bool = False,
+     max_action: Optional[float] = None,
+@@ -370,9 +372,32 @@ def apply_trajectory_transforms(
+             raise ValueError("relative Pose23 requires absolute and relative statistics")
+         dataset = dataset.traj_map(
+-            traj_transforms.anchored_relative_pose23,
++            partial(
++                traj_transforms.anchored_relative_pose23,
++                window_size=window_size,
++                active_motion_threshold_m=active_motion_threshold_m,
++            ),
+             num_parallel_calls,
+         )
++        action_metadata = relative_action_statistics.get("horizon_action")
++        if action_metadata:
++            history = window_size - 1
++            action_metadata = {
++                key: tf.concat(
++                    (
++                        tf.repeat(tf.convert_to_tensor(value)[:1], history, axis=0),
++                        tf.convert_to_tensor(value),
++                    ),
++                    axis=0,
++                )
++                for key, value in action_metadata.items()
++            }
++            tf.debugging.assert_equal(
++                tf.shape(action_metadata["q01"])[0],
++                window_size + future_action_window_size,
++            )
++        else:
++            action_metadata = relative_action_statistics["action"]
+         relative_metadata = {
+-            "action": relative_action_statistics["action"],
++            "action": action_metadata,
+             "proprio": absolute_statistics["proprio"],
+         }
+@@ -614,5 +637,8 @@ def make_interleaved_dataset(
+         ##
+         per_dataset_traj_kwargs = dict(traj_transform_kwargs)
++        inactive_keep_probability = float(
++            per_dataset_traj_kwargs.pop("inactive_keep_probability", 1.0)
++        )
+         if relative_mode:
+             per_dataset_traj_kwargs["absolute_statistics"] = all_dataset_statistics[
+                 dataset_kwargs["name"]
+@@ -624,5 +650,15 @@ def make_interleaved_dataset(
+             num_parallel_calls=threads,
+             train=train,
+         ).flatten(num_parallel_calls=threads)
++        if train and inactive_keep_probability < 1.0:
++            if not 0.0 <= inactive_keep_probability <= 1.0:
++                raise ValueError("inactive_keep_probability must be in [0,1]")
++            dataset = dataset.filter(
++                lambda frame: tf.logical_or(
++                    frame["active_motion"],
++                    tf.random.uniform([], dtype=tf.float32)
++                    < inactive_keep_probability,
++                )
++            )
+         dataset = apply_per_dataset_frame_transforms(dataset, **dataset_frame_transform_kwargs)
+         datasets.append(dataset)
+diff --git a/src/unifolm_vla/model/modules/action_model/DiT_ActionHeader.py b/src/unifolm_vla/model/modules/action_model/DiT_ActionHeader.py
+--- a/src/unifolm_vla/model/modules/action_model/DiT_ActionHeader.py
++++ b/src/unifolm_vla/model/modules/action_model/DiT_ActionHeader.py
+@@ -254,3 +254,23 @@ class DiTActionExpert(nn.Module):
+             if valid.sum() <= 0:
+                 raise ValueError("action_valid_mask contains no valid targets")
++        configured_horizon_weights = self.config.get("loss_horizon_weights")
++        if configured_horizon_weights is None:
++            horizon_weights = torch.ones(
++                squared_error.shape[1],
++                dtype=squared_error.dtype,
++                device=squared_error.device,
++            )
++        else:
++            horizon_weights = torch.as_tensor(
++                configured_horizon_weights,
++                dtype=squared_error.dtype,
++                device=squared_error.device,
++            )
++            if horizon_weights.shape != (squared_error.shape[1],):
++                raise ValueError("loss_horizon_weights must match action horizon")
++            if not torch.isfinite(horizon_weights).all() or torch.any(
++                horizon_weights <= 0
++            ):
++                raise ValueError("loss_horizon_weights must be finite and positive")
++        valid = valid * horizon_weights[None, :]
+         configured_weights = self.config.get("loss_dimension_weights")

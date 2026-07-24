@@ -106,6 +106,7 @@ class Evaluator:
         statistics: Path,
         output_dir: Path,
         samples_per_source: int,
+        gate_scope: str,
     ) -> None:
         self.root = root
         self.config = config
@@ -113,6 +114,7 @@ class Evaluator:
         self.statistics = statistics
         self.output_dir = output_dir
         self.samples_per_source = samples_per_source
+        self.gate_scope = gate_scope
         self.python = Path("/home/aarav/miniconda3/envs/g1-unifolm-train/bin/python")
 
     def run(
@@ -143,6 +145,8 @@ class Evaluator:
             str(self.statistics),
             "--split",
             split,
+            "--gate-scope",
+            self.gate_scope,
         ]
         if fast:
             command.append("--skip-visual-perturbations")
@@ -186,6 +190,7 @@ def main() -> int:
     parser.add_argument("--expected-final-step", type=int, required=True)
     parser.add_argument("--samples-per-source", type=int, default=96)
     parser.add_argument("--real-weight", type=float, default=0.75)
+    parser.add_argument("--gate-scope", choices=("all", "active"), default="all")
     parser.add_argument("--gpus", type=int, nargs="+", default=(0, 1))
     args = parser.parse_args()
     if not 0.0 < args.real_weight < 1.0:
@@ -224,6 +229,7 @@ def main() -> int:
             statistics=args.statistics.resolve(),
             output_dir=output_dir,
             samples_per_source=args.samples_per_source,
+            gate_scope=args.gate_scope,
         )
 
         def evaluate_shard(gpu: int, paths: list[Path]) -> list[dict[str, Any]]:

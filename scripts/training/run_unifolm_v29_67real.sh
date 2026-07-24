@@ -18,9 +18,9 @@ action_model_lr="${ACTION_MODEL_LR:-2e-5}"
 warmup_steps="${WARMUP_STEPS:-200}"
 real_sample_weight="${REAL_SAMPLE_WEIGHT:-3.0}"
 image_aug="${IMAGE_AUG:-true}"
-config="${workspace}/configs/vla/v29_67real_motion_history.yaml"
-data="${workspace}/datasets/plush_touch_rlds_future1_v29_67real"
-stats="${workspace}/datasets/plush_touch_canonical_v29_67real/SHARED_TRAIN_STATS_75_REAL.json"
+config="${UNIFOLM_CONFIG:-${workspace}/configs/vla/v29_67real_motion_history.yaml}"
+data="${UNIFOLM_DATA_ROOT:-${workspace}/datasets/plush_touch_rlds_future1_v29_67real}"
+stats="${UNIFOLM_STATS:-${workspace}/datasets/plush_touch_canonical_v29_67real/SHARED_TRAIN_STATS_75_REAL.json}"
 
 if [[ "${mode}" == pipeline ]]; then
   exec "${workspace}/scripts/training/run_unifolm_v29_67real_pipeline.sh"
