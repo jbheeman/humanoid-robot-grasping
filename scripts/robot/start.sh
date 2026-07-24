@@ -103,7 +103,27 @@ pids=()
 cleanup() {
   local pid
   for pid in "${pids[@]:-}"; do
-    kill "${pid}" 2>/dev/null || true
+    kill -TERM "${pid}" 2>/dev/null || true
+  done
+  # Camera and DDS children may need a moment to unwind C/C++ callbacks.
+  # Wait before escalating so RealSense file descriptors are actually closed
+  # and the next foreground test does not fail with VIDIOC_S_FMT EBUSY.
+  local attempt
+  for attempt in {1..30}; do
+    local alive=0
+    for pid in "${pids[@]:-}"; do
+      if kill -0 "${pid}" 2>/dev/null; then
+        alive=1
+        break
+      fi
+    done
+    [[ "${alive}" == "0" ]] && break
+    sleep 0.1
+  done
+  for pid in "${pids[@]:-}"; do
+    if kill -0 "${pid}" 2>/dev/null; then
+      kill -KILL "${pid}" 2>/dev/null || true
+    fi
   done
   wait "${pids[@]:-}" 2>/dev/null || true
 }

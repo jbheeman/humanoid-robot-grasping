@@ -50,7 +50,9 @@ if [[ ! -f "${CALIBRATION}" ]]; then
 fi
 
 bridge_pid=""
+bridge_pgid=""
 session_enabled=0
+cleaning_up=0
 stop_remote_arm() {
   if [[ "${session_enabled}" == "1" ]]; then
     python3 - "${CLIENT_IP}" <<'PY' >/dev/null 2>&1 || true
@@ -69,13 +71,36 @@ PY
   fi
 }
 cleanup() {
+  if [[ "${cleaning_up}" == "1" ]]; then
+    return
+  fi
+  cleaning_up=1
   stop_remote_arm
+  if [[ -n "${bridge_pgid}" ]]; then
+    kill -TERM -- "-${bridge_pgid}" 2>/dev/null || true
+    for _ in {1..50}; do
+      if ! kill -0 -- "-${bridge_pgid}" 2>/dev/null; then
+        break
+      fi
+      sleep 0.1
+    done
+    if kill -0 -- "-${bridge_pgid}" 2>/dev/null; then
+      kill -KILL -- "-${bridge_pgid}" 2>/dev/null || true
+    fi
+  elif [[ -n "${bridge_pid}" ]]; then
+    kill -TERM "${bridge_pid}" 2>/dev/null || true
+  fi
   if [[ -n "${bridge_pid}" ]]; then
-    kill "${bridge_pid}" 2>/dev/null || true
     wait "${bridge_pid}" 2>/dev/null || true
   fi
+  # Librealsense can retain the V4L2 interface briefly after process exit.
+  sleep 1
 }
-trap cleanup EXIT INT TERM
+on_signal() {
+  exit 130
+}
+trap cleanup EXIT
+trap on_signal INT TERM
 
 echo "Starting guarded live bunny test"
 echo "  GB10:       ${CLIENT_IP}"
@@ -89,8 +114,16 @@ CALIBRATION="${CALIBRATION}" \
 ALLOW_MOVEMENT=1 \
 EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE}" \
 MAX_TILT_DEG="${MAX_TILT_DEG}" \
-  "${ROOT_DIR}/scripts/robot/start.sh" &
+  setsid "${ROOT_DIR}/scripts/robot/start.sh" &
 bridge_pid="$!"
+bridge_pgid="$(
+  ps -o pgid= -p "${bridge_pid}" 2>/dev/null |
+    tr -d '[:space:]'
+)"
+if [[ -z "${bridge_pgid}" ]]; then
+  echo "Could not determine the robot process group." >&2
+  exit 1
+fi
 
 python3 - "${CLIENT_IP}" "${READY_TIMEOUT_S}" <<'PY'
 import json
