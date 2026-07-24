@@ -161,9 +161,11 @@ EOF
       '  <Domain id="any">' \
       '    <General>' \
       "      <NetworkInterfaceAddress>${legacy_interface}</NetworkInterfaceAddress>" \
-      '      <AllowMulticast>true</AllowMulticast>' \
+      '      <AllowMulticast>false</AllowMulticast>' \
       '    </General>' \
       '    <Discovery>' \
+      '      <ParticipantIndex>auto</ParticipantIndex>' \
+      '      <MaxAutoParticipantIndex>120</MaxAutoParticipantIndex>' \
       "      <Peers>${legacy_peers_xml}</Peers>" \
       '    </Discovery>' \
       '  </Domain>' \
