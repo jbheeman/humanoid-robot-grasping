@@ -10,6 +10,9 @@ max_steps="${MAX_TRAIN_STEPS:-4000}"
 run_root="${workspace}/runs/unifolm_plush_touch"
 status_dir="${workspace}/runs/automation/gpu-failover"
 status="${status_dir}/${run_id}.json"
+health_interval="${PRIMARY_GPU_HEALTH_INTERVAL_SECONDS:-10}"
+health_failures_required="${PRIMARY_GPU_HEALTH_FAILURES_REQUIRED:-3}"
+terminate_grace="${PRIMARY_TERMINATE_GRACE_SECONDS:-15}"
 
 mkdir -p "${status_dir}"
 
@@ -28,11 +31,72 @@ checkpoint_step() {
   basename "$1" | sed -E 's/^steps_([0-9]+)_action_model\.pt$/\1/'
 }
 
-write_status training "${primary_gpus}" "primary distributed attempt"
-set +e
-TRAINING_GPUS="${primary_gpus}" "${launcher}" full
-primary_rc=$?
-set -e
+gpu_set_healthy() {
+  local csv="$1" gpu
+  local -a ids
+  IFS=',' read -r -a ids <<< "${csv}"
+  for gpu in "${ids[@]}"; do
+    nvidia-smi --id="${gpu}" \
+      --query-gpu=pci.bus_id --format=csv,noheader >/dev/null 2>&1 || return 1
+  done
+}
+
+terminate_primary() {
+  local pid="$1" elapsed=0
+
+  # Accelerate owns the rank processes directly. Signal those children first
+  # so NCCL ranks do not remain alive after the launcher exits.
+  pkill -TERM -P "${pid}" 2>/dev/null || true
+  kill -TERM "${pid}" 2>/dev/null || true
+  while kill -0 "${pid}" 2>/dev/null && (( elapsed < terminate_grace )); do
+    sleep 1
+    elapsed=$((elapsed + 1))
+  done
+  if kill -0 "${pid}" 2>/dev/null; then
+    pkill -KILL -P "${pid}" 2>/dev/null || true
+    kill -KILL "${pid}" 2>/dev/null || true
+  fi
+}
+
+run_supervised_primary() {
+  local failures=0 primary_pid gpu_detail
+
+  TRAINING_GPUS="${primary_gpus}" "${launcher}" full &
+  primary_pid=$!
+  write_status training "${primary_gpus}" \
+    "primary distributed attempt; supervisor_pid=$$; launcher_pid=${primary_pid}"
+
+  while kill -0 "${primary_pid}" 2>/dev/null; do
+    sleep "${health_interval}"
+    kill -0 "${primary_pid}" 2>/dev/null || break
+    if gpu_set_healthy "${primary_gpus}"; then
+      failures=0
+      continue
+    fi
+    failures=$((failures + 1))
+    write_status degraded "${primary_gpus}" \
+      "GPU health query failed ${failures}/${health_failures_required}"
+    if (( failures >= health_failures_required )); then
+      gpu_detail="GPU health failed ${failures} consecutive checks; terminating wedged distributed launcher"
+      write_status failover_requested "${primary_gpus}" "${gpu_detail}"
+      terminate_primary "${primary_pid}"
+      break
+    fi
+  done
+
+  wait "${primary_pid}"
+}
+
+if gpu_set_healthy "${primary_gpus}"; then
+  set +e
+  run_supervised_primary
+  primary_rc=$?
+  set -e
+else
+  primary_rc=86
+  write_status failover_requested "${primary_gpus}" \
+    "primary GPU set failed preflight health check"
+fi
 if (( primary_rc == 0 )); then
   write_status complete "${primary_gpus}" "primary attempt completed"
   exit 0
