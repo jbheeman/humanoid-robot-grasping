@@ -101,11 +101,10 @@ RIGHT_BRAINCO_CONTACT_EXPR = (
 )
 LEFT_BRAINCO_CONTACT_EXPR = RIGHT_BRAINCO_CONTACT_EXPR.replace("right_", "left_", 1)
 SPEED_BINS_M_S = ((0.08, 0.10), (0.11, 0.13), (0.14, 0.16))
-HEADING_BINS_DEG = ((-3.0, -1.0), (-0.5, 0.5), (1.0, 3.0))
+HEADING_CENTERS_DEG = (-18.0, -9.0, 0.0, 9.0, 18.0)
 TUCK_TARGETS = (
     (0.170, -0.185, 0.175),
     (0.185, -0.165, 0.200),
-    (0.175, -0.200, 0.210),
 )
 
 
@@ -115,17 +114,29 @@ def design_parameters(seed, rng):
     if index is None:
         index = seed - args.seed_start
     speed_low, speed_high = SPEED_BINS_M_S[index % len(SPEED_BINS_M_S)]
-    heading_low, heading_high = HEADING_BINS_DEG[(index // 3) % len(HEADING_BINS_DEG)]
     speed = rng.uniform(speed_low, speed_high)
-    heading_deg = rng.uniform(heading_low, heading_high)
+    heading_center = HEADING_CENTERS_DEG[(index // len(SPEED_BINS_M_S)) % len(HEADING_CENTERS_DEG)]
+    heading_deg = heading_center + rng.uniform(-3.0, 3.0)
+    object_yaw_deg = (index * 137.507764 + rng.uniform(-8.0, 8.0)) % 360.0
     heading = np.deg2rad(heading_deg)
     # Primarily lateral across the table, with bounded fore/aft variation.
     direction = np.array([np.sin(heading), -np.cos(heading), 0.0], dtype=np.float64)
     latency_frames = 15 + (index % 4)  # 0.50--0.60 s observation/control latency.
     extension_frames = 22 + ((index * 5) % 8)  # 0.73--0.97 s arm motion.
     hold_frames = 18
-    tuck = np.asarray(TUCK_TARGETS[(index // 2) % len(TUCK_TARGETS)], dtype=np.float64)
-    return speed, heading_deg, direction, latency_frames, extension_frames, hold_frames, tuck
+    # Thirty consecutive design indices form a paired 5 heading x 3 speed x
+    # 2 arm-start matrix without relying on random chance for coverage.
+    tuck = np.asarray(TUCK_TARGETS[(index // 15) % len(TUCK_TARGETS)], dtype=np.float64)
+    return (
+        speed,
+        heading_deg,
+        object_yaw_deg,
+        direction,
+        latency_frames,
+        extension_frames,
+        hold_frames,
+        tuck,
+    )
 
 
 def npv(value):
@@ -156,6 +167,17 @@ def quat_matrix(q):
     ])
 
 
+def quat_multiply(left, right):
+    lw, lx, ly, lz = np.asarray(left, dtype=np.float64)
+    rw, rx, ry, rz = np.asarray(right, dtype=np.float64)
+    return np.array([
+        lw * rw - lx * rx - ly * ry - lz * rz,
+        lw * rx + lx * rw + ly * rz - lz * ry,
+        lw * ry - lx * rz + ly * rw + lz * rx,
+        lw * rz + lx * ry - ly * rx + lz * rw,
+    ])
+
+
 def quat_rpy(q):
     w, x, y, z = np.asarray(q, dtype=np.float64)
     return np.array([
@@ -172,17 +194,6 @@ def matrix_rpy(rotation):
         np.arcsin(np.clip(-rotation[2, 0], -1, 1)),
         np.arctan2(rotation[1, 0], rotation[0, 0]),
     ], dtype=np.float32)
-
-
-def quat_multiply(left, right):
-    lw, lx, ly, lz = np.asarray(left, dtype=np.float64)
-    rw, rx, ry, rz = np.asarray(right, dtype=np.float64)
-    return np.array([
-        lw * rw - lx * rx - ly * ry - lz * rz,
-        lw * rx + lx * rw + ly * rz - lz * ry,
-        lw * ry - lx * rz + ly * rw + lz * rx,
-        lw * rz + lx * ry - ly * rx + lz * rw,
-    ])
 
 
 def rgb(scene, name):
@@ -548,7 +559,16 @@ def main():
             full = torch.zeros(env.action_space.shape, dtype=torch.float32, device=env.device)
             placement_root = npv(robot.data.root_pos_w[0])
             placement_rot = quat_matrix(npv(robot.data.root_quat_w[0]))
-            speed, heading_deg, direction_base, latency_frames, extension_frames, hold_frames, tuck_base = design_parameters(seed, rng)
+            (
+                speed,
+                heading_deg,
+                object_yaw_deg,
+                direction_base,
+                latency_frames,
+                extension_frames,
+                hold_frames,
+                tuck_base,
+            ) = design_parameters(seed, rng)
             root_pos = npv(robot.data.root_pos_w[0])
             root_rot = quat_matrix(npv(robot.data.root_quat_w[0]))
             intercept_base = np.array([
@@ -582,8 +602,15 @@ def main():
                 raise RuntimeError(f"launch_outside_table:{source_base.tolist()}")
             object_world = placement_root + placement_rot @ source_base
             object_world[2] = TABLE_Z + 0.002
+            local_yaw = np.deg2rad(object_yaw_deg)
+            local_object_quat = np.array(
+                [np.cos(local_yaw / 2.0), 0.0, 0.0, np.sin(local_yaw / 2.0)]
+            )
+            object_world_quat = quat_multiply(
+                npv(robot.data.root_quat_w[0]), local_object_quat
+            )
             target_pose = torch.tensor(
-                [[*object_world, 1.0, 0.0, 0.0, 0.0]],
+                [[*object_world, *object_world_quat]],
                 dtype=torch.float32,
                 device=env.device,
             )
@@ -760,6 +787,7 @@ def main():
                 "camera_variant": args.camera_variant,
                 "source_task": args.task, "object_x": object_world[0], "object_y": object_world[1],
                 "launch_speed_m_s": speed, "launch_heading_deg": heading_deg,
+                "object_initial_yaw_deg": object_yaw_deg,
                 "blocking_contact_lead_m": blocking_contact_lead_m,
                 "latency_frames": latency_frames, "reaction_time_s": reaction_time_s,
                 "source_camera_fps": 60.0, "policy_sample_fps": 30.0,
@@ -1013,9 +1041,15 @@ def main():
                 "scenario_id": f"seed-{seed}",
                 "seed": seed,
                 "contact": contact_frames >= 1,
-                "pre_contact_speed_m_s": pre_contact_speed,
-                "post_contact_speed_m_s": post_contact_speed,
-                "post_contact_progress_m": post_contact_progress_m,
+                "pre_contact_speed_m_s": (
+                    pre_contact_speed if np.isfinite(pre_contact_speed) else 0.0
+                ),
+                "post_contact_speed_m_s": (
+                    post_contact_speed if np.isfinite(post_contact_speed) else 1e9
+                ),
+                "post_contact_progress_m": (
+                    post_contact_progress_m if np.isfinite(post_contact_progress_m) else 1e9
+                ),
                 "contact_dwell_s": contact_dwell_s,
                 "peak_impact_n": max_eligible_contact_force,
                 "prohibited_contacts": prohibited_contacts,
@@ -1029,6 +1063,7 @@ def main():
                 "dataset_quality_gate": success,
                 "launch_speed_m_s": speed,
                 "launch_heading_deg": heading_deg,
+                "object_initial_yaw_deg": object_yaw_deg,
             }
             writer.close(success=success)
             writer = None
@@ -1113,10 +1148,10 @@ def main():
                     "seed": seed,
                     "contact": False,
                     "pre_contact_speed_m_s": 0.0,
-                    "post_contact_speed_m_s": float("inf"),
-                    "post_contact_progress_m": float("inf"),
+                    "post_contact_speed_m_s": 1e9,
+                    "post_contact_progress_m": 1e9,
                     "contact_dwell_s": 0.0,
-                    "peak_impact_n": float("inf"),
+                    "peak_impact_n": 1e9,
                     "prohibited_contacts": 0,
                     "failure_reason": reason,
                     "prediction_error_m": 0.0,
