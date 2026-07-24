@@ -40,6 +40,14 @@ parser.add_argument("--maximum-right-table-force", type=float, default=0.50)
 parser.add_argument("--maximum-initial-spin-rad-s", type=float, default=0.10)
 parser.add_argument("--diagnostic-design-index", type=int)
 parser.add_argument(
+    "--rollout-output",
+    type=Path,
+    help=(
+        "write one unbiased oracle_ik record per attempted seed; --episodes "
+        "then means exact attempts rather than accepted replacements"
+    ),
+)
+parser.add_argument(
     "--camera-variant",
     choices=("head", "angled-left", "angled-right"),
     default="head",
@@ -68,7 +76,7 @@ from isaaclab.sensors import ContactSensorCfg  # noqa: E402
 from isaaclab.sim.spawners.from_files.from_files_cfg import UsdFileCfg  # noqa: E402
 from isaaclab_tasks.utils.parse_cfg import parse_env_cfg  # noqa: E402
 
-from g1_bunny_vla.contract import CAMERA_NAMES, FrameSample  # noqa: E402
+from g1_bunny_vla.contract import FrameSample  # noqa: E402
 from g1_bunny_vla.episode_writer import EpisodeWriter  # noqa: E402
 from g1_bunny_vla.validate_dataset import validate_episode  # noqa: E402
 
@@ -493,9 +501,20 @@ def main():
     completed = (p for p in args.output_dir.glob("episode_*.hdf5") if ".partial." not in p.name)
     accepted = sum(1 for p in completed if not validate_episode(p))
     attempt = 0
-    max_attempts = max(args.episodes, int(args.episodes * args.max_attempt_factor))
+    max_attempts = (
+        args.episodes
+        if args.rollout_output is not None
+        else max(args.episodes, int(args.episodes * args.max_attempt_factor))
+    )
+    if args.rollout_output is not None:
+        args.rollout_output.parent.mkdir(parents=True, exist_ok=True)
+        args.rollout_output.unlink(missing_ok=True)
     t0 = time.monotonic()
-    while accepted < args.episodes and attempt < max_attempts:
+    while (
+        attempt < args.episodes
+        if args.rollout_output is not None
+        else accepted < args.episodes and attempt < max_attempts
+    ):
         free_gb = shutil.disk_usage(args.output_dir).free / (1024 ** 3)
         if free_gb < args.min_free_gb:
             raise SystemExit(f"disk guard stopped generation: {free_gb:.1f} GiB free < {args.min_free_gb:.1f} GiB")
@@ -511,6 +530,7 @@ def main():
         partial.unlink(missing_ok=True)
         writer = None
         reason = "unknown"
+        rollout_metrics = None
         try:
             env.reset(seed=seed)
             # Spawn the unused left arm directly in its official side-rest
@@ -774,6 +794,8 @@ def main():
             drive_forces_n = []
             palm_positions_base = []
             tangent_speeds = []
+            object_positions_base = []
+            contact_states = []
             lateral_speeds = []
             angular_speeds = []
             tilt_degrees = []
@@ -822,12 +844,12 @@ def main():
                 if eligible_contact and len(pair_forces):
                     contacting_link = contact_body_names[int(np.argmax(np.linalg.norm(pair_forces, axis=1)))]
                 contacting_links.append(contacting_link)
+                contact_states.append(eligible_contact)
                 contact_excess = float(np.linalg.norm(contact))
                 hand_position = npv(robot.data.body_pos_w[0, rp]).astype(np.float32)
                 hand_z = float(hand_position[2])
                 object_center = npv(env.scene["object"].data.root_pos_w[0]).astype(np.float32)
                 object_center[2] += 0.09
-                hand_object_distance = float(np.linalg.norm(hand_position - object_center))
                 if eligible_contact:
                     contact_frames += 1
                     if first_contact_frame is None:
@@ -847,6 +869,7 @@ def main():
                 safety_frames += int(safety)
                 object_position_w = npv(env.scene["object"].data.root_pos_w[0]).astype(np.float32)
                 object_position_base = root_rot.T @ (object_position_w - root_pos)
+                object_positions_base.append(object_position_base.copy())
                 object_velocity_base = root_rot.T @ npv(env.scene["object"].data.root_lin_vel_w[0])
                 tangent = float(np.dot(object_velocity_base, direction_base))
                 lateral = float(np.linalg.norm(object_velocity_base - tangent * direction_base))
@@ -903,6 +926,7 @@ def main():
                 frame += 1
             displacement = float(np.linalg.norm(npv(env.scene["object"].data.root_pos_w[0]) - initial_object))
             tangent_speeds = np.asarray(tangent_speeds, dtype=np.float32)
+            object_positions_base = np.asarray(object_positions_base, dtype=np.float32)
             lateral_speeds = np.asarray(lateral_speeds, dtype=np.float32)
             angular_speeds = np.asarray(angular_speeds, dtype=np.float32)
             tilt_degrees = np.asarray(tilt_degrees, dtype=np.float32)
@@ -915,6 +939,8 @@ def main():
             stop_fraction = -float("inf")
             counterfactual_margin = -float("inf")
             actual_extension_m = 0.0
+            post_contact_progress_m = float("inf")
+            contact_dwell_s = 0.0
             if first_contact_frame is not None and first_contact_frame > 0:
                 pre_start = max(0, first_contact_frame - 4)
                 pre_contact_speed = float(np.median(tangent_speeds[pre_start:first_contact_frame]))
@@ -935,6 +961,22 @@ def main():
                             0.0, baseline_tangent_speeds[post_start:post_stop]
                         )))
                         counterfactual_margin = baseline_post_speed - post_contact_speed
+                progress_stop = min(
+                    len(object_positions_base),
+                    first_contact_frame + int(round(0.30 * 30.0)) + 1,
+                )
+                if progress_stop > first_contact_frame:
+                    relative = (
+                        object_positions_base[first_contact_frame:progress_stop]
+                        - object_positions_base[first_contact_frame]
+                    )
+                    post_contact_progress_m = float(np.max(relative @ direction_base))
+                longest_contact_run = 0
+                current_contact_run = 0
+                for active in contact_states[first_contact_frame:]:
+                    current_contact_run = current_contact_run + 1 if active else 0
+                    longest_contact_run = max(longest_contact_run, current_contact_run)
+                contact_dwell_s = longest_contact_run / 30.0
             success = (
                 contact_frames >= 1
                 and safety_frames == 0
@@ -959,6 +1001,35 @@ def main():
                 and float(np.max(angular_speeds[:max(1, first_contact_frame or 1)])) <= 0.12
                 and float(np.max(tilt_degrees[:max(1, first_contact_frame or 1)])) <= 25.0
             )
+            prohibited_contacts = int(
+                safety_frames > 0
+                or max_left_object_force > 0.25
+                or max_right_table_force > args.maximum_right_table_force
+                or early_interference
+            )
+            rollout_metrics = {
+                "policy": "oracle_ik",
+                "latency_ms": 0,
+                "scenario_id": f"seed-{seed}",
+                "seed": seed,
+                "contact": contact_frames >= 1,
+                "pre_contact_speed_m_s": pre_contact_speed,
+                "post_contact_speed_m_s": post_contact_speed,
+                "post_contact_progress_m": post_contact_progress_m,
+                "contact_dwell_s": contact_dwell_s,
+                "peak_impact_n": max_eligible_contact_force,
+                "prohibited_contacts": prohibited_contacts,
+                "failure_reason": "" if success else "physics_block_failed",
+                "prediction_error_m": 0.0,
+                "ik_rejected": False,
+                "joint_limit_saturations": 0,
+                "torque_saturations": 0,
+                "safety_instrumentation_complete": False,
+                "missing_safety_instrumentation": ["right_arm_self_contact"],
+                "dataset_quality_gate": success,
+                "launch_speed_m_s": speed,
+                "launch_heading_deg": heading_deg,
+            }
             writer.close(success=success)
             writer = None
             with h5py.File(partial, "r+") as h5:
@@ -1034,6 +1105,28 @@ def main():
                 reason = "accepted"
         except Exception as exc:
             reason = f"exception:{type(exc).__name__}:{exc}"
+            if rollout_metrics is None:
+                rollout_metrics = {
+                    "policy": "oracle_ik",
+                    "latency_ms": 0,
+                    "scenario_id": f"seed-{seed}",
+                    "seed": seed,
+                    "contact": False,
+                    "pre_contact_speed_m_s": 0.0,
+                    "post_contact_speed_m_s": float("inf"),
+                    "post_contact_progress_m": float("inf"),
+                    "contact_dwell_s": 0.0,
+                    "peak_impact_n": float("inf"),
+                    "prohibited_contacts": 0,
+                    "failure_reason": reason,
+                    "prediction_error_m": 0.0,
+                    "ik_rejected": reason.startswith("exception:RuntimeError:ik:"),
+                    "joint_limit_saturations": 0,
+                    "torque_saturations": 0,
+                    "safety_instrumentation_complete": False,
+                    "missing_safety_instrumentation": ["right_arm_self_contact"],
+                    "dataset_quality_gate": False,
+                }
             if writer is not None:
                 writer.close(success=False)
             if partial.exists():
@@ -1044,13 +1137,18 @@ def main():
         record = {"time": time.time(), "seed": seed, "accepted": accepted, "attempt": attempt, "result": reason}
         with manifest.open("a", encoding="utf-8") as stream:
             stream.write(json.dumps(record, sort_keys=True) + "\n")
+        if args.rollout_output is not None:
+            assert rollout_metrics is not None
+            rollout_metrics["result"] = reason
+            with args.rollout_output.open("a", encoding="utf-8") as stream:
+                stream.write(json.dumps(rollout_metrics, sort_keys=True) + "\n")
         elapsed = time.monotonic() - t0
         rate = accepted / elapsed if elapsed else 0.0
         eta = (args.episodes - accepted) / rate if rate else None
         print(json.dumps({**record, "elapsed_s": round(elapsed, 1), "eta_s": None if eta is None else round(eta)}), flush=True)
     env.close()
     failure = None
-    if accepted < args.episodes:
+    if args.rollout_output is None and accepted < args.episodes:
         failure = f"stopped after {attempt} attempts with only {accepted}/{args.episodes} accepted"
     simulation_app.close()
     if failure is not None:

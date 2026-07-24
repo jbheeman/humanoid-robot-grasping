@@ -22,6 +22,7 @@ def rollout(policy: str, latency_ms: int, scenario: int, success: bool) -> dict:
         "ik_rejected": False,
         "joint_limit_saturations": 0,
         "torque_saturations": 0,
+        "safety_instrumentation_complete": True,
     }
 
 

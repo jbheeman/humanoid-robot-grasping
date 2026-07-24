@@ -4,13 +4,21 @@ from __future__ import annotations
 
 from collections import defaultdict
 from dataclasses import dataclass
+import math
 from typing import Iterable, Mapping
-
-from .vla_closed_loop_eval import BlockSuccessConfig, physics_qualified_success, wilson_lower_95
 
 
 LIGHTWEIGHT_POLICIES = ("hold", "oracle_ik", "cv_ik", "alpha_beta_ik", "gru_ik")
 LATENCY_SLICES_MS = (0, 100, 200, 400)
+
+
+@dataclass(frozen=True)
+class BlockSuccessConfig:
+    minimum_contact_dwell_s: float = 0.20
+    maximum_post_contact_speed_m_s: float = 0.05
+    maximum_speed_ratio: float = 0.40
+    maximum_post_contact_progress_m: float = 0.03
+    maximum_peak_impact_n: float = 20.0
 
 
 @dataclass(frozen=True)
@@ -20,6 +28,42 @@ class InterceptPromotionConfig:
     minimum_candidate_success_rate: float = 0.80
     minimum_candidate_wilson_lower_95: float = 0.70
     maximum_hold_success_rate: float = 0.15
+
+
+def physics_qualified_success(
+    record: Mapping[str, object],
+    config: BlockSuccessConfig | None = None,
+) -> bool:
+    cfg = config or BlockSuccessConfig()
+    pre_speed = float(record["pre_contact_speed_m_s"])
+    post_speed = float(record["post_contact_speed_m_s"])
+    slowed = (
+        post_speed <= cfg.maximum_post_contact_speed_m_s
+        or post_speed / max(pre_speed, 1e-6) <= cfg.maximum_speed_ratio
+    )
+    return bool(
+        record["contact"]
+        and slowed
+        and float(record["post_contact_progress_m"])
+        <= cfg.maximum_post_contact_progress_m
+        and float(record["contact_dwell_s"]) >= cfg.minimum_contact_dwell_s
+        and float(record["peak_impact_n"]) <= cfg.maximum_peak_impact_n
+        and int(record["prohibited_contacts"]) == 0
+    )
+
+
+def wilson_lower_95(successes: int, total: int) -> float:
+    if total <= 0:
+        return 0.0
+    z = 1.959963984540054
+    proportion = successes / total
+    denominator = 1.0 + z * z / total
+    centre = proportion + z * z / (2.0 * total)
+    margin = z * math.sqrt(
+        proportion * (1.0 - proportion) / total
+        + z * z / (4.0 * total * total)
+    )
+    return (centre - margin) / denominator
 
 
 def summarize_intercept_rollouts(
@@ -99,6 +143,10 @@ def summarize_intercept_rollouts(
             "torque_saturations": sum(
                 int(row.get("torque_saturations", 0)) for row in selected
             ),
+            "incomplete_safety_instrumentation": sum(
+                not bool(row.get("safety_instrumentation_complete", True))
+                for row in selected
+            ),
             "failure_reasons": dict(sorted(failure_reasons.items())),
             "latency_slices_ms": slices,
         }
@@ -162,6 +210,10 @@ def evaluate_intercept_promotion(
         "zero_prohibited_contacts": int(candidate["prohibited_contacts"]) == 0,
         "zero_joint_limit_saturations": int(candidate["joint_limit_saturations"]) == 0,
         "zero_torque_saturations": int(candidate["torque_saturations"]) == 0,
+        "complete_safety_instrumentation": (
+            int(candidate["incomplete_safety_instrumentation"]) == 0
+            and int(oracle["incomplete_safety_instrumentation"]) == 0
+        ),
         **{f"latency_{latency}ms": passed for latency, passed in candidate_slice_checks.items()},
     }
     return {
