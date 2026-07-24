@@ -645,15 +645,35 @@ class ArmTrackingRuntime:
                 return
             if waypoint is None:
                 self._start_escape_path = None
-                self._reject(base_status, "ik_escape_complete_waiting_for_clear_state", colormap)
-                return
-            # The complete cached path was densely collision/table validated
-            # when planned. Expose one waypoint repeatedly until measured
-            # state reaches it; the selector rejects >0.015-rad tracking drift
-            # and the robot bridge independently rejects >0.05-rad targets.
-            # Re-running full mesh validation at camera rate takes ~1 second
-            # on GB10 and would make an otherwise safe command stale.
-            ik = IKResult(True, waypoint, 0.0, 0.0)
+                collision_labels = self.ik.collision_labels(last_q)
+                if collision_labels:
+                    self._reject(
+                        base_status,
+                        "ik_escape_complete_but_collision_remains",
+                        colormap,
+                    )
+                    return
+                if not self.calibration.workspace.contains(target.position):
+                    self._reject(base_status, "workspace_violation", colormap)
+                    return
+                if not has_support_clearance(target.position, plane):
+                    self._reject(base_status, "support_plane_clearance", colormap)
+                    return
+                ik_step_type = "analytic_local_translation"
+                transform = self.ik.forward_kinematics(last_q)
+                transform[:3, 3] = target.position
+                ik = self.ik.solve_local_translation(
+                    transform,
+                    last_q,
+                    support_plane=plane,
+                )
+            else:
+                # The complete cached path was densely collision/table
+                # validated when planned. Expose one waypoint repeatedly until
+                # measured state reaches it; the selector rejects motion
+                # outside the validated joint-wise corridor and the bridge
+                # independently rejects >0.05-rad targets.
+                ik = IKResult(True, waypoint, 0.0, 0.0)
         else:
             self._start_escape_path = None
             self._start_escape_target_index = 1
