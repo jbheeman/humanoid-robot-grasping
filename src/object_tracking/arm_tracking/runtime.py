@@ -145,6 +145,22 @@ def clamp_point_height_to_support(
     return corrected, clamped_height
 
 
+def right_arm_ik_seed(
+    arm_state: dict[str, Any],
+    home_q: Sequence[float] | None,
+) -> list[float]:
+    """Prefer the commanded arm, then the observed 29-DOF right-arm state."""
+
+    commanded = arm_state.get("commanded_arm_q")
+    if isinstance(commanded, list) and len(commanded) == 14:
+        return [float(value) for value in commanded[-7:]]
+    visualization = arm_state.get("visualization") or {}
+    measured = visualization.get("measured_pose_rad")
+    if isinstance(measured, list) and len(measured) == 29:
+        return [float(value) for value in measured[22:29]]
+    return [float(value) for value in (home_q or (0.0,) * 7)]
+
+
 def depth_colormap_jpeg(z16: np.ndarray, depth_scale: float) -> bytes | None:
     try:
         import cv2
@@ -529,12 +545,7 @@ class ArmTrackingRuntime:
             base_status.update({"ik_status": "unavailable", "ik_error": self.ik_error})
             self._reject(base_status, "ik_unavailable", colormap)
             return
-        last_arm = arm_state.get("commanded_arm_q")
-        last_q = (
-            last_arm[-7:]
-            if isinstance(last_arm, list) and len(last_arm) == 14
-            else list(self.home_q or (0.0,) * 7)
-        )
+        last_q = right_arm_ik_seed(arm_state, self.home_q)
         transform = np.eye(4)
         transform[:3, 3] = target.position
         ik = self.ik.solve(transform, last_q, support_plane=plane)

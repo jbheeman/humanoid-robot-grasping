@@ -25,6 +25,7 @@ from object_tracking.arm_tracking.runtime import (
     RuntimeConfig,
     clamp_point_height_to_support,
     register_depth_in_rgb,
+    right_arm_ik_seed,
 )
 
 
@@ -149,6 +150,13 @@ def test_registered_point_height_accepts_bounded_support_region() -> None:
 
     np.testing.assert_allclose(corrected, (0.52, 0.14, 0.03))
     assert height == 0.03
+
+
+def test_ik_seed_uses_measured_right_arm_when_no_command_exists() -> None:
+    measured = [float(index) for index in range(29)]
+    state = {"visualization": {"measured_pose_rad": measured}}
+
+    assert right_arm_ik_seed(state, None) == measured[22:29]
 
 
 def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) -> None:
