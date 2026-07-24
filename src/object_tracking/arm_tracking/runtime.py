@@ -546,12 +546,21 @@ class ArmTrackingRuntime:
             self._reject(base_status, "ik_unavailable", colormap)
             return
         last_q = right_arm_ik_seed(arm_state, self.home_q)
-        transform = np.eye(4)
+        # Realtime tracking is an incremental Cartesian servo. Preserve the
+        # measured wrist orientation and emit one collision/table-validated
+        # edge instead of asking the global solver for a discontinuous
+        # one-shot jump to an identity-orientation pose.
+        transform = self.ik.forward_kinematics(last_q)
         transform[:3, 3] = target.position
-        ik = self.ik.solve(transform, last_q, support_plane=plane)
+        ik = self.ik.solve_local_translation(
+            transform,
+            last_q,
+            support_plane=plane,
+        )
         base_status.update(
             {
                 "ik_status": "ok" if ik.ok else ik.reason,
+                "ik_step_type": "analytic_local_translation",
                 "ik_global_backend": self.ik.global_backend,
                 "ik_local_backend": self.ik.local_backend,
                 "ik_position_error_m": ik.position_error_m,
