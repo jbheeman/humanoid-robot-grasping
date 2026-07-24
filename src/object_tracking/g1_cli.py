@@ -88,6 +88,11 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("robot", "start"): Route(
         "script", "scripts/robot/start.sh", "start the disarmed robot ROS 2 node"
     ),
+    ("robot", "bunny-test"): Route(
+        "script",
+        "scripts/robot/bunny-test.sh",
+        "start the robot bridge and automatically run one guarded bunny-tracking session",
+    ),
     ("setup", "gb10"): Route(
         "script", "scripts/gb10/setup.sh", "install GB10 vision/training environment"
     ),
