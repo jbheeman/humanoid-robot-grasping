@@ -111,10 +111,13 @@ while time.monotonic() < deadline:
         command = tracking.get("predicted_bounded_arm_command_rad")
         ready = (
             tracking.get("mode") == "execute"
+            and tracking.get("arm_state") == "DISARMED"
             and tracking.get("ik_status") == "ok"
             and isinstance(command, list)
             and len(command) == 7
             and tracking.get("reason") == "arm_not_explicitly_enabled"
+            and float(tracking.get("depth_age_ms", 1e9)) <= 200.0
+            and float(tracking.get("processing_latency_ms", 1e9)) <= 250.0
         )
         if ready:
             print(
