@@ -28,6 +28,7 @@ from typing import Any, Iterable
 SOURCES = ("g1_plush_touch_real", "g1_plush_touch_sim")
 SOURCE_WEIGHTS = {"g1_plush_touch_real": 0.75, "g1_plush_touch_sim": 0.25}
 TERMINAL_TEST_PHASES = {"complete", "test_rejected"}
+TUNING_GROUP_PREFIX = "v29-67real-val96:"
 
 
 def atomic_json(path: Path, payload: dict[str, Any]) -> None:
@@ -287,6 +288,7 @@ def next_parameters(
     rows = [
         row
         for row in db.comparable_attempts()
+        if (row["comparable_group"] or "").startswith(TUNING_GROUP_PREFIX)
         if row["selected_checkpoint"]
         and Path(row["selected_checkpoint"]).is_file()
     ]
@@ -680,7 +682,11 @@ def run_campaign(args: argparse.Namespace) -> int:
         write_campaign_status(db, campaign_dir, "INFRASTRUCTURE_PAUSED")
         return 32
 
-    comparable = db.comparable_attempts()
+    comparable = [
+        row
+        for row in db.comparable_attempts()
+        if (row["comparable_group"] or "").startswith(TUNING_GROUP_PREFIX)
+    ]
     best_objective = min(
         (finite(row["objective"]) for row in comparable), default=math.inf
     )

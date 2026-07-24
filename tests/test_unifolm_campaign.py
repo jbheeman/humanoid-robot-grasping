@@ -72,7 +72,8 @@ def test_next_parameters_uses_existing_checkpoint_and_varies(tmp_path: Path) -> 
     first = campaign.next_parameters(db, "test", base, 4000)
     assert first["parent_checkpoint"] == str(base)
     db.upsert_attempt(first)
-    report_path = tmp_path / "report.json"
+    report_path = tmp_path / "v29-67real" / "report.json"
+    report_path.parent.mkdir()
     report_path.write_text(json.dumps(report(base, 0.03, 0.04)))
     db.record_report(first["attempt_id"], report_path)
     second = campaign.next_parameters(db, "test", base, 4000)

@@ -1,13 +1,11 @@
 diff --git a/src/unifolm_vla/rlds_dataloader/datasets/rlds/oxe/mixtures.py b/src/unifolm_vla/rlds_dataloader/datasets/rlds/oxe/mixtures.py
 --- a/src/unifolm_vla/rlds_dataloader/datasets/rlds/oxe/mixtures.py
 +++ b/src/unifolm_vla/rlds_dataloader/datasets/rlds/oxe/mixtures.py
-@@ -7,8 +7,21 @@ a float "sampling weight"
- """
- 
+@@ -8,1 +8,13 @@
 +import math
 +import os
  from typing import Dict, List, Tuple
- 
++
 +
 +def _g1_plush_real_weight() -> float:
 +    """Read a bounded real-data sampling weight for controlled campaigns."""
@@ -17,11 +15,6 @@ diff --git a/src/unifolm_vla/rlds_dataloader/datasets/rlds/oxe/mixtures.py b/src
 +            "G1_PLUSH_REAL_WEIGHT must be finite and between 1.0 and 12.0"
 +        )
 +    return value
-+
-+
- # fmt: off
- OXE_NAMED_MIXTURES: Dict[str, List[Tuple[str, float]]] = {
-     "g1_plush_touch_sim": [("g1_plush_touch_sim", 1.0)],
-     "g1_plush_touch_real": [("g1_plush_touch_real", 1.0)],
+@@ -14,1 +26,1 @@
 -    "g1_plush_touch_mixed": [("g1_plush_touch_sim", 1.0), ("g1_plush_touch_real", 3.0)],
 +    "g1_plush_touch_mixed": [("g1_plush_touch_sim", 1.0), ("g1_plush_touch_real", _g1_plush_real_weight())],
