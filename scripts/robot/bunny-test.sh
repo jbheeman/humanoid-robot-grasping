@@ -8,6 +8,11 @@ EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-ai}"
 MAX_TILT_DEG="${MAX_TILT_DEG:-8}"
 MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG:-12}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-90}"
+# The same D435I is already supplying 960x540 RGB at 60 Hz through V4L2.
+# Running its independent librealsense depth interface at 60 Hz as well has
+# repeatedly stalled after a few seconds.  Thirty-Hz capture is comfortably
+# above the 15-Hz ROS depth transport and the 10-20-Hz control loop.
+DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS:-30}"
 # Domain 42 is also used by older project processes and has repeatedly left
 # the live G1 and GB10 participants undiscovered.  The live bunny test uses a
 # dedicated domain that is verified end-to-end during commissioning.
@@ -117,6 +122,7 @@ echo "  calibration: ${CALIBRATION}"
 echo "  motion mode: ${EXPECTED_MOTION_MODE}"
 echo "  tilt limit:  ${MAX_TILT_DEG} degrees"
 echo "  waist limit: ${MAX_WAIST_DEVIATION_DEG} degrees"
+echo "  depth rate:  ${DEPTH_CAPTURE_FPS} Hz"
 echo "  ROS domain:  ${PROJECT_ROS_DOMAIN_ID}"
 echo "Keep the physical E-stop in hand. Ctrl-C performs a controlled stop."
 
@@ -126,6 +132,7 @@ ALLOW_MOVEMENT=1 \
 EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE}" \
 MAX_TILT_DEG="${MAX_TILT_DEG}" \
 MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG}" \
+DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS}" \
 G1_PROJECT_ROS_DOMAIN_ID="${PROJECT_ROS_DOMAIN_ID}" \
 QUIET_HEALTHY_DEPTH=1 \
   setsid "${ROOT_DIR}/scripts/robot/start.sh" &
