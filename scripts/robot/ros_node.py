@@ -202,8 +202,6 @@ class DepthOnlyRosNode:
             raise ValueError("--depth-only cannot be combined with --disable-depth")
         if args.allow_movement:
             raise ValueError("--depth-only never permits movement")
-        if args.realsense_rgb_target:
-            raise ValueError("--depth-only does not relay RGB")
         if args.depth_publish_fps <= 0.0 or not math.isfinite(args.depth_publish_fps):
             raise ValueError("--depth-publish-fps must be finite and positive")
         self.args = args
