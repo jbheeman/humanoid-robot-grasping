@@ -114,6 +114,7 @@ CALIBRATION="${CALIBRATION}" \
 ALLOW_MOVEMENT=1 \
 EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE}" \
 MAX_TILT_DEG="${MAX_TILT_DEG}" \
+QUIET_HEALTHY_DEPTH=1 \
   setsid "${ROOT_DIR}/scripts/robot/start.sh" &
 bridge_pid="$!"
 bridge_pgid="$(
@@ -136,6 +137,8 @@ timeout_s = float(sys.argv[2])
 url = f"http://{host}:8000/health"
 deadline = time.monotonic() + timeout_s
 last_reason = "GB10 has not responded"
+last_reported_reason = None
+last_report_at = 0.0
 while time.monotonic() < deadline:
     try:
         with urllib.request.urlopen(url, timeout=2) as response:
@@ -164,6 +167,11 @@ while time.monotonic() < deadline:
         last_reason = str(tracking.get("reason") or tracking.get("status") or "not ready")
     except Exception as exc:
         last_reason = f"{type(exc).__name__}: {exc}"
+    now = time.monotonic()
+    if last_reason != last_reported_reason or now - last_report_at >= 5.0:
+        print(f"Waiting for GB10: {last_reason}", flush=True)
+        last_reported_reason = last_reason
+        last_report_at = now
     time.sleep(0.25)
 else:
     raise SystemExit(f"GB10 did not become ready within {timeout_s:.0f}s: {last_reason}")

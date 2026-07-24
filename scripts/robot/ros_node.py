@@ -105,6 +105,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--depth-height", type=int, default=480)
     parser.add_argument("--depth-capture-fps", type=int, default=30)
     parser.add_argument("--depth-publish-fps", type=float, default=15.0)
+    parser.add_argument(
+        "--quiet-healthy-depth",
+        action="store_true",
+        help="Only print depth health when capture, freshness, or publishing fails.",
+    )
     parser.add_argument("--realsense-rgb-target", default="")
     parser.add_argument("--realsense-rgb-port", type=int, default=5600)
     parser.add_argument("--realsense-rgb-fps", type=int, default=60)
@@ -249,6 +254,13 @@ class DepthOnlyRosNode:
 
     def _report_depth_health(self) -> None:
         health = self.depth_service.health()
+        healthy = (
+            bool(health["sensor_fresh"])
+            and health["last_error"] is None
+            and self._last_publish_error is None
+        )
+        if self.args.quiet_healthy_depth and healthy:
+            return
         status = {
             "event": "depth_status",
             "source": "g1_robot_depth",

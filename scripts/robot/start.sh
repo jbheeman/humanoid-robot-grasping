@@ -37,6 +37,7 @@ REALSENSE_RGB_PORT="${CLIENT_PORT:-5600}"
 REALSENSE_RGB_FPS="${REALSENSE_RGB_FPS:-60}"
 DEPTH_SERIAL="${DEPTH_SERIAL:-}"
 DISABLE_DEPTH="${DISABLE_DEPTH:-0}"
+QUIET_HEALTHY_DEPTH="${QUIET_HEALTHY_DEPTH:-0}"
 usage() {
   echo "Usage: scripts/robot/start.sh [--arm-commissioning|--vision-pointing]" >&2
 }
@@ -268,6 +269,9 @@ if [[ "${CONTROL_MODE}" == "tracking" ]]; then
     fi
     if [[ -n "${DEPTH_SERIAL}" ]]; then
       depth_args+=(--depth-serial "${DEPTH_SERIAL}")
+    fi
+    if [[ "${QUIET_HEALTHY_DEPTH}" == "1" ]]; then
+      depth_args+=(--quiet-healthy-depth)
     fi
     "${ROBOT_PYTHON}" "${ROOT_DIR}/scripts/robot/ros_node.py" "${depth_args[@]}" &
     pids+=("$!")

@@ -769,7 +769,12 @@ class ArmTrackingRuntime:
                 },
             }
         if self.config.execute:
-            if arm_state.get("state") != "ARMED" or not arm_state.get("session_id"):
+            # Stream bounded targets during the controller's weight ramp.  If
+            # we wait for ARMED, the target deadman expires during ARMING and
+            # the bridge releases immediately after a small twitch.
+            if arm_state.get("state") not in ("ARMING", "ARMED") or not arm_state.get(
+                "session_id"
+            ):
                 self._reject(base_status, "arm_not_explicitly_enabled", colormap)
                 return
             pipeline_age_ms = max(

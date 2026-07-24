@@ -358,10 +358,10 @@ class ArmBridgeController:
                 raise ArmBridgeError(
                     "Tracking target rejected in commissioning mode", code="mode_mismatch"
                 )
-            if self.state is not ArmState.ARMED:
+            if self.state not in (ArmState.ARMING, ArmState.ARMED):
                 raise ArmBridgeError(
                     f"Arm target rejected: bridge state is {self.state.value}; "
-                    "create a session, enable at measured pose, and wait for ARMED",
+                    "create a session and enable at measured pose",
                     code="not_armed",
                 )
             if self._required_string(session_id, "session_id") != self.session_id:

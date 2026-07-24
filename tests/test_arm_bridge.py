@@ -238,6 +238,35 @@ def test_deadman_holds_and_releases_weight_within_bounded_ramp() -> None:
     assert controller.state is ArmState.DISARMED
 
 
+def test_tracking_target_during_arming_keeps_deadman_alive() -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock)
+    controller.start()
+    controller.enable(session_id="session-a", calibration_id="cal-1")
+
+    assert controller.state is ArmState.ARMING
+    controller.set_target(
+        session_id="session-a",
+        sequence=1,
+        calibration_id="cal-1",
+        right_arm_q=[0.01] * 7,
+        source_timestamp=clock.wall,
+    )
+    clock.advance(controller.config.weight_ramp_s)
+    hardware.state = robot_state(clock)
+    controller.set_target(
+        session_id="session-a",
+        sequence=2,
+        calibration_id="cal-1",
+        right_arm_q=[0.01] * 7,
+        source_timestamp=clock.wall,
+    )
+    controller.tick()
+
+    assert controller.state is ArmState.ARMED
+    assert controller.hold_reason is None
+
+
 def test_tracking_heartbeat_does_not_extend_target_deadman() -> None:
     clock = FakeClock()
     controller, hardware = bridge(clock)
