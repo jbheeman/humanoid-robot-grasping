@@ -21,7 +21,7 @@ from .geometry import (
     has_support_clearance,
     SupportRegion,
 )
-from .ik_solver import G1RightArmIK, IKUnavailable, default_urdf_path
+from .ik_solver import G1RightArmIK, IKResult, IKUnavailable, default_urdf_path
 from .tracking import PositionVelocityFilter
 from .visualization import visualization_state
 
@@ -161,6 +161,42 @@ def right_arm_ik_seed(
     return [float(value) for value in (home_q or (0.0,) * 7)]
 
 
+def select_start_escape_waypoint(
+    measured_q_rad: Sequence[float],
+    path: Sequence[Sequence[float]],
+    target_index: int,
+    *,
+    reached_tolerance_rad: float = 0.015,
+    tracking_tolerance_rad: float = 0.030,
+) -> tuple[tuple[float, ...] | None, int, str | None]:
+    """Select one bounded escape waypoint using measured, not commanded, pose."""
+
+    measured = np.asarray(measured_q_rad, dtype=float)
+    knots = tuple(np.asarray(knot, dtype=float) for knot in path)
+    if (
+        measured.shape != (7,)
+        or not np.all(np.isfinite(measured))
+        or len(knots) < 2
+        or any(knot.shape != (7,) or not np.all(np.isfinite(knot)) for knot in knots)
+        or not 1 <= target_index < len(knots)
+    ):
+        return None, target_index, "invalid_escape_path"
+    index = target_index
+    while (
+        index < len(knots)
+        and float(np.max(np.abs(measured - knots[index]))) <= reached_tolerance_rad
+    ):
+        index += 1
+    if index >= len(knots):
+        return None, index, None
+    previous = knots[index - 1]
+    if float(np.max(np.abs(measured - previous))) > tracking_tolerance_rad:
+        return None, index, "escape_path_tracking_error"
+    if float(np.max(np.abs(knots[index] - measured))) > 0.05:
+        return None, index, "escape_waypoint_step_too_large"
+    return tuple(float(value) for value in knots[index]), index, None
+
+
 def depth_colormap_jpeg(z16: np.ndarray, depth_scale: float) -> bytes | None:
     try:
         import cv2
@@ -273,6 +309,8 @@ class ArmTrackingRuntime:
             self.home_q = tuple(float(value) for value in profile["measured_q"])
         self.ik: G1RightArmIK | None = None
         self.ik_error: str | None = None
+        self._start_escape_path: tuple[tuple[float, ...], ...] | None = None
+        self._start_escape_target_index = 1
         try:
             self.ik = G1RightArmIK(default_urdf_path(repo_root))
         except IKUnavailable as exc:
@@ -546,21 +584,93 @@ class ArmTrackingRuntime:
             self._reject(base_status, "ik_unavailable", colormap)
             return
         last_q = right_arm_ik_seed(arm_state, self.home_q)
-        # Realtime tracking is an incremental Cartesian servo. Preserve the
-        # measured wrist orientation and emit one collision/table-validated
-        # edge instead of asking the global solver for a discontinuous
-        # one-shot jump to an identity-orientation pose.
-        transform = self.ik.forward_kinematics(last_q)
-        transform[:3, 3] = target.position
-        ik = self.ik.solve_local_translation(
-            transform,
-            last_q,
-            support_plane=plane,
-        )
+        collision_labels = self.ik.collision_labels(last_q)
+        ik_step_type = "analytic_local_translation"
+        if collision_labels:
+            ik_step_type = "start_collision_escape"
+            if self._start_escape_path is None:
+                escape = self.ik.plan_start_collision_escape(
+                    last_q,
+                    support_plane=plane,
+                )
+                if not escape.ok or escape.q_path is None:
+                    base_status.update(
+                        {
+                            "ik_status": escape.reason,
+                            "ik_step_type": ik_step_type,
+                            "ik_collision_labels": list(collision_labels),
+                            "ik_global_backend": self.ik.global_backend,
+                            "ik_local_backend": self.ik.local_backend,
+                            "arm_state": arm_state.get("state", "dry-run"),
+                        }
+                    )
+                    self._reject(
+                        base_status,
+                        f"ik_{escape.reason or 'start_collision_escape_failed'}",
+                        colormap,
+                    )
+                    return
+                self._start_escape_path = escape.q_path
+                self._start_escape_target_index = 1
+            waypoint, waypoint_index, selection_error = select_start_escape_waypoint(
+                last_q,
+                self._start_escape_path,
+                self._start_escape_target_index,
+            )
+            self._start_escape_target_index = waypoint_index
+            if selection_error is not None:
+                self._start_escape_path = None
+                self._reject(base_status, f"ik_{selection_error}", colormap)
+                return
+            if waypoint is None:
+                self._start_escape_path = None
+                self._reject(base_status, "ik_escape_complete_waiting_for_clear_state", colormap)
+                return
+            # Revalidate the measured pose plus the complete remaining suffix.
+            # This admits only the solver's monotonic shallow-contact exit and
+            # catches drift away from the cached path before a waypoint is
+            # exposed to either preview or execution.
+            suffix = (
+                tuple(float(value) for value in last_q),
+                *self._start_escape_path[self._start_escape_target_index :],
+            )
+            validation_error = self.ik.validate_joint_path(
+                suffix,
+                support_plane=plane,
+                edge_step_rad=0.0025,
+            )
+            if validation_error is not None:
+                self._start_escape_path = None
+                self._reject(base_status, f"ik_{validation_error}", colormap)
+                return
+            ik = IKResult(True, waypoint, 0.0, 0.0)
+        else:
+            self._start_escape_path = None
+            self._start_escape_target_index = 1
+            # Realtime tracking is an incremental Cartesian servo. Preserve
+            # measured wrist orientation and expose one fully validated edge.
+            transform = self.ik.forward_kinematics(last_q)
+            transform[:3, 3] = target.position
+            ik = self.ik.solve_local_translation(
+                transform,
+                last_q,
+                support_plane=plane,
+            )
         base_status.update(
             {
                 "ik_status": "ok" if ik.ok else ik.reason,
-                "ik_step_type": "analytic_local_translation",
+                "ik_step_type": ik_step_type,
+                "ik_collision_labels": list(collision_labels),
+                "ik_escape_waypoint": (
+                    self._start_escape_target_index
+                    if ik_step_type == "start_collision_escape"
+                    else None
+                ),
+                "ik_escape_waypoint_count": (
+                    len(self._start_escape_path)
+                    if self._start_escape_path is not None
+                    else None
+                ),
                 "ik_global_backend": self.ik.global_backend,
                 "ik_local_backend": self.ik.local_backend,
                 "ik_position_error_m": ik.position_error_m,

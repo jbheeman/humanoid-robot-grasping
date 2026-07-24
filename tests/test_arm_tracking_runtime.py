@@ -26,6 +26,7 @@ from object_tracking.arm_tracking.runtime import (
     clamp_point_height_to_support,
     register_depth_in_rgb,
     right_arm_ik_seed,
+    select_start_escape_waypoint,
 )
 
 
@@ -157,6 +158,41 @@ def test_ik_seed_uses_measured_right_arm_when_no_command_exists() -> None:
     state = {"visualization": {"measured_pose_rad": measured}}
 
     assert right_arm_ik_seed(state, None) == measured[22:29]
+
+
+def test_start_escape_waypoint_waits_for_measured_progress() -> None:
+    path = (
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.0, -0.04, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.0, -0.08, 0.0, 0.0, 0.0, 0.0, 0.0),
+    )
+
+    waypoint, index, error = select_start_escape_waypoint(path[0], path, 1)
+    assert waypoint == path[1]
+    assert index == 1
+    assert error is None
+
+    waypoint, index, error = select_start_escape_waypoint(path[1], path, 1)
+    assert waypoint == path[2]
+    assert index == 2
+    assert error is None
+
+
+def test_start_escape_waypoint_rejects_tracking_drift() -> None:
+    path = (
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.0, -0.04, 0.0, 0.0, 0.0, 0.0, 0.0),
+    )
+
+    waypoint, index, error = select_start_escape_waypoint(
+        (0.2, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        path,
+        1,
+    )
+
+    assert waypoint is None
+    assert index == 1
+    assert error == "escape_path_tracking_error"
 
 
 def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) -> None:

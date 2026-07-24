@@ -839,6 +839,85 @@ class G1RightArmIK:
             return None, "start_collision_escape_timeout"
         return None, "start_collision_escape_unavailable"
 
+    def collision_labels(self, q_rad: Sequence[float]) -> tuple[str, ...]:
+        """Return modeled, non-excluded self-collisions for an arm pose."""
+
+        q = np.asarray(q_rad, dtype=float)
+        if q.shape != (7,) or not np.all(np.isfinite(q)):
+            return ("invalid_joint_pose",)
+        return tuple(
+            self._collision_pair_label(index)
+            for index in sorted(self._collision_pairs(q))
+        )
+
+    def plan_start_collision_escape(
+        self,
+        start_q_rad: Sequence[float],
+        *,
+        support_plane: Any | None,
+        timeout_s: float = 12.0,
+    ) -> IKPathResult:
+        """Plan and independently validate a bounded hand-from-hip escape.
+
+        This public entry point is intentionally narrower than general path
+        planning: only a shallow right-hand/right-hip contact may be present
+        initially, the path may never enter another collision, every link must
+        retain support-region clearance, and the endpoint must be at least
+        10 mm clear of the hip. Returned waypoints are no more than 0.04 rad
+        apart so the bridge can stream them one at a time.
+        """
+
+        start_q = np.asarray(start_q_rad, dtype=float)
+        if (
+            start_q.shape != (7,)
+            or not np.all(np.isfinite(start_q))
+            or not math.isfinite(timeout_s)
+            or timeout_s <= 0.0
+        ):
+            return IKPathResult(
+                False,
+                None,
+                float("inf"),
+                0.0,
+                "invalid_start_collision_escape",
+            )
+        path, error = self._guided_start_escape(
+            start_q,
+            support_plane=support_plane,
+            timeout_s=timeout_s,
+        )
+        if path is None:
+            return IKPathResult(
+                False,
+                None,
+                float("inf"),
+                0.0,
+                error or "start_collision_escape_unavailable",
+            )
+        if len(path) < 2:
+            return IKPathResult(
+                False,
+                None,
+                0.0,
+                0.0,
+                "start_pose_collision_free",
+            )
+        validation_error = self.validate_joint_path(
+            path,
+            support_plane=support_plane,
+            edge_step_rad=0.0025,
+            deadline_s=time.monotonic() + timeout_s,
+        )
+        if validation_error is not None:
+            return IKPathResult(
+                False,
+                None,
+                float("inf"),
+                0.0,
+                validation_error,
+            )
+        return IKPathResult(True, path, 0.0, 0.0, None)
+
     def _candidate_q(self, target: np.ndarray, last_q: np.ndarray) -> np.ndarray:
         if self.casadi is not None and self.cpin is not None:
             self.opti.set_initial(self.var_q, np.clip(last_q, self.lower, self.upper))
