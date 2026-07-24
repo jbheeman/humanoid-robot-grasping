@@ -134,8 +134,13 @@ def clamp_point_height_to_support(
     point = np.asarray(point_xyz, dtype=float)
     height = float(support_plane.signed_distance(point))
     clamped_height = float(np.clip(height, minimum_height_m, maximum_height_m))
+    normal = (
+        support_plane.plane.normal
+        if isinstance(support_plane, SupportRegion)
+        else support_plane.normal
+    )
     corrected = point + (clamped_height - height) * np.asarray(
-        support_plane.normal, dtype=float
+        normal, dtype=float
     )
     return corrected, clamped_height
 
@@ -437,7 +442,6 @@ class ArmTrackingRuntime:
             self.calibration.rgb_intrinsics,
         )
         direct_torso = self.calibration.optical_to_torso.apply(optical_depth_point)
-        direct_height_m = float(plane.signed_distance(direct_torso))
         if not np.all(np.isfinite(direct_torso)) or np.linalg.norm(direct_torso) > 2.0:
             self._reject(base_status, "localization_outlier", colormap)
             return
