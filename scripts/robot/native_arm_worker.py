@@ -132,6 +132,12 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-motion-mode")
     parser.add_argument("--hardware-interface", default="eth0")
     parser.add_argument("--hardware-domain-id", type=int, default=0)
+    parser.add_argument(
+        "--max-tilt-deg",
+        type=float,
+        default=5.0,
+        help="maximum absolute IMU roll/pitch allowed before arm motion is blocked",
+    )
     return parser
 
 
@@ -141,10 +147,13 @@ def main() -> int:
         raise SystemExit("--allow-movement requires --expected-motion-mode")
     if args.allow_movement and not args.calibration:
         raise SystemExit("--allow-movement requires --calibration")
+    if not math.isfinite(args.max_tilt_deg) or not 1.0 <= args.max_tilt_deg <= 15.0:
+        raise SystemExit("--max-tilt-deg must be between 1 and 15 degrees")
     calibration = None if args.calibration is None else load_calibration(args.calibration)
     hardware = UnitreeArmHardware(
         interface=args.hardware_interface,
         domain_id=args.hardware_domain_id,
+        max_tilt_rad=math.radians(args.max_tilt_deg),
         expected_motion_mode=args.expected_motion_mode,
     )
     controller = ArmBridgeController(

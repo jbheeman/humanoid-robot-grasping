@@ -11,6 +11,7 @@ HARDWARE_INTERFACE="${HARDWARE_INTERFACE:-eth0}"
 UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
 ROS_DOMAIN_ID="${G1_PROJECT_ROS_DOMAIN_ID:-42}"
 HARDWARE_DOMAIN_ID="${HARDWARE_DOMAIN_ID:-0}"
+MAX_TILT_DEG="${MAX_TILT_DEG:-5}"
 CALIBRATION="${CALIBRATION:-}"
 RGB_MODE="${RGB_MODE:-unitree}"
 ALLOW_MOVEMENT="${ALLOW_MOVEMENT:-0}"
@@ -116,6 +117,7 @@ if [[ "${CONTROL_MODE}" == "tracking" ]]; then
     --socket "${NATIVE_ARM_SOCKET}"
     --hardware-interface "${HARDWARE_INTERFACE}"
     --hardware-domain-id "${HARDWARE_DOMAIN_ID}"
+    --max-tilt-deg "${MAX_TILT_DEG}"
   )
   if [[ -n "${CALIBRATION}" ]]; then
     native_args+=(--calibration "${CALIBRATION}")
