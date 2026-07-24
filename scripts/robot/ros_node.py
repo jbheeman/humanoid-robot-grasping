@@ -134,7 +134,7 @@ def _imports() -> dict[str, Any]:
             CommissioningState,
         )
         from sensor_msgs.msg import JointState
-        from std_msgs.msg import ByteMultiArray, String
+        from std_msgs.msg import String, UInt8MultiArray
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
@@ -149,7 +149,7 @@ def _imports() -> dict[str, Any]:
         "CommissioningState": CommissioningState,
         "CommissioningRequest": CommissioningRequest,
         "CommissioningResponse": CommissioningResponse,
-        "ByteMultiArray": ByteMultiArray,
+        "UInt8MultiArray": UInt8MultiArray,
         "JointState": JointState,
         "String": String,
         "QoSProfile": QoSProfile,
@@ -216,7 +216,7 @@ class DepthOnlyRosNode:
             durability=self.types["DurabilityPolicy"].TRANSIENT_LOCAL,
         )
         self.depth_publisher = self.node.create_publisher(
-            self.types["ByteMultiArray"], DEPTH_TOPIC, depth_qos
+            self.types["UInt8MultiArray"], DEPTH_TOPIC, depth_qos
         )
         relay_rgb = bool(args.realsense_rgb_target)
         direct = RealSenseDepthSource(
@@ -296,7 +296,7 @@ class DepthOnlyRosNode:
         if envelope is None or sequence <= self._last_depth_sequence:
             return
         try:
-            message = self.types["ByteMultiArray"]()
+            message = self.types["UInt8MultiArray"]()
             # Use a standard ROS message across Foxy and Jazzy. The custom
             # CompressedDepth type is not wire-compatible across those
             # distributions and intermittently corrupts CycloneDDS samples.
@@ -499,7 +499,7 @@ class RobotRosNode:
         self._last_depth_sequence = -1
         if not args.disable_depth:
             self.depth_publisher = self.node.create_publisher(
-                self.types["ByteMultiArray"], DEPTH_TOPIC, depth_qos
+                self.types["UInt8MultiArray"], DEPTH_TOPIC, depth_qos
             )
             self.depth_service = self._create_depth_service()
             self.depth_service.start(args.calibration)
@@ -816,7 +816,7 @@ class RobotRosNode:
         if envelope is None or sequence <= self._last_depth_sequence:
             return
         try:
-            message = self.types["ByteMultiArray"]()
+            message = self.types["UInt8MultiArray"]()
             message.data = array.array("B", envelope)
             self.depth_publisher.publish(message)
             self._last_depth_sequence = sequence

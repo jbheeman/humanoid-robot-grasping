@@ -169,7 +169,7 @@ def _types() -> dict[str, object]:
         "CommissioningState": Message,
         "CommissioningRequest": CommissioningRequest,
         "CommissioningResponse": CommissioningResponse,
-        "ByteMultiArray": Message,
+        "UInt8MultiArray": Message,
         "CommissioningCommand": CommissioningCommand,
         "QoSProfile": lambda **kwargs: kwargs,
         "ReliabilityPolicy": Policy,

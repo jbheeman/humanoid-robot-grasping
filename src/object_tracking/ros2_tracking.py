@@ -42,7 +42,7 @@ def _load_types() -> dict[str, Any]:
             CommissioningResponse,
             CommissioningState,
         )
-        from std_msgs.msg import ByteMultiArray, String
+        from std_msgs.msg import String, UInt8MultiArray
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
@@ -58,7 +58,7 @@ def _load_types() -> dict[str, Any]:
         "CommissioningState": CommissioningState,
         "CommissioningRequest": CommissioningRequest,
         "CommissioningResponse": CommissioningResponse,
-        "ByteMultiArray": ByteMultiArray,
+        "UInt8MultiArray": UInt8MultiArray,
         "QoSProfile": QoSProfile,
         "ReliabilityPolicy": ReliabilityPolicy,
         "DurabilityPolicy": DurabilityPolicy,
@@ -154,7 +154,7 @@ class RosTrackingTransport:
             arm_control_subscription = None
             try:
                 depth_subscription = node.create_subscription(
-                    types["ByteMultiArray"], DEPTH_TOPIC, self._on_depth, depth_qos
+                    types["UInt8MultiArray"], DEPTH_TOPIC, self._on_depth, depth_qos
                 )
                 if self._observe_depth_only:
                     pass
