@@ -716,7 +716,10 @@ class ArmTrackingRuntime:
                 "ik_orientation_error_rad": ik.orientation_error_rad,
                 "arm_state": arm_state.get("state", "dry-run"),
                 "arm_weight": arm_state.get("weight"),
+                "arm_last_accepted_sequence": arm_state.get("last_sequence"),
                 "arm_last_target_age_ms": arm_state.get("last_target_age_ms"),
+                "arm_hold_reason": arm_state.get("hold_reason"),
+                "arm_fault_reason": arm_state.get("fault_reason"),
                 "arm_loop": arm_state.get("loop") or {},
             }
         )

@@ -109,8 +109,27 @@ class ArmRosRelay:
         try:
             response = self._call("target", _wire_object(message))
             if not response.get("ok"):
+                print(
+                    _safe_json(
+                        {
+                            "event": "arm_target_rejected",
+                            "error_code": response.get("error_code"),
+                            "message": response.get("message"),
+                        }
+                    ),
+                    flush=True,
+                )
                 return
-        except Exception:
+        except Exception as exc:
+            print(
+                _safe_json(
+                    {
+                        "event": "arm_target_transport_error",
+                        "error": f"{type(exc).__name__}: {exc}",
+                    }
+                ),
+                flush=True,
+            )
             try:
                 self._call("stop", {"reason": "ros_target_failure"})
             except Exception:

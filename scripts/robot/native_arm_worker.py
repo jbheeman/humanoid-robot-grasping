@@ -164,6 +164,11 @@ def main() -> int:
             waist_reference_rad=(
                 None if calibration is None else calibration.waist_reference_rad
             ),
+            # The standing controller naturally pitches the waist while the
+            # arm's mass moves forward/up.  Use the operator-selected live
+            # tilt envelope here too; the old fixed 3 degree gate rejected
+            # normal balance compensation midway through the escape path.
+            max_waist_deviation_rad=math.radians(args.max_tilt_deg),
         ),
     )
     socket_path = Path(args.socket)
