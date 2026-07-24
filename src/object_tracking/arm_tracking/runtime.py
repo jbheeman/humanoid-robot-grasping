@@ -470,7 +470,16 @@ class ArmTrackingRuntime:
         if learned_prediction is not None:
             self._queue_prediction("learned_trajectory", learned_prediction, due_time)
         predicted = learned_prediction if learned_prediction is not None else alpha_beta_prediction
-        target = generate_pregrasp_target(predicted, shoulder_position=(0.0, -0.18, 0.35))
+        # Stop at the bunny's near surface rather than applying the generic
+        # 20 cm manipulation stand-off.  The measured plush radius (~5.5 cm)
+        # plus half the palm thickness (~1.2 cm) calls for a 7 cm preview
+        # offset, which remains non-contacting and inside the certified G1
+        # workspace. Swept-link/table checks still gate the resulting IK path.
+        target = generate_pregrasp_target(
+            predicted,
+            shoulder_position=(0.0, -0.18, 0.35),
+            stand_off_m=0.07,
+        )
         base_status.update(
             {
                 "status": "tracking",
