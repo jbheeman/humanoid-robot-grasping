@@ -528,6 +528,8 @@ class ArmTrackingRuntime:
         base_status.update(
             {
                 "ik_status": "ok" if ik.ok else ik.reason,
+                "ik_global_backend": self.ik.global_backend,
+                "ik_local_backend": self.ik.local_backend,
                 "ik_position_error_m": ik.position_error_m,
                 "ik_orientation_error_rad": ik.orientation_error_rad,
                 "arm_state": arm_state.get("state", "dry-run"),

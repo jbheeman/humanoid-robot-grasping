@@ -17,3 +17,9 @@ but production control uses generated ROS 2 messages through `rclpy`.
 Repository-native code includes the `g1_control_interfaces` package, guarded
 transport adapters, fusion/IK logic, and browser UI integration. Do not copy
 upstream source or binary assets out of `.deps/` without their notices.
+
+`YuehChuan/unitreeG1_ik` was evaluated as an offline MuJoCo DLS reference at
+revision `da8a9ee2fde7a9c2ef511e2365626f9f580ca0db`. It is not fetched or
+redistributed because it does not publish a license, and its bundled G1 model
+does not conform to the official right-shoulder geometry and limits. See
+[G1_IK_BACKEND_EVALUATION.md](G1_IK_BACKEND_EVALUATION.md).

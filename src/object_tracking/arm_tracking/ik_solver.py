@@ -406,8 +406,11 @@ class G1RightArmIK:
             raise IKUnavailable("URDF limits are too narrow for the configured safety margin.")
         self.lower = lower
         self.upper = upper
+        self.global_backend = "scipy_least_squares"
+        self.local_backend = "pinocchio_analytic_dls"
         if self.casadi is not None and self.cpin is not None:
             self._build_optimizer()
+            self.global_backend = "pinocchio_casadi_ipopt"
 
     def _build_optimizer(self) -> None:
         casadi = self.casadi
@@ -845,6 +848,56 @@ class G1RightArmIK:
             return np.asarray(solution.value(self.var_q), dtype=float).reshape(7)
         return self._solve_numerical(target, last_q)
 
+    def _translation_jacobian(
+        self,
+        q: np.ndarray,
+        *,
+        backend: str,
+        current_position: np.ndarray | None = None,
+    ) -> np.ndarray:
+        """Return the world-aligned end-effector translation Jacobian.
+
+        The analytic path applies the useful part of YuehChuan/unitreeG1_ik's
+        MuJoCo DLS approach to our authoritative Pinocchio model. Keeping the
+        model and safety layer unchanged avoids the reference repository's
+        incorrect mirrored shoulder limit and missing collision/limit gates.
+        """
+
+        if backend == "analytic":
+            jacobian6 = self.pin.computeFrameJacobian(
+                self.model,
+                self.data,
+                q,
+                self.ee_frame,
+                self.pin.ReferenceFrame.LOCAL_WORLD_ALIGNED,
+            )
+            jacobian = np.asarray(jacobian6[:3, :], dtype=float)
+        elif backend == "finite_difference":
+            position = (
+                self.forward_kinematics(q)[:3, 3]
+                if current_position is None
+                else np.asarray(current_position, dtype=float)
+            )
+            epsilon = 1e-4
+            jacobian = np.empty((3, 7), dtype=float)
+            for index in range(7):
+                perturbed = q.copy()
+                direction = 1.0
+                if perturbed[index] + epsilon > self.upper[index]:
+                    direction = -1.0
+                perturbed[index] += direction * epsilon
+                candidate_position = self.forward_kinematics(perturbed)[:3, 3]
+                jacobian[:, index] = (
+                    candidate_position - position
+                ) / (direction * epsilon)
+        else:
+            raise ValueError(
+                "jacobian_backend must be 'analytic' or 'finite_difference'"
+            )
+        if jacobian.shape != (3, 7) or not np.all(np.isfinite(jacobian)):
+            raise RuntimeError("translation Jacobian is invalid")
+        return jacobian
+
     def plan_guided_clearance(
         self,
         start_q_rad: Sequence[float],
@@ -1278,13 +1331,16 @@ class G1RightArmIK:
             3.0,
         ),
         validate_path: bool = True,
+        jacobian_backend: str = "analytic",
     ) -> IKResult:
         """Compute one fast warm-started Cartesian servo step.
 
-        Finite-difference translational Jacobians avoid the 150-250 ms
-        nonlinear solve in the 20 Hz hot path. Wrist pitch/yaw receive useful
-        redundancy weight, while the returned edge still passes the complete
-        collision, table-clearance, corridor, and joint-limit validation.
+        An analytic Pinocchio Jacobian implements the same damped-least-squares
+        core as the evaluated MuJoCo reference without changing the canonical
+        robot model. Wrist pitch/yaw receive useful redundancy weight, while
+        the returned edge still passes the complete collision, table-clearance,
+        corridor, and joint-limit validation. The previous finite-difference
+        implementation remains selectable for offline A/B regression tests.
         """
 
         target = np.asarray(target_transform, dtype=float)
@@ -1298,6 +1354,7 @@ class G1RightArmIK:
             or not 0.0 < maximum_joint_step_rad <= 0.05
             or not math.isfinite(damping)
             or damping <= 0.0
+            or jacobian_backend not in ("analytic", "finite_difference")
             or len(inverse_joint_cost_weights) != 7
             or not all(
                 math.isfinite(float(value)) and float(value) > 0.0
@@ -1311,16 +1368,14 @@ class G1RightArmIK:
         if initial_error <= 1e-6:
             return IKResult(True, tuple(float(value) for value in last_q), 0.0, 0.0)
 
-        epsilon = 1e-4
-        jacobian = np.empty((3, 7), dtype=float)
-        for index in range(7):
-            perturbed = last_q.copy()
-            direction = 1.0
-            if perturbed[index] + epsilon > self.upper[index]:
-                direction = -1.0
-            perturbed[index] += direction * epsilon
-            position = self.forward_kinematics(perturbed)[:3, 3]
-            jacobian[:, index] = (position - current[:3, 3]) / (direction * epsilon)
+        try:
+            jacobian = self._translation_jacobian(
+                last_q,
+                backend=jacobian_backend,
+                current_position=current[:3, 3],
+            )
+        except (RuntimeError, ValueError):
+            return IKResult(False, None, initial_error, 0.0, "local_jacobian_invalid")
 
         # Weighted minimum-norm solution. The short hand offset makes wrist
         # pitch/yaw genuinely useful for translation; prefer them when safe

@@ -30,6 +30,16 @@ def test_forward_kinematics_rejects_invalid_joint_shape() -> None:
         solver.forward_kinematics([0.0] * 6)
 
 
+def test_translation_jacobian_rejects_unknown_backend() -> None:
+    solver = object.__new__(G1RightArmIK)
+    with pytest.raises(ValueError, match="jacobian_backend"):
+        solver._translation_jacobian(
+            np.zeros(7),
+            backend="unknown",
+            current_position=np.zeros(3),
+        )
+
+
 def test_collision_aware_path_detours_around_blocked_direct_edge() -> None:
     def valid(q: np.ndarray) -> bool:
         return not (0.35 < q[0] < 0.65 and abs(q[1]) < 0.22)
@@ -139,6 +149,62 @@ def test_g1_rest_pose_can_detour_around_right_hip_for_pointing() -> None:
     assert len(route.q_path) >= 3
     assert route.position_error_m < 0.005
     assert solver.validate_joint_path(route.q_path, support_plane=support) is None
+
+
+def test_analytic_translation_jacobian_matches_finite_difference() -> None:
+    pytest.importorskip("pinocchio")
+    pytest.importorskip("scipy")
+    repo_root = Path(__file__).resolve().parents[1]
+    urdf = default_urdf_path(repo_root)
+    if not urdf.is_file():
+        pytest.skip("pinned G1 arm assets are not installed")
+    solver = G1RightArmIK(urdf)
+    q = np.asarray(
+        (
+            0.2951954305,
+            -0.1279316097,
+            0.0029960563,
+            0.9830660224,
+            -0.1099193171,
+            0.0618985221,
+            -0.0382895991,
+        )
+    )
+    current = solver.forward_kinematics(q)[:3, 3]
+
+    analytic = solver._translation_jacobian(
+        q,
+        backend="analytic",
+        current_position=current,
+    )
+    finite_difference = solver._translation_jacobian(
+        q,
+        backend="finite_difference",
+        current_position=current,
+    )
+
+    assert analytic == pytest.approx(finite_difference, abs=3e-5)
+
+
+def test_global_solver_rejects_unreachable_target() -> None:
+    pytest.importorskip("pinocchio")
+    pytest.importorskip("scipy")
+    repo_root = Path(__file__).resolve().parents[1]
+    urdf = default_urdf_path(repo_root)
+    if not urdf.is_file():
+        pytest.skip("pinned G1 arm assets are not installed")
+    solver = G1RightArmIK(urdf)
+    seed_q = np.zeros(7)
+    target = solver.forward_kinematics(seed_q)
+    target[:3, 3] = np.asarray((5.0, -5.0, 5.0))
+
+    result = solver.solve(target, seed_q)
+
+    assert not result.ok
+    assert result.q_rad is None
+    assert result.reason in {"discontinuous", "position_error"} or (
+        result.reason is not None and result.reason.startswith("discontinuous:")
+    )
 
 
 def test_current_g1_hip_rest_pose_has_bounded_guided_table_clearance() -> None:
