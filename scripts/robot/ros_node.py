@@ -8,6 +8,7 @@ project-level messages and services from ``g1_control_interfaces``.
 from __future__ import annotations
 
 import argparse
+import array
 import json
 import math
 from pathlib import Path
@@ -315,7 +316,11 @@ class DepthOnlyRosNode:
             message.encoding = str(header["encoding"])
             message.uncompressed_size = int(header["uncompressed_size"])
             message.checksum_sha256 = str(header["checksum_sha256"])
-            message.payload = list(payload)
+            # ROS 2's generated ``sequence<uint8>`` setter has a direct
+            # array.array fast path. Passing a list materializes hundreds of
+            # thousands of Python integers and validates/copies every byte,
+            # which can hold the G1's Python runtime for several seconds.
+            message.payload = array.array("B", payload)
             self.depth_publisher.publish(message)
             self._last_depth_sequence = sequence
         except Exception as exc:
@@ -848,7 +853,7 @@ class RobotRosNode:
             message.encoding = str(header["encoding"])
             message.uncompressed_size = int(header["uncompressed_size"])
             message.checksum_sha256 = str(header["checksum_sha256"])
-            message.payload = list(payload)
+            message.payload = array.array("B", payload)
             self.depth_publisher.publish(message)
             self._last_depth_sequence = sequence
         except Exception:
