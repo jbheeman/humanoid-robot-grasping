@@ -29,6 +29,7 @@ from .visualization import visualization_state
 StatusCallback = Callable[[dict[str, Any], bytes | None], None]
 SnapshotCallback = Callable[[], dict[str, Any]]
 _SUPPORT_PLANE_GRACE_S = 5.000
+_SUPPORT_PLANE_ARMED_TTL_S = 30.000
 
 
 class TrackingTransport(Protocol):
@@ -476,7 +477,11 @@ class ArmTrackingRuntime:
             float(selected["bbox_xyxy"][2]) * sx,
             float(selected["bbox_xyxy"][3]) * sy,
         )
-        plane = self._support_plane(aligned, frame.depth_scale)
+        plane = self._support_plane(
+            aligned,
+            frame.depth_scale,
+            freeze=arm_state.get("state") in ("ARMING", "ARMED"),
+        )
         if plane is not None:
             base_status["visualization"]["support_plane"] = plane.to_dict()
         base_status["visualization"]["support_plane_status"] = {
@@ -830,7 +835,20 @@ class ArmTrackingRuntime:
             "methods": methods,
         }
 
-    def _support_plane(self, aligned: np.ndarray, depth_scale: float) -> SupportRegion | None:
+    def _support_plane(
+        self,
+        aligned: np.ndarray,
+        depth_scale: float,
+        *,
+        freeze: bool = False,
+    ) -> SupportRegion | None:
+        if (
+            freeze
+            and self.last_support_plane is not None
+            and time.monotonic() - self.last_support_plane_at
+            <= _SUPPORT_PLANE_ARMED_TTL_S
+        ):
+            return self.last_support_plane
         try:
             if self.tabletop_corners_px is None:
                 raise ValueError(
