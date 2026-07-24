@@ -570,7 +570,12 @@ class RealSenseRgbRtpRelay:
         self.bitrate = bitrate
         self.process: subprocess.Popen[bytes] | None = None
         self.frames_sent = 0
+        self.frames_dropped = 0
         self.last_error: str | None = None
+        self._condition = threading.Condition()
+        self._latest_frame: np.ndarray | None = None
+        self._stop_requested = False
+        self._writer_thread: threading.Thread | None = None
 
     def start(self, *, width: int, height: int) -> None:
         command = [
@@ -625,30 +630,73 @@ class RealSenseRgbRtpRelay:
         except (OSError, subprocess.SubprocessError) as exc:
             self.process = None
             raise RuntimeError(f"Could not start the D435I H264 RTP relay: {exc}") from exc
+        with self._condition:
+            self._stop_requested = False
+            self._latest_frame = None
+        self._writer_thread = threading.Thread(
+            target=self._writer_loop,
+            daemon=True,
+            name="d435i-rgb-rtp-writer",
+        )
+        self._writer_thread.start()
 
     def write(self, frame: np.ndarray) -> None:
-        if self.process is None:
-            return
-        try:
-            if self.process.poll() is not None or self.process.stdin is None:
-                raise RuntimeError(f"GStreamer relay exited with code {self.process.returncode}")
-            contiguous = np.ascontiguousarray(frame, dtype=np.uint8)
-            self.process.stdin.write(contiguous.tobytes())
-            self.frames_sent += 1
-            self.last_error = None
-        except Exception as exc:
-            self.last_error = f"{type(exc).__name__}: {exc}"
+        # Never let encoder or pipe backpressure stall the RealSense capture
+        # thread. Retain only the newest complete frame; stale RGB is useless
+        # for live control and an unbounded queue would increase latency.
+        contiguous = np.ascontiguousarray(frame, dtype=np.uint8)
+        with self._condition:
+            if self.process is None or self._stop_requested:
+                return
+            if self._latest_frame is not None:
+                self.frames_dropped += 1
+            self._latest_frame = contiguous
+            self._condition.notify()
+
+    def _writer_loop(self) -> None:
+        while True:
+            with self._condition:
+                while self._latest_frame is None and not self._stop_requested:
+                    self._condition.wait()
+                if self._stop_requested:
+                    return
+                frame = self._latest_frame
+                self._latest_frame = None
+                process = self.process
+            if frame is None or process is None:
+                continue
+            try:
+                if process.poll() is not None or process.stdin is None:
+                    raise RuntimeError(
+                        f"GStreamer relay exited with code {process.returncode}"
+                    )
+                process.stdin.write(frame.tobytes())
+                with self._condition:
+                    self.frames_sent += 1
+                    self.last_error = None
+            except Exception as exc:
+                with self._condition:
+                    self.last_error = f"{type(exc).__name__}: {exc}"
+                return
 
     def close(self) -> None:
-        process = self.process
-        self.process = None
+        with self._condition:
+            process = self.process
+            self.process = None
+            self._latest_frame = None
+            self._stop_requested = True
+            self._condition.notify_all()
         if process is None:
             return
         if process.stdin is not None:
             try:
                 process.stdin.close()
-            except OSError:
+            except (OSError, ValueError):
                 pass
+        writer_thread = self._writer_thread
+        if writer_thread is not None and writer_thread is not threading.current_thread():
+            writer_thread.join(timeout=2.0)
+        self._writer_thread = None
         try:
             process.wait(timeout=2.0)
         except subprocess.TimeoutExpired:
@@ -660,13 +708,19 @@ class RealSenseRgbRtpRelay:
                 process.wait(timeout=1.0)
 
     def health(self) -> Dict[str, Any]:
-        return {
-            "host": self.host,
-            "port": self.port,
-            "fps": self.fps,
-            "frames_sent": self.frames_sent,
-            "last_error": self.last_error,
-        }
+        with self._condition:
+            return {
+                "host": self.host,
+                "port": self.port,
+                "fps": self.fps,
+                "frames_sent": self.frames_sent,
+                "frames_dropped": self.frames_dropped,
+                "frame_queued": self._latest_frame is not None,
+                "writer_alive": (
+                    self._writer_thread is not None and self._writer_thread.is_alive()
+                ),
+                "last_error": self.last_error,
+            }
 
 
 def build_parser() -> argparse.ArgumentParser:

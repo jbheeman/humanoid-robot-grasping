@@ -1,3 +1,4 @@
+import threading
 import time
 
 import numpy as np
@@ -134,6 +135,9 @@ def test_rgb_relay_feeds_native_gstreamer_subprocess(monkeypatch) -> None:
     relay = RealSenseRgbRtpRelay(host="192.168.0.66", port=5600, fps=60)
     relay.start(width=4, height=3)
     relay.write(np.zeros((3, 4, 3), dtype=np.uint8))
+    deadline = time.monotonic() + 1.0
+    while relay.frames_sent < 1 and time.monotonic() < deadline:
+        time.sleep(0.005)
     relay.close()
 
     command = captured["command"]
@@ -142,3 +146,52 @@ def test_rgb_relay_feeds_native_gstreamer_subprocess(monkeypatch) -> None:
     assert "host=192.168.0.66" in command
     assert len(process.stdin.data) == 3 * 4 * 3
     assert relay.frames_sent == 1
+
+
+def test_rgb_relay_backpressure_never_blocks_camera_capture(monkeypatch) -> None:
+    writer_entered = threading.Event()
+    release_writer = threading.Event()
+
+    class BlockingStdin:
+        def write(self, value: bytes) -> int:
+            writer_entered.set()
+            assert release_writer.wait(timeout=1.0)
+            return len(value)
+
+        def close(self) -> None:
+            release_writer.set()
+
+    class Process:
+        def __init__(self) -> None:
+            self.stdin = BlockingStdin()
+            self.returncode = None
+
+        def poll(self):
+            return self.returncode
+
+        def wait(self, timeout: float):
+            self.returncode = 0
+            return 0
+
+    process = Process()
+    monkeypatch.setattr(
+        "scripts.robot.depth_service.subprocess.Popen",
+        lambda command, **kwargs: process,
+    )
+    relay = RealSenseRgbRtpRelay(host="192.168.0.66", port=5600, fps=60)
+    relay.start(width=4, height=3)
+    try:
+        relay.write(np.zeros((3, 4, 3), dtype=np.uint8))
+        assert writer_entered.wait(timeout=1.0)
+
+        started = time.monotonic()
+        relay.write(np.ones((3, 4, 3), dtype=np.uint8))
+        relay.write(np.full((3, 4, 3), 2, dtype=np.uint8))
+        elapsed = time.monotonic() - started
+
+        assert elapsed < 0.05
+        assert relay.frames_dropped == 1
+        assert relay.health()["frame_queued"] is True
+    finally:
+        release_writer.set()
+        relay.close()
