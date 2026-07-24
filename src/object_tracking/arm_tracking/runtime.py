@@ -613,11 +613,13 @@ class ArmTrackingRuntime:
         # the path on that sample would incorrectly attempt task IK from the
         # factory rest pose.
         if escape_needed:
-            ik_step_type = "start_collision_escape"
+            ik_step_type = "guided_table_clearance"
             if self._start_escape_path is None:
-                escape = self.ik.plan_start_collision_escape(
+                escape = self.ik.plan_guided_clearance(
                     last_q,
                     support_plane=plane,
+                    lift_m=0.25,
+                    forward_m=0.06,
                 )
                 if not escape.ok or escape.q_path is None:
                     base_status.update(
@@ -698,7 +700,7 @@ class ArmTrackingRuntime:
                 "ik_collision_labels": list(collision_labels),
                 "ik_escape_waypoint": (
                     self._start_escape_target_index
-                    if ik_step_type == "start_collision_escape"
+                    if ik_step_type == "guided_table_clearance"
                     else None
                 ),
                 "ik_escape_waypoint_count": (
