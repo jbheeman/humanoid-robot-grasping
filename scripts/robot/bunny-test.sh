@@ -6,6 +6,7 @@ CLIENT_IP="${CLIENT_IP:-192.168.0.66}"
 CALIBRATION="${CALIBRATION:-${ROOT_DIR}/runs/localization/g1-tabletop-calibration.json}"
 EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-ai}"
 MAX_TILT_DEG="${MAX_TILT_DEG:-8}"
+MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG:-12}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-90}"
 # Domain 42 is also used by older project processes and has repeatedly left
 # the live G1 and GB10 participants undiscovered.  The live bunny test uses a
@@ -28,6 +29,10 @@ while (($#)); do
       ;;
     --max-tilt-deg)
       MAX_TILT_DEG="${2:?--max-tilt-deg requires a number}"
+      shift 2
+      ;;
+    --max-waist-deviation-deg)
+      MAX_WAIST_DEVIATION_DEG="${2:?--max-waist-deviation-deg requires a number}"
       shift 2
       ;;
     -h|--help)
@@ -111,6 +116,7 @@ echo "  GB10:       ${CLIENT_IP}"
 echo "  calibration: ${CALIBRATION}"
 echo "  motion mode: ${EXPECTED_MOTION_MODE}"
 echo "  tilt limit:  ${MAX_TILT_DEG} degrees"
+echo "  waist limit: ${MAX_WAIST_DEVIATION_DEG} degrees"
 echo "  ROS domain:  ${PROJECT_ROS_DOMAIN_ID}"
 echo "Keep the physical E-stop in hand. Ctrl-C performs a controlled stop."
 
@@ -119,6 +125,7 @@ CALIBRATION="${CALIBRATION}" \
 ALLOW_MOVEMENT=1 \
 EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE}" \
 MAX_TILT_DEG="${MAX_TILT_DEG}" \
+MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG}" \
 G1_PROJECT_ROS_DOMAIN_ID="${PROJECT_ROS_DOMAIN_ID}" \
 QUIET_HEALTHY_DEPTH=1 \
   setsid "${ROOT_DIR}/scripts/robot/start.sh" &

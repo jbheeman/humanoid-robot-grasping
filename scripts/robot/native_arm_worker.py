@@ -138,6 +138,12 @@ def build_parser() -> argparse.ArgumentParser:
         default=5.0,
         help="maximum absolute IMU roll/pitch allowed before arm motion is blocked",
     )
+    parser.add_argument(
+        "--max-waist-deviation-deg",
+        type=float,
+        default=3.0,
+        help="maximum dynamic waist deviation from the calibrated pose",
+    )
     return parser
 
 
@@ -149,6 +155,11 @@ def main() -> int:
         raise SystemExit("--allow-movement requires --calibration")
     if not math.isfinite(args.max_tilt_deg) or not 1.0 <= args.max_tilt_deg <= 15.0:
         raise SystemExit("--max-tilt-deg must be between 1 and 15 degrees")
+    if (
+        not math.isfinite(args.max_waist_deviation_deg)
+        or not 3.0 <= args.max_waist_deviation_deg <= 15.0
+    ):
+        raise SystemExit("--max-waist-deviation-deg must be between 3 and 15 degrees")
     calibration = None if args.calibration is None else load_calibration(args.calibration)
     hardware = UnitreeArmHardware(
         interface=args.hardware_interface,
@@ -168,7 +179,7 @@ def main() -> int:
             # arm's mass moves forward/up.  Use the operator-selected live
             # tilt envelope here too; the old fixed 3 degree gate rejected
             # normal balance compensation midway through the escape path.
-            max_waist_deviation_rad=math.radians(args.max_tilt_deg),
+            max_waist_deviation_rad=math.radians(args.max_waist_deviation_deg),
         ),
     )
     socket_path = Path(args.socket)

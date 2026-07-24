@@ -737,7 +737,9 @@ class ArmBridgeController:
                 for actual, expected in zip(robot.waist_q, self.config.waist_reference_rad)
             ):
                 raise ArmBridgeError(
-                    "Waist differs by more than 3 degrees from calibration",
+                    "Waist differs by more than "
+                    f"{math.degrees(self.config.max_waist_deviation_rad):.1f} "
+                    "degrees from calibration",
                     code="waist_calibration_mismatch",
                 )
         return robot
