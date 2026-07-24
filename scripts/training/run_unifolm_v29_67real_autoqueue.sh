@@ -123,6 +123,7 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
   }
   write_status validating "${attempt}" "${run_id}" ""
   IFS=',' read -r -a evaluation_gpus <<< "${training_gpus}"
+  trap - ERR
   set +e
   "${python}" "${workspace}/scripts/training/evaluate_unifolm_run.py" \
     --root "${workspace}" \
@@ -136,6 +137,7 @@ for ((attempt = 1; attempt <= max_attempts; attempt++)); do
     --gpus "${evaluation_gpus[@]}"
   evaluation_rc=$?
   set -e
+  trap record_unexpected_failure ERR
 
   [[ -s "${diagnostic_status}" ]] || {
     write_status failed "${attempt}" "${run_id}" "validation produced no status"
