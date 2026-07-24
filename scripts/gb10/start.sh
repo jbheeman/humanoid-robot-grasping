@@ -39,6 +39,7 @@ ACCESS_LOG="${ACCESS_LOG:-0}"
 CAPTURE_BACKEND="${CAPTURE_BACKEND:-gst-launch}"
 STOP_EXISTING="${STOP_EXISTING:-1}"
 CALIBRATION="${CALIBRATION:-}"
+ALLOW_NOMINAL_SUPPORT_PLANE="${ALLOW_NOMINAL_SUPPORT_PLANE:-0}"
 ARM_HOME="${ARM_HOME:-}"
 G1_ROBOT_ID="${G1_ROBOT_ID:-}"
 TARGET_HZ="${TARGET_HZ:-20}"
@@ -192,6 +193,9 @@ fi
 if [[ -n "${CALIBRATION}" ]]; then
   tracking_args+=(--calibration "${CALIBRATION}")
 fi
+if [[ "${ALLOW_NOMINAL_SUPPORT_PLANE}" == "1" ]]; then
+  tracking_args+=(--allow-nominal-support-plane)
+fi
 if [[ "${EXECUTE}" == "1" ]]; then
   if [[ -z "${CALIBRATION}" ]]; then
     echo "EXECUTE=1 requires CALIBRATION." >&2
@@ -270,6 +274,7 @@ echo "ROS peer:            ${ROBOT_HOST} (domain ${ROS_DOMAIN_ID})"
 echo "YOLO model:          ${MODEL}"
 echo "Tracking profile:    ${VISION_WIDTH}x${VISION_HEIGHT} at ${VISION_FPS} FPS"
 echo "Movement requested:  ${EXECUTE} (robot safety gates still apply)"
+echo "Nominal plane fallback: ${ALLOW_NOMINAL_SUPPORT_PLANE}"
 echo "Arm commissioning:    ${ARM_COMMISSIONING}"
 echo "Vision pointing:      ${VISION_POINTING} (planner ready; startup never moves the arm)"
 echo "VLA preview:          ${VLA_PREVIEW} (observations only; no arm-control publisher)"

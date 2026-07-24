@@ -1199,6 +1199,14 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--arm-home", help="Validated commissioned right-arm home profile")
     parser.add_argument("--robot-id", help="Robot identity bound to the commissioned arm home")
+    parser.add_argument(
+        "--allow-nominal-support-plane",
+        action="store_true",
+        help=(
+            "When the physical table is absent, use the calibration-derived "
+            "torso-frame exclusion plane while retaining all other motion gates"
+        ),
+    )
     parser.add_argument("--target-hz", type=float, default=15.0)
     parser.add_argument(
         "--ros-depth-only",
@@ -1498,6 +1506,7 @@ def main() -> None:
                 RuntimeConfig(
                     calibration_path=Path(args.calibration),
                     tabletop_path=TABLETOP_CALIBRATION_PATH,
+                    allow_nominal_support_plane=args.allow_nominal_support_plane,
                     arm_home_path=None if args.arm_home is None else Path(args.arm_home),
                     robot_id=args.robot_id,
                     execute=args.execute,

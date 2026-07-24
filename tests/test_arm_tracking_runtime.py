@@ -295,6 +295,30 @@ def test_runtime_reuses_recent_support_plane_after_one_bad_frame(tmp_path: Path)
     assert runtime.last_support_plane_error is not None
 
 
+def test_runtime_can_use_explicit_nominal_plane_without_table(tmp_path: Path) -> None:
+    calibration_path = tmp_path / "calibration.yaml"
+    calibration = _calibration()
+    save_calibration_atomic(calibration, calibration_path)
+    runtime = ArmTrackingRuntime(
+        RuntimeConfig(
+            calibration_path=calibration_path,
+            allow_nominal_support_plane=True,
+        ),
+        lambda: {},
+        lambda status, depth: None,
+        transport=FakeTrackingTransport(),
+        repo_root=tmp_path,
+    )
+
+    support = runtime._support_plane(np.zeros((3, 4), dtype=np.uint16), 0.001)
+
+    assert support is not None
+    assert support.source == "calibrated_nominal_free_space_plane"
+    assert support.plane.signed_distance(
+        (0.0, 0.0, runtime._expected_table_height_m())
+    ) == 0.0
+
+
 def test_runtime_freezes_validated_plane_during_armed_motion(tmp_path: Path) -> None:
     calibration_path = tmp_path / "calibration.yaml"
     save_calibration_atomic(_calibration(), calibration_path)

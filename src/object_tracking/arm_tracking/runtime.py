@@ -19,6 +19,7 @@ from .geometry import (
     extract_support_plane,
     generate_pregrasp_target,
     has_support_clearance,
+    Plane,
     SupportRegion,
 )
 from .ik_solver import G1RightArmIK, IKResult, IKUnavailable, default_urdf_path
@@ -67,6 +68,7 @@ class TrackingTransport(Protocol):
 class RuntimeConfig:
     calibration_path: Path
     tabletop_path: Path | None = None
+    allow_nominal_support_plane: bool = False
     arm_home_path: Path | None = None
     robot_id: str | None = None
     execute: bool = False
@@ -939,6 +941,23 @@ class ArmTrackingRuntime:
                 <= _SUPPORT_PLANE_GRACE_S
             ):
                 return self.last_support_plane
+            if self.config.allow_nominal_support_plane:
+                # Explicit free-space test mode: preserve a mathematical
+                # exclusion plane even when the physical tabletop has been
+                # removed. Its height comes from the validated camera/torso
+                # calibration rather than from the current depth image.
+                height = self._expected_table_height_m()
+                support = SupportRegion.from_xy_bounds(
+                    Plane((0.0, 0.0, 1.0), -height),
+                    self.calibration.workspace.minimum[:2],
+                    self.calibration.workspace.maximum[:2],
+                    certified_edges=("u_min", "u_max", "v_min", "v_max"),
+                    lateral_margin_m=0.0,
+                    source="calibrated_nominal_free_space_plane",
+                )
+                self.last_support_plane = support
+                self.last_support_plane_at = time.monotonic()
+                return support
             return None
 
     def _expected_table_height_m(self) -> float:
