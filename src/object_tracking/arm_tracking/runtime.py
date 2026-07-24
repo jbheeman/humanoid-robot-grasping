@@ -167,7 +167,7 @@ def select_start_escape_waypoint(
     target_index: int,
     *,
     reached_tolerance_rad: float = 0.015,
-    tracking_tolerance_rad: float = 0.030,
+    tracking_tolerance_rad: float = 0.015,
 ) -> tuple[tuple[float, ...] | None, int, str | None]:
     """Select one bounded escape waypoint using measured, not commanded, pose."""
 
@@ -626,23 +626,12 @@ class ArmTrackingRuntime:
                 self._start_escape_path = None
                 self._reject(base_status, "ik_escape_complete_waiting_for_clear_state", colormap)
                 return
-            # Revalidate the measured pose plus the complete remaining suffix.
-            # This admits only the solver's monotonic shallow-contact exit and
-            # catches drift away from the cached path before a waypoint is
-            # exposed to either preview or execution.
-            suffix = (
-                tuple(float(value) for value in last_q),
-                *self._start_escape_path[self._start_escape_target_index :],
-            )
-            validation_error = self.ik.validate_joint_path(
-                suffix,
-                support_plane=plane,
-                edge_step_rad=0.0025,
-            )
-            if validation_error is not None:
-                self._start_escape_path = None
-                self._reject(base_status, f"ik_{validation_error}", colormap)
-                return
+            # The complete cached path was densely collision/table validated
+            # when planned. Expose one waypoint repeatedly until measured
+            # state reaches it; the selector rejects >0.015-rad tracking drift
+            # and the robot bridge independently rejects >0.05-rad targets.
+            # Re-running full mesh validation at camera rate takes ~1 second
+            # on GB10 and would make an otherwise safe command stale.
             ik = IKResult(True, waypoint, 0.0, 0.0)
         else:
             self._start_escape_path = None
