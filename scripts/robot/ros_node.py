@@ -279,10 +279,12 @@ class DepthOnlyRosNode:
             "source": "g1_robot_depth",
             "sequence": health["sequence"],
             "frames_captured": health["frames_captured"],
+            "source_restarts": health["source_restarts"],
             "fresh": health["sensor_fresh"],
             "frame_age_ms": health["frame_age_ms"],
             "capture_error": health["last_error"],
             "publish_error": self._last_publish_error,
+            "rgb_relay": health["rgb_relay"],
         }
         encoded = _safe_json(status)
         if encoded != self._last_depth_diagnostic:
