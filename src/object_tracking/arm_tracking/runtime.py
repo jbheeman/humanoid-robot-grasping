@@ -586,7 +586,12 @@ class ArmTrackingRuntime:
         last_q = right_arm_ik_seed(arm_state, self.home_q)
         collision_labels = self.ik.collision_labels(last_q)
         ik_step_type = "analytic_local_translation"
-        if collision_labels:
+        # Once a validated hip-rest escape starts, latch it until measured
+        # state reaches the collision-free endpoint. The contact sits at the
+        # mesh boundary and can flicker clear for one encoder sample; dropping
+        # the path on that sample would incorrectly attempt task IK from the
+        # factory rest pose.
+        if self._start_escape_path is not None or collision_labels:
             ik_step_type = "start_collision_escape"
             if self._start_escape_path is None:
                 escape = self.ik.plan_start_collision_escape(
