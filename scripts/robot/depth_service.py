@@ -472,6 +472,10 @@ class DepthService:
                     continue
                 consecutive_timeouts = 0
                 now = time.monotonic()
+                # RGB has its own requested rate and must not be throttled by
+                # the lower ROS depth-serialization rate.
+                if self.rgb_relay is not None and frame.color_bgr is not None:
+                    self.rgb_relay.write(frame.color_bgr)
                 if now < next_transmit_at:
                     # ``wait_for_frames`` can return immediately while the
                     # RealSense queue is backed up.  Yield here so this
@@ -480,8 +484,6 @@ class DepthService:
                     self.stop_event.wait(next_transmit_at - now)
                     continue
                 next_transmit_at = now + (1.0 / self.transmit_fps)
-                if self.rgb_relay is not None and frame.color_bgr is not None:
-                    self.rgb_relay.write(frame.color_bgr)
                 calibration = self.source.calibration
                 profile = calibration["depth_profile"]
                 envelope = self.codec.encode(

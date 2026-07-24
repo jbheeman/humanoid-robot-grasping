@@ -8,11 +8,9 @@ EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-ai}"
 MAX_TILT_DEG="${MAX_TILT_DEG:-8}"
 MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG:-12}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-90}"
-# The same D435I is already supplying 960x540 RGB at 60 Hz through V4L2.
-# Running its independent librealsense depth interface at 60 Hz as well has
-# repeatedly stalled after a few seconds.  Thirty-Hz capture is comfortably
-# above the 15-Hz ROS depth transport and the 10-20-Hz control loop.
-DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS:-30}"
+# One synchronized librealsense owner supplies RGB and depth. Independent
+# V4L2/librealsense ownership of this D435I repeatedly stalls depth.
+DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS:-60}"
 # Domain 42 is also used by older project processes and has repeatedly left
 # the live G1 and GB10 participants undiscovered.  The live bunny test uses a
 # dedicated domain that is verified end-to-end during commissioning.
@@ -61,6 +59,11 @@ done
 if [[ ! -f "${CALIBRATION}" ]]; then
   echo "Missing calibration: ${CALIBRATION}" >&2
   exit 1
+fi
+
+if systemctl is-active --quiet g1-highfps-camera.service; then
+  echo "Stopping the conflicting V4L2 camera service (sudo may prompt)..."
+  sudo systemctl stop g1-highfps-camera.service
 fi
 
 bridge_pid=""
@@ -133,6 +136,7 @@ EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE}" \
 MAX_TILT_DEG="${MAX_TILT_DEG}" \
 MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG}" \
 DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS}" \
+RGB_MODE=realsense \
 G1_PROJECT_ROS_DOMAIN_ID="${PROJECT_ROS_DOMAIN_ID}" \
 QUIET_HEALTHY_DEPTH=1 \
   setsid "${ROOT_DIR}/scripts/robot/start.sh" &

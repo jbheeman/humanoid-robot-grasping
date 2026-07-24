@@ -272,6 +272,13 @@ if [[ "${CONTROL_MODE}" == "tracking" ]]; then
     if [[ -n "${DEPTH_SERIAL}" ]]; then
       depth_args+=(--depth-serial "${DEPTH_SERIAL}")
     fi
+    if [[ "${RGB_MODE}" == "realsense" ]]; then
+      depth_args+=(
+        --realsense-rgb-target "${CLIENT_IP}"
+        --realsense-rgb-port "${REALSENSE_RGB_PORT}"
+        --realsense-rgb-fps "${REALSENSE_RGB_FPS}"
+      )
+    fi
     if [[ "${QUIET_HEALTHY_DEPTH}" == "1" ]]; then
       depth_args+=(--quiet-healthy-depth)
     fi

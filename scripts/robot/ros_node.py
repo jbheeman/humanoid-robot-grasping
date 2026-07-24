@@ -222,13 +222,15 @@ class DepthOnlyRosNode:
         self.depth_publisher = self.node.create_publisher(
             self.types["CompressedDepth"], DEPTH_TOPIC, depth_qos
         )
+        relay_rgb = bool(args.realsense_rgb_target)
         direct = RealSenseDepthSource(
             width=args.depth_width,
             height=args.depth_height,
             fps=args.depth_capture_fps,
             serial=args.depth_serial,
-            enable_color=False,
-            registered_to_output_rgb=False,
+            color_fps=args.realsense_rgb_fps,
+            enable_color=relay_rgb,
+            registered_to_output_rgb=relay_rgb,
             # The GB10 uses a robust median over the detector ROI.  Avoid
             # running three expensive RealSense filters at 30 Hz on the G1,
             # which otherwise starves the ROS publisher before a frame leaves
@@ -238,7 +240,20 @@ class DepthOnlyRosNode:
         if args.depth_source != "librealsense":
             self.runner.close()
             raise ValueError("--depth-only currently requires --depth-source librealsense")
-        self.depth_service = DepthService(direct, transmit_fps=args.depth_publish_fps)
+        rgb_relay = (
+            RealSenseRgbRtpRelay(
+                host=args.realsense_rgb_target,
+                port=args.realsense_rgb_port,
+                fps=args.realsense_rgb_fps,
+            )
+            if relay_rgb
+            else None
+        )
+        self.depth_service = DepthService(
+            direct,
+            transmit_fps=args.depth_publish_fps,
+            rgb_relay=rgb_relay,
+        )
         try:
             self.depth_service.start(args.calibration)
         except Exception:
