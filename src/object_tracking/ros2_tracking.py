@@ -6,28 +6,25 @@ and unit tests can import this module without a ROS installation.
 
 from __future__ import annotations
 
-from dataclasses import asdict
 import json
 import secrets
-import struct
 import threading
 import time
 from typing import Any, Callable, Optional, Sequence
 
 from object_tracking.arm_tracking.depth import DepthFrame
-from object_tracking.arm_tracking.protocol import DepthEnvelopeCodec, DepthFrameHeader
+from object_tracking.arm_tracking.protocol import DepthEnvelopeCodec
 from object_tracking.ros2_transport import Ros2NodeRunner
 
 
 ARM_TARGET_TOPIC = "/g1/arm/target_json"
 ARM_STATE_TOPIC = "/g1/arm/state_json"
-DEPTH_TOPIC = "/g1/depth"
+DEPTH_TOPIC = "/g1/depth_wire"
 ARM_CONTROL_REQUEST_TOPIC = "/g1/arm/control/request_json"
 ARM_CONTROL_RESPONSE_TOPIC = "/g1/arm/control/response_json"
 COMMISSIONING_STATE_TOPIC = "/g1/commissioning/state"
 COMMISSIONING_REQUEST_TOPIC = "/g1/commissioning/request"
 COMMISSIONING_RESPONSE_TOPIC = "/g1/commissioning/response"
-_HEADER_LENGTH = struct.Struct("!I")
 
 
 class RosTrackingError(RuntimeError):
@@ -44,9 +41,8 @@ def _load_types() -> dict[str, Any]:
             CommissioningRequest,
             CommissioningResponse,
             CommissioningState,
-            CompressedDepth,
         )
-        from std_msgs.msg import String
+        from std_msgs.msg import ByteMultiArray, String
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
@@ -62,7 +58,7 @@ def _load_types() -> dict[str, Any]:
         "CommissioningState": CommissioningState,
         "CommissioningRequest": CommissioningRequest,
         "CommissioningResponse": CommissioningResponse,
-        "CompressedDepth": CompressedDepth,
+        "ByteMultiArray": ByteMultiArray,
         "QoSProfile": QoSProfile,
         "ReliabilityPolicy": ReliabilityPolicy,
         "DurabilityPolicy": DurabilityPolicy,
@@ -158,7 +154,7 @@ class RosTrackingTransport:
             arm_control_subscription = None
             try:
                 depth_subscription = node.create_subscription(
-                    types["CompressedDepth"], DEPTH_TOPIC, self._on_depth, depth_qos
+                    types["ByteMultiArray"], DEPTH_TOPIC, self._on_depth, depth_qos
                 )
                 if self._observe_depth_only:
                     pass
@@ -536,27 +532,7 @@ class RosTrackingTransport:
 
     @staticmethod
     def _depth_envelope(message: object) -> bytes:
-        payload = bytes(message.payload)
-        header = DepthFrameHeader(
-            version=int(message.version),
-            sequence=int(message.sequence),
-            width=int(message.width),
-            height=int(message.height),
-            depth_scale=float(message.depth_scale),
-            sensor_timestamp_ms=float(message.sensor_timestamp_ms),
-            timestamp_domain=str(message.timestamp_domain),
-            calibration_id=str(message.calibration_id),
-            payload_size=len(payload),
-            uncompressed_size=int(message.uncompressed_size),
-            checksum_sha256=str(message.checksum_sha256),
-            encoding=str(message.encoding),
-            byte_order="little",
-            registered_to_rgb=bool(message.registered_to_rgb),
-        )
-        encoded_header = json.dumps(asdict(header), separators=(",", ":"), sort_keys=True).encode(
-            "utf-8"
-        )
-        return _HEADER_LENGTH.pack(len(encoded_header)) + encoded_header + payload
+        return bytes(message.data)
 
     def _require_started(self) -> None:
         if not self._started or self._closed:

@@ -169,7 +169,7 @@ def _types() -> dict[str, object]:
         "CommissioningState": Message,
         "CommissioningRequest": CommissioningRequest,
         "CommissioningResponse": CommissioningResponse,
-        "CompressedDepth": Message,
+        "ByteMultiArray": Message,
         "CommissioningCommand": CommissioningCommand,
         "QoSProfile": lambda **kwargs: kwargs,
         "ReliabilityPolicy": Policy,
@@ -230,8 +230,8 @@ def test_depth_message_is_bounded_and_decoded() -> None:
         registered_to_rgb=True,
     )
     decoded = codec.decode(envelope)
-    message = SimpleNamespace(**as_message_fields(decoded.header, envelope))
-    runner.node.callbacks["/g1/depth"](message)
+    message = SimpleNamespace(data=envelope)
+    runner.node.callbacks["/g1/depth_wire"](message)
 
     frame = transport.receive_depth(0.1)
 
@@ -252,7 +252,7 @@ def test_depth_only_observer_creates_no_arm_or_commissioning_entities() -> None:
 
     transport.start()
 
-    assert set(runner.node.callbacks) == {"/g1/depth"}
+    assert set(runner.node.callbacks) == {"/g1/depth_wire"}
     assert runner.node.publishers == []
     assert runner.node.clients == []
     assert transport.arm_state()["state"] == "unreachable"
@@ -268,7 +268,7 @@ def test_observe_only_subscribes_to_arm_state_without_command_publishers() -> No
 
     transport.start()
 
-    assert set(runner.node.callbacks) == {"/g1/depth", "/g1/arm/state_json"}
+    assert set(runner.node.callbacks) == {"/g1/depth_wire", "/g1/arm/state_json"}
     assert runner.node.publishers == []
     assert runner.node.clients == []
 
@@ -276,26 +276,6 @@ def test_observe_only_subscribes_to_arm_state_without_command_publishers() -> No
 def test_observation_modes_are_mutually_exclusive() -> None:
     with pytest.raises(ValueError, match="mutually exclusive"):
         RosTrackingTransport(observe_depth_only=True, observe_only=True)
-
-
-def as_message_fields(header: object, envelope: bytes) -> dict[str, object]:
-    header_size = int.from_bytes(envelope[:4], "big")
-    payload = envelope[4 + header_size :]
-    return {
-        "version": header.version,
-        "sequence": header.sequence,
-        "width": header.width,
-        "height": header.height,
-        "depth_scale": header.depth_scale,
-        "sensor_timestamp_ms": header.sensor_timestamp_ms,
-        "timestamp_domain": header.timestamp_domain,
-        "calibration_id": header.calibration_id,
-        "registered_to_rgb": header.registered_to_rgb,
-        "encoding": header.encoding,
-        "uncompressed_size": header.uncompressed_size,
-        "checksum_sha256": header.checksum_sha256,
-        "payload": payload,
-    }
 
 
 def test_rejected_service_response_surfaces_robot_error() -> None:

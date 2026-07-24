@@ -13,7 +13,6 @@ import json
 import math
 from pathlib import Path
 import signal
-import struct
 import threading
 from typing import Any
 
@@ -44,7 +43,7 @@ from scripts.robot.depth_service import (
 
 ARM_TARGET_TOPIC = "/g1/arm/target_json"
 ARM_STATE_TOPIC = "/g1/arm/state_json"
-DEPTH_TOPIC = "/g1/depth"
+DEPTH_TOPIC = "/g1/depth_wire"
 ARM_CONTROL_REQUEST_TOPIC = "/g1/arm/control/request_json"
 ARM_CONTROL_RESPONSE_TOPIC = "/g1/arm/control/response_json"
 COMMISSIONING_STATE_TOPIC = "/g1/commissioning/state"
@@ -56,7 +55,6 @@ MANUAL_REQUEST_TOPIC = f"{MANUAL_BASE}/request_json"
 MANUAL_RESPONSE_TOPIC = f"{MANUAL_BASE}/response_json"
 MANUAL_STATUS_TOPIC = f"{MANUAL_BASE}/status_json"
 MANUAL_JOINT_STATES_TOPIC = f"{MANUAL_BASE}/joint_states"
-_HEADER_LENGTH = struct.Struct("!I")
 _MAX_MANUAL_WIRE_JSON_BYTES = 16 * 1024
 
 
@@ -134,10 +132,9 @@ def _imports() -> dict[str, Any]:
             CommissioningRequest,
             CommissioningResponse,
             CommissioningState,
-            CompressedDepth,
         )
         from sensor_msgs.msg import JointState
-        from std_msgs.msg import String
+        from std_msgs.msg import ByteMultiArray, String
         from rclpy.qos import (
             DurabilityPolicy,
             HistoryPolicy,
@@ -152,7 +149,7 @@ def _imports() -> dict[str, Any]:
         "CommissioningState": CommissioningState,
         "CommissioningRequest": CommissioningRequest,
         "CommissioningResponse": CommissioningResponse,
-        "CompressedDepth": CompressedDepth,
+        "ByteMultiArray": ByteMultiArray,
         "JointState": JointState,
         "String": String,
         "QoSProfile": QoSProfile,
@@ -219,7 +216,7 @@ class DepthOnlyRosNode:
             durability=self.types["DurabilityPolicy"].TRANSIENT_LOCAL,
         )
         self.depth_publisher = self.node.create_publisher(
-            self.types["CompressedDepth"], DEPTH_TOPIC, depth_qos
+            self.types["ByteMultiArray"], DEPTH_TOPIC, depth_qos
         )
         relay_rgb = bool(args.realsense_rgb_target)
         direct = RealSenseDepthSource(
@@ -299,28 +296,11 @@ class DepthOnlyRosNode:
         if envelope is None or sequence <= self._last_depth_sequence:
             return
         try:
-            (header_size,) = _HEADER_LENGTH.unpack(envelope[: _HEADER_LENGTH.size])
-            payload_offset = _HEADER_LENGTH.size + header_size
-            header = json.loads(envelope[_HEADER_LENGTH.size : payload_offset])
-            payload = envelope[payload_offset:]
-            message = self.types["CompressedDepth"]()
-            message.version = int(header["version"])
-            message.sequence = int(header["sequence"])
-            message.width = int(header["width"])
-            message.height = int(header["height"])
-            message.depth_scale = float(header["depth_scale"])
-            message.sensor_timestamp_ms = float(header["sensor_timestamp_ms"])
-            message.timestamp_domain = str(header["timestamp_domain"])
-            message.calibration_id = str(header["calibration_id"])
-            message.registered_to_rgb = bool(header.get("registered_to_rgb", False))
-            message.encoding = str(header["encoding"])
-            message.uncompressed_size = int(header["uncompressed_size"])
-            message.checksum_sha256 = str(header["checksum_sha256"])
-            # ROS 2's generated ``sequence<uint8>`` setter has a direct
-            # array.array fast path. Passing a list materializes hundreds of
-            # thousands of Python integers and validates/copies every byte,
-            # which can hold the G1's Python runtime for several seconds.
-            message.payload = array.array("B", payload)
+            message = self.types["ByteMultiArray"]()
+            # Use a standard ROS message across Foxy and Jazzy. The custom
+            # CompressedDepth type is not wire-compatible across those
+            # distributions and intermittently corrupts CycloneDDS samples.
+            message.data = array.array("B", envelope)
             self.depth_publisher.publish(message)
             self._last_depth_sequence = sequence
         except Exception as exc:
@@ -519,7 +499,7 @@ class RobotRosNode:
         self._last_depth_sequence = -1
         if not args.disable_depth:
             self.depth_publisher = self.node.create_publisher(
-                self.types["CompressedDepth"], DEPTH_TOPIC, depth_qos
+                self.types["ByteMultiArray"], DEPTH_TOPIC, depth_qos
             )
             self.depth_service = self._create_depth_service()
             self.depth_service.start(args.calibration)
@@ -836,24 +816,8 @@ class RobotRosNode:
         if envelope is None or sequence <= self._last_depth_sequence:
             return
         try:
-            (header_size,) = _HEADER_LENGTH.unpack(envelope[: _HEADER_LENGTH.size])
-            payload_offset = _HEADER_LENGTH.size + header_size
-            header = json.loads(envelope[_HEADER_LENGTH.size : payload_offset])
-            payload = envelope[payload_offset:]
-            message = self.types["CompressedDepth"]()
-            message.version = int(header["version"])
-            message.sequence = int(header["sequence"])
-            message.width = int(header["width"])
-            message.height = int(header["height"])
-            message.depth_scale = float(header["depth_scale"])
-            message.sensor_timestamp_ms = float(header["sensor_timestamp_ms"])
-            message.timestamp_domain = str(header["timestamp_domain"])
-            message.calibration_id = str(header["calibration_id"])
-            message.registered_to_rgb = bool(header.get("registered_to_rgb", False))
-            message.encoding = str(header["encoding"])
-            message.uncompressed_size = int(header["uncompressed_size"])
-            message.checksum_sha256 = str(header["checksum_sha256"])
-            message.payload = array.array("B", payload)
+            message = self.types["ByteMultiArray"]()
+            message.data = array.array("B", envelope)
             self.depth_publisher.publish(message)
             self._last_depth_sequence = sequence
         except Exception:
