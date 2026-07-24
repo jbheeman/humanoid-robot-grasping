@@ -583,25 +583,31 @@ class ArmTrackingRuntime:
                 "pregrasp_target_xyz_m": base_status["target_xyz_m"],
             }
         )
-        if not self.calibration.workspace.contains(target.position):
-            self._reject(base_status, "workspace_violation", colormap)
-            return
-        if plane is None or not has_support_clearance(target.position, plane):
-            self._reject(base_status, "support_plane_clearance", colormap)
-            return
         if self.ik is None:
             base_status.update({"ik_status": "unavailable", "ik_error": self.ik_error})
             self._reject(base_status, "ik_unavailable", colormap)
             return
         last_q = right_arm_ik_seed(arm_state, self.home_q)
         collision_labels = self.ik.collision_labels(last_q)
+        escape_needed = self._start_escape_path is not None or bool(collision_labels)
+        # The hip-rest escape is an independently planned and fully
+        # link/table-validated path. A noisy bunny endpoint must not interrupt
+        # it; endpoint workspace/clearance gates become relevant only when
+        # task-directed Cartesian IK is about to begin.
+        if not escape_needed:
+            if not self.calibration.workspace.contains(target.position):
+                self._reject(base_status, "workspace_violation", colormap)
+                return
+            if not has_support_clearance(target.position, plane):
+                self._reject(base_status, "support_plane_clearance", colormap)
+                return
         ik_step_type = "analytic_local_translation"
         # Once a validated hip-rest escape starts, latch it until measured
         # state reaches the collision-free endpoint. The contact sits at the
         # mesh boundary and can flicker clear for one encoder sample; dropping
         # the path on that sample would incorrectly attempt task IK from the
         # factory rest pose.
-        if self._start_escape_path is not None or collision_labels:
+        if escape_needed:
             ik_step_type = "start_collision_escape"
             if self._start_escape_path is None:
                 escape = self.ik.plan_start_collision_escape(
