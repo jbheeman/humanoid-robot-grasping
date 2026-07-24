@@ -190,11 +190,19 @@ def select_start_escape_waypoint(
     if index >= len(knots):
         return None, index, None
     previous = knots[index - 1]
-    if float(np.max(np.abs(measured - previous))) > tracking_tolerance_rad:
+    target = knots[index]
+    # Joint servos do not advance at identical rates. Accept asynchronous
+    # progress anywhere inside the component-wise box swept by this already
+    # validated edge, plus a small encoder/controller tolerance. Requiring the
+    # complete pose to remain near the previous knot falsely rejects a wrist
+    # that reaches its target before the shoulder.
+    corridor_minimum = np.minimum(previous, target) - tracking_tolerance_rad
+    corridor_maximum = np.maximum(previous, target) + tracking_tolerance_rad
+    if np.any(measured < corridor_minimum) or np.any(measured > corridor_maximum):
         return None, index, "escape_path_tracking_error"
-    if float(np.max(np.abs(knots[index] - measured))) > 0.05:
+    if float(np.max(np.abs(target - measured))) > 0.05:
         return None, index, "escape_waypoint_step_too_large"
-    return tuple(float(value) for value in knots[index]), index, None
+    return tuple(float(value) for value in target), index, None
 
 
 def depth_colormap_jpeg(z16: np.ndarray, depth_scale: float) -> bytes | None:
