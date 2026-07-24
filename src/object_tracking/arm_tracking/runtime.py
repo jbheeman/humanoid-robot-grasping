@@ -28,7 +28,7 @@ from .visualization import visualization_state
 
 StatusCallback = Callable[[dict[str, Any], bytes | None], None]
 SnapshotCallback = Callable[[], dict[str, Any]]
-_SUPPORT_PLANE_GRACE_S = 0.250
+_SUPPORT_PLANE_GRACE_S = 1.000
 
 
 class TrackingTransport(Protocol):
