@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+from collections import deque
 from dataclasses import dataclass
+import math
 from math import cos, sin
 from typing import Iterable, Sequence
 
@@ -169,6 +171,7 @@ class SupportRegion:
     minimum_uv: np.ndarray
     maximum_uv: np.ndarray
     certified_edges: tuple[str, ...] = ()
+    edge_sources: tuple[tuple[str, str], ...] = ()
     lateral_margin_m: float = 0.07
     source: str = "unknown"
 
@@ -201,12 +204,16 @@ class SupportRegion:
         certified = tuple(dict.fromkeys(str(edge) for edge in self.certified_edges))
         if any(edge not in _SUPPORT_EDGE_NAMES for edge in certified):
             raise ValueError("support region contains an unknown certified edge")
+        edge_sources = tuple((str(edge), str(source)) for edge, source in self.edge_sources)
+        if any(edge not in _SUPPORT_EDGE_NAMES for edge, _ in edge_sources):
+            raise ValueError("support region edge provenance contains an unknown edge")
         object.__setattr__(self, "origin", origin)
         object.__setattr__(self, "axis_u", axis_u)
         object.__setattr__(self, "axis_v", axis_v)
         object.__setattr__(self, "minimum_uv", minimum_uv)
         object.__setattr__(self, "maximum_uv", maximum_uv)
         object.__setattr__(self, "certified_edges", certified)
+        object.__setattr__(self, "edge_sources", edge_sources)
         object.__setattr__(self, "lateral_margin_m", float(self.lateral_margin_m))
         object.__setattr__(self, "source", str(self.source))
 
@@ -251,6 +258,9 @@ class SupportRegion:
             minimum_uv=uv.min(axis=0),
             maximum_uv=uv.max(axis=0),
             certified_edges=certified_edges,
+            edge_sources=tuple(
+                (edge, "calibrated") for edge in certified_edges
+            ),
             lateral_margin_m=lateral_margin_m,
             source=source,
         )
@@ -302,6 +312,9 @@ class SupportRegion:
             minimum_uv=minimum_uv,
             maximum_uv=maximum_uv,
             certified_edges=certified_edges,
+            edge_sources=tuple(
+                (edge, "calibrated") for edge in certified_edges
+            ),
             lateral_margin_m=lateral_margin_m,
             source=source,
         )
@@ -326,6 +339,37 @@ class SupportRegion:
             "v_max": v > self.maximum_uv[1] + margin,
         }
         return not any(outside[edge] for edge in self.certified_edges)
+
+    def edge_source(self, edge: str) -> str:
+        if edge not in _SUPPORT_EDGE_NAMES:
+            raise ValueError(f"unknown support edge: {edge}")
+        return dict(self.edge_sources).get(
+            edge,
+            "observed" if edge in self.certified_edges else "unknown",
+        )
+
+    def classify_point(
+        self,
+        point: Iterable[float],
+        *,
+        side_margin_m: float = 0.0,
+        top_clearance_m: float = 0.05,
+    ) -> str:
+        """Classify a point relative to the conservatively inflated table prism."""
+
+        if side_margin_m < 0.0 or top_clearance_m < 0.0:
+            raise ValueError("table prism margins must be non-negative")
+        u, v = self.projection_uv(point)
+        inside = bool(
+            self.minimum_uv[0] - side_margin_m <= u <= self.maximum_uv[0] + side_margin_m
+            and self.minimum_uv[1] - side_margin_m <= v <= self.maximum_uv[1] + side_margin_m
+        )
+        height = float(self.signed_distance(point))
+        if inside and height < top_clearance_m:
+            return "under_or_inside"
+        if height >= top_clearance_m:
+            return "above_clearance"
+        return "outside"
 
     def has_clearance(self, point: Iterable[float], *, minimum_clearance_m: float) -> bool:
         if minimum_clearance_m < 0.0 or not np.isfinite(minimum_clearance_m):
@@ -369,6 +413,7 @@ class SupportRegion:
                 "minimum_uv": self.minimum_uv.tolist(),
                 "maximum_uv": self.maximum_uv.tolist(),
                 "certified_edges": list(self.certified_edges),
+                "edge_sources": dict(self.edge_sources),
                 "lateral_margin_m": self.lateral_margin_m,
                 "source": self.source,
             },
@@ -387,6 +432,10 @@ class SupportRegion:
             minimum_uv=footprint["minimum_uv"],
             maximum_uv=footprint["maximum_uv"],
             certified_edges=tuple(footprint.get("certified_edges", ())),
+            edge_sources=tuple(
+                (str(edge), str(source))
+                for edge, source in dict(footprint.get("edge_sources", {})).items()
+            ),
             lateral_margin_m=float(footprint.get("lateral_margin_m", 0.07)),
             source=str(footprint.get("source", "unknown")),
         )
@@ -573,6 +622,227 @@ def fit_plane_ransac(
     return fit_plane(values[best_mask], orient_toward=orient_toward), best_mask
 
 
+@dataclass(frozen=True)
+class SupportDetectionDiagnostics:
+    candidate_count: int
+    inlier_count: int
+    connected_inlier_count: int
+    inlier_fraction: float
+    normal_tilt_deg: float
+    residual_median_m: float
+    residual_p95_m: float
+    observed_size_m: tuple[float, float]
+    expected_size_m: tuple[float, float] | None
+    score: float
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "candidate_count": self.candidate_count,
+            "inlier_count": self.inlier_count,
+            "connected_inlier_count": self.connected_inlier_count,
+            "inlier_fraction": round(self.inlier_fraction, 5),
+            "normal_tilt_deg": round(self.normal_tilt_deg, 3),
+            "residual_median_mm": round(self.residual_median_m * 1000.0, 3),
+            "residual_p95_mm": round(self.residual_p95_m * 1000.0, 3),
+            "observed_size_m": [round(value, 4) for value in self.observed_size_m],
+            "expected_size_m": (
+                None
+                if self.expected_size_m is None
+                else [round(value, 4) for value in self.expected_size_m]
+            ),
+            "score": round(self.score, 5),
+        }
+
+
+def _largest_connected_sample_mask(
+    rows: np.ndarray,
+    columns: np.ndarray,
+    *,
+    stride: int,
+) -> np.ndarray:
+    """Select one 4-connected component from sparse organized depth samples."""
+
+    if len(rows) != len(columns):
+        raise ValueError("sample rows and columns must have equal length")
+    locations = {
+        (int(row), int(column)): index
+        for index, (row, column) in enumerate(zip(rows, columns))
+    }
+    remaining = set(locations)
+    largest: list[int] = []
+    while remaining:
+        start = remaining.pop()
+        queue = deque((start,))
+        component = [locations[start]]
+        while queue:
+            row, column = queue.popleft()
+            for neighbor in (
+                (row - stride, column),
+                (row + stride, column),
+                (row, column - stride),
+                (row, column + stride),
+            ):
+                if neighbor in remaining:
+                    remaining.remove(neighbor)
+                    queue.append(neighbor)
+                    component.append(locations[neighbor])
+        if len(component) > len(largest):
+            largest = component
+    mask = np.zeros(len(rows), dtype=bool)
+    mask[largest] = True
+    return mask
+
+
+def detect_automatic_support_region(
+    z16: np.ndarray,
+    intrinsics: CameraIntrinsics,
+    *,
+    depth_scale: float,
+    optical_to_base: RigidTransform,
+    base_minimum: Iterable[float],
+    base_maximum: Iterable[float],
+    expected_size_m: tuple[float, float] | None = None,
+    stride: int = 6,
+    distance_threshold_m: float = 0.012,
+    minimum_connected_inliers: int = 80,
+) -> tuple[SupportRegion, SupportDetectionDiagnostics]:
+    """Detect a conservative tabletop pose and footprint from registered RGB-D.
+
+    Live depth supplies the plane pose and visible near edge. Saved physical
+    dimensions, when available, conservatively complete boundaries that may be
+    hidden by the plush or arm.
+    """
+
+    points, rows, columns = deproject_depth_samples_with_sample_grid(
+        z16,
+        intrinsics,
+        depth_scale=depth_scale,
+        stride=stride,
+    )
+    points = optical_to_base.apply(points)
+    minimum = _vector3(base_minimum, "base_minimum")
+    maximum = _vector3(base_maximum, "base_maximum")
+    bounded = np.all((points >= minimum) & (points <= maximum), axis=1)
+    points, rows, columns = points[bounded], rows[bounded], columns[bounded]
+    if len(points) < minimum_connected_inliers:
+        raise ValueError("too few tabletop-height depth samples")
+
+    remaining = np.ones(len(points), dtype=bool)
+    candidates: list[tuple[float, Plane, np.ndarray, np.ndarray, SupportDetectionDiagnostics]] = []
+    for candidate_index in range(3):
+        subset_indices = np.flatnonzero(remaining)
+        if len(subset_indices) < minimum_connected_inliers:
+            break
+        try:
+            plane, local_inliers = fit_plane_ransac(
+                points[subset_indices],
+                distance_threshold_m=distance_threshold_m,
+                iterations=140,
+                minimum_inlier_fraction=0.12,
+                orient_toward=(0.0, 0.0, 1.0),
+                seed=candidate_index,
+            )
+        except ValueError:
+            break
+        inlier_indices = subset_indices[local_inliers]
+        tilt_deg = math.degrees(
+            math.acos(float(np.clip(np.dot(plane.normal, (0.0, 0.0, 1.0)), -1.0, 1.0)))
+        )
+        remaining[inlier_indices] = False
+        if tilt_deg > 15.0:
+            continue
+        connected_local = _largest_connected_sample_mask(
+            rows[inlier_indices],
+            columns[inlier_indices],
+            stride=stride,
+        )
+        connected_indices = inlier_indices[connected_local]
+        if len(connected_indices) < minimum_connected_inliers:
+            continue
+        connected = points[connected_indices]
+        axis_u = np.asarray((1.0, 0.0, 0.0), dtype=float)
+        axis_u -= float(np.dot(axis_u, plane.normal)) * plane.normal
+        axis_u /= np.linalg.norm(axis_u)
+        axis_v = np.cross(plane.normal, axis_u)
+        axis_v /= np.linalg.norm(axis_v)
+        origin = -plane.offset * plane.normal
+        relative = connected - origin
+        uv = np.column_stack((relative @ axis_u, relative @ axis_v))
+        low = np.percentile(uv, 2.0, axis=0)
+        high = np.percentile(uv, 98.0, axis=0)
+        observed_size = high - low
+        if np.any(observed_size < 0.12):
+            continue
+        residual = np.abs(plane.signed_distance(connected))
+        inlier_fraction = len(inlier_indices) / len(points)
+        size_agreement = 1.0
+        if expected_size_m is not None:
+            expected = np.asarray(expected_size_m, dtype=float)
+            size_agreement = float(
+                np.exp(-np.sum(np.abs(np.log(np.maximum(observed_size, 1e-3) / expected))))
+            )
+        score = (
+            2.0 * inlier_fraction
+            + len(connected_indices) / len(points)
+            + size_agreement
+            - tilt_deg / 15.0
+            - float(np.percentile(residual, 95.0)) / distance_threshold_m
+        )
+        diagnostics = SupportDetectionDiagnostics(
+            candidate_count=0,
+            inlier_count=len(inlier_indices),
+            connected_inlier_count=len(connected_indices),
+            inlier_fraction=inlier_fraction,
+            normal_tilt_deg=tilt_deg,
+            residual_median_m=float(np.median(residual)),
+            residual_p95_m=float(np.percentile(residual, 95.0)),
+            observed_size_m=(float(observed_size[0]), float(observed_size[1])),
+            expected_size_m=expected_size_m,
+            score=score,
+        )
+        candidates.append((score, plane, low, high, diagnostics))
+    if not candidates:
+        raise ValueError("no connected horizontal tabletop candidate")
+    _, plane, low, high, diagnostics = max(candidates, key=lambda item: item[0])
+    if expected_size_m is not None:
+        expected = np.asarray(expected_size_m, dtype=float)
+        # The robot-facing depth edge is normally visible. Complete the far
+        # and lateral boundaries from saved dimensions so occlusion cannot
+        # make the table look smaller and therefore less restrictive.
+        minimum_uv = np.asarray((low[0], 0.5 * (low[1] + high[1] - expected[1])))
+        maximum_uv = minimum_uv + expected
+    else:
+        minimum_uv, maximum_uv = low, high
+    axis_u = np.asarray((1.0, 0.0, 0.0), dtype=float)
+    axis_u -= float(np.dot(axis_u, plane.normal)) * plane.normal
+    axis_u /= np.linalg.norm(axis_u)
+    axis_v = np.cross(plane.normal, axis_u)
+    axis_v /= np.linalg.norm(axis_v)
+    support = SupportRegion(
+        plane=plane,
+        origin=-plane.offset * plane.normal,
+        axis_u=axis_u,
+        axis_v=axis_v,
+        minimum_uv=minimum_uv,
+        maximum_uv=maximum_uv,
+        certified_edges=("u_min",),
+        edge_sources=(
+            ("u_min", "observed"),
+            ("u_max", "prior_estimated"),
+            ("v_min", "prior_estimated"),
+            ("v_max", "prior_estimated"),
+        ),
+        lateral_margin_m=0.07,
+        source="automatic_rgbd_plane_dimension_prior",
+    )
+    return support, SupportDetectionDiagnostics(
+        **{
+            **diagnostics.__dict__,
+            "candidate_count": len(candidates),
+        }
+    )
+
+
 def deproject_depth_samples(
     z16: np.ndarray,
     intrinsics: CameraIntrinsics,
@@ -624,7 +894,12 @@ def _points_in_polygon(points_xy: np.ndarray, polygon_uv: Sequence[tuple[float, 
         j = i - 1
         xi, yi = x[i], y[i]
         xj, yj = x[j], y[j]
-        mask = ((yi > py) != (yj > py)) & (px < (xj - xi) * (py - yi) / (yj - yi) + xi)
+        denominator = yj - yi
+        if abs(float(denominator)) <= 1e-12:
+            continue
+        mask = ((yi > py) != (yj > py)) & (
+            px < (xj - xi) * (py - yi) / denominator + xi
+        )
         inside ^= mask
     return inside
 
