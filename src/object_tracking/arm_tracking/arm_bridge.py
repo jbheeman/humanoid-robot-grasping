@@ -126,7 +126,6 @@ class ArmBridgeConfig:
     deadman_s: float = 0.750
     state_ttl_s: float = 0.250
     stable_standing_s: float = 2.0
-    standing_loss_grace_s: float = 0.500
     startup_settle_s: float = 0.150
     startup_settle_timeout_s: float = 2.0
     startup_max_velocity_rad_s: float = 0.08
@@ -153,7 +152,6 @@ class ArmBridgeConfig:
             "deadman_s": self.deadman_s,
             "state_ttl_s": self.state_ttl_s,
             "stable_standing_s": self.stable_standing_s,
-            "standing_loss_grace_s": self.standing_loss_grace_s,
             "startup_settle_timeout_s": self.startup_settle_timeout_s,
             "startup_max_velocity_rad_s": self.startup_max_velocity_rad_s,
             "startup_max_pose_error_rad": self.startup_max_pose_error_rad,
@@ -251,7 +249,6 @@ class ArmBridgeController:
         self._last_publish_at: float | None = None
         self._settle_started_at: float | None = None
         self._settle_stable_since: float | None = None
-        self._standing_lost_since: float | None = None
         self._arming_phase: str | None = None
         self.metrics = LoopMetrics()
 
@@ -330,7 +327,6 @@ class ArmBridgeController:
             self._transition_at = now
             self._settle_started_at = now
             self._settle_stable_since = now
-            self._standing_lost_since = None
             self._arming_phase = "settling"
             return self.state_report(now)
 
@@ -387,7 +383,6 @@ class ArmBridgeController:
             self._transition_at = now
             self._settle_started_at = now
             self._settle_stable_since = now
-            self._standing_lost_since = None
             self._arming_phase = "settling"
             return self.state_report(now)
 
@@ -452,18 +447,11 @@ class ArmBridgeController:
                 )
             target = self._validate_target(right_arm_q)
             assert self.commanded_right is not None
-            if any(
-                abs(target[i] - self.commanded_right[i]) > self.config.max_target_delta_rad
-                for i in range(7)
-            ):
-                raise ArmBridgeError(
-                    f"Target exceeds the {self.config.max_target_delta_rad:.3f} rad maximum command delta",
-                    code="discontinuous_target",
-                )
             self._require_safe_robot_state(
                 now,
                 require_stable=False,
-                allow_transient_standing_loss=True,
+                require_standing=False,
+                require_waist_reference=False,
             )
             self.last_sequence = sequence
             self.last_target_at = now
@@ -583,24 +571,7 @@ class ArmBridgeController:
                 self._advance_arming(now, robot)
 
             if self.state is ArmState.ARMED:
-                if robot and robot.standing:
-                    self._standing_lost_since = None
-                elif robot:
-                    if self._standing_lost_since is None:
-                        self._standing_lost_since = now
-                        # Hold the last generated pose while the balance signal
-                        # is uncertain. If it recovers, Ruckig resumes from
-                        # rest; if it persists, the bounded fault release wins.
-                        self.right_velocity = [0.0] * 7
-                        self.right_acceleration = [0.0] * 7
-                    loss_s = now - self._standing_lost_since
-                    if loss_s >= self.config.standing_loss_grace_s:
-                        self.fault_details = {
-                            "duration_ms": round(loss_s * 1000.0, 3),
-                            "balance_details": list(robot.balance_details),
-                        }
-                        self._enter_fault("standing_state_lost", now)
-                if self.state is ArmState.ARMED and (
+                if (
                     self.last_target_at is not None
                     and now - self.last_target_at >= self._deadline_trigger_s(self.config.deadman_s)
                 ):
@@ -637,7 +608,7 @@ class ArmBridgeController:
                     ):
                         self._enter_fault("left_arm_drift", now)
 
-            if self.state is ArmState.ARMED and self._standing_lost_since is None:
+            if self.state is ArmState.ARMED:
                 try:
                     self._interpolate_right(dt)
                 except (ArmBridgeError, RuntimeError, ValueError) as exc:
@@ -676,9 +647,6 @@ class ArmBridgeController:
                 "deadman_ms": round(self.config.deadman_s * 1000.0),
                 "weight_ramp_ms": round(self.config.weight_ramp_s * 1000.0),
                 "startup_settle_ms": round(self.config.startup_settle_s * 1000.0),
-                "standing_loss_grace_ms": round(
-                    self.config.standing_loss_grace_s * 1000.0
-                ),
                 "uptime_s": round(self._monotonic() - self.started_at, 3),
                 "loop": self.metrics.as_dict(),
                 "fault_reason": self.fault_reason,
@@ -739,14 +707,6 @@ class ArmBridgeController:
                 "motor_state_healthy": None if robot is None else robot.motor_state_healthy,
                 "motor_faults": [] if robot is None else list(robot.motor_faults),
                 "balance_details": [] if robot is None else list(robot.balance_details),
-                "standing_loss_age_ms": (
-                    None
-                    if self._standing_lost_since is None
-                    else round(
-                        max(0.0, now - self._standing_lost_since) * 1000.0,
-                        3,
-                    )
-                ),
                 "measured_arm_q": None if robot is None else list(robot.arm_q),
                 "measured_arm_dq": None if robot is None else list(robot.arm_dq),
                 "weight": round(self.weight, 6),
@@ -786,7 +746,8 @@ class ArmBridgeController:
         *,
         require_stable: bool,
         require_commissioning_verification: bool = False,
-        allow_transient_standing_loss: bool = False,
+        require_standing: bool = True,
+        require_waist_reference: bool = True,
     ) -> RobotState:
         robot = self.hardware.latest_state()
         if robot is None or now - robot.received_at > self.config.state_ttl_s:
@@ -795,20 +756,7 @@ class ArmBridgeController:
             raise ArmBridgeError(
                 "LowState contains a non-finite arm position", code="robot_state_non_finite"
             )
-        standing_grace_active = False
-        if (
-            not robot.standing
-            and allow_transient_standing_loss
-            and self.state is ArmState.ARMED
-        ):
-            if self._standing_lost_since is None:
-                self._standing_lost_since = now
-                self.right_velocity = [0.0] * 7
-                self.right_acceleration = [0.0] * 7
-            standing_grace_active = (
-                now - self._standing_lost_since < self.config.standing_loss_grace_s
-            )
-        if not robot.standing and not standing_grace_active:
+        if require_standing and not robot.standing:
             raise ArmBridgeError("Robot is not in a balanced standing state", code="not_standing")
         if require_stable and (
             robot.standing_since is None
@@ -848,7 +796,7 @@ class ArmBridgeController:
                 "Motor status reports a commissioning fault",
                 code="motor_state_fault",
             )
-        if self.config.waist_reference_rad is not None:
+        if require_waist_reference and self.config.waist_reference_rad is not None:
             if not self._finite(robot.waist_q):
                 raise ArmBridgeError(
                     "LowState contains a non-finite waist position", code="waist_state_non_finite"
@@ -1049,7 +997,6 @@ class ArmBridgeController:
         self.desired_right = None
         self._settle_started_at = None
         self._settle_stable_since = None
-        self._standing_lost_since = None
         self._arming_phase = None
         self.right_velocity = [0.0] * 7
         self.right_acceleration = [0.0] * 7

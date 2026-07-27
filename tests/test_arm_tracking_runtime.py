@@ -421,6 +421,24 @@ def test_start_escape_waypoint_accepts_asynchronous_joint_progress() -> None:
     assert error is None
 
 
+def test_start_escape_waypoint_advances_past_observed_servo_residual() -> None:
+    path = (
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.0, -0.04, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.0, -0.065, 0.0, 0.0, 0.0, 0.0, 0.0),
+    )
+
+    waypoint, index, error = select_start_escape_waypoint(
+        (0.0, -0.02468, 0.0, 0.0, 0.0, 0.0, 0.0),
+        path,
+        1,
+    )
+
+    assert waypoint == path[2]
+    assert index == 2
+    assert error is None
+
+
 def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) -> None:
     calibration_path = tmp_path / "calibration.yaml"
     save_calibration_atomic(_calibration(), calibration_path)

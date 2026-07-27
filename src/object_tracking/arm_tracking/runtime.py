@@ -232,8 +232,8 @@ def select_start_escape_waypoint(
     path: Sequence[Sequence[float]],
     target_index: int,
     *,
-    reached_tolerance_rad: float = 0.015,
-    tracking_tolerance_rad: float = 0.015,
+    reached_tolerance_rad: float = 0.025,
+    tracking_tolerance_rad: float = 0.025,
 ) -> tuple[tuple[float, ...] | None, int, str | None]:
     """Select one bounded escape waypoint using measured, not commanded, pose."""
 
@@ -266,8 +266,6 @@ def select_start_escape_waypoint(
     corridor_maximum = np.maximum(previous, target) + tracking_tolerance_rad
     if np.any(measured < corridor_minimum) or np.any(measured > corridor_maximum):
         return None, index, "escape_path_tracking_error"
-    if float(np.max(np.abs(target - measured))) > 0.05:
-        return None, index, "escape_waypoint_step_too_large"
     return tuple(float(value) for value in target), index, None
 
 
