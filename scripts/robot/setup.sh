@@ -35,7 +35,10 @@ source "${ROOT_DIR}/.ros/foxy/project/setup.bash"
 set -u
 
 uv venv --clear --system-site-packages --python "${SYSTEM_PYTHON}" "${ROBOT_DIR}/.venv"
-UV_PROJECT_ENVIRONMENT="${ROBOT_DIR}/.venv" uv sync --project "${ROBOT_DIR}" --locked
+UV_PROJECT_ENVIRONMENT="${ROBOT_DIR}/.venv" uv sync \
+  --project "${ROBOT_DIR}" \
+  --build-constraints "${ROBOT_DIR}/build-constraints.txt" \
+  --locked
 
 "${ROBOT_DIR}/.venv/bin/python" - <<'PY'
 import importlib.util

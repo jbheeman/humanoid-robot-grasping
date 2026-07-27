@@ -14,6 +14,8 @@ import threading
 import time
 from typing import Callable, Protocol, Sequence
 
+from ruckig import InputParameter, OutputParameter, Result, Ruckig
+
 from .joints import (
     BODY_JOINT_NAMES,
     DEFAULT_RIGHT_JOINT_LIMITS,
@@ -126,6 +128,7 @@ class ArmBridgeConfig:
     max_target_delta_rad: float = 0.05
     max_velocity_rad_s: float = 0.50
     max_acceleration_rad_s2: float = 2.0
+    max_jerk_rad_s3: float = 20.0
     max_following_error_rad: float = 0.35
     max_left_drift_rad: float = 0.01
     kp: float = 60.0
@@ -146,6 +149,7 @@ class ArmBridgeConfig:
             "max_target_delta_rad": self.max_target_delta_rad,
             "max_velocity_rad_s": self.max_velocity_rad_s,
             "max_acceleration_rad_s2": self.max_acceleration_rad_s2,
+            "max_jerk_rad_s3": self.max_jerk_rad_s3,
             "max_following_error_rad": self.max_following_error_rad,
             "max_left_drift_rad": self.max_left_drift_rad,
         }
@@ -213,6 +217,8 @@ class ArmBridgeController:
         self.commanded_right: list[float] | None = None
         self.desired_right: tuple[float, ...] | None = None
         self.right_velocity = [0.0] * 7
+        self.right_acceleration = [0.0] * 7
+        self._ruckig = Ruckig(7, 1.0 / self.config.control_hz)
         self.weight = 0.0
         self._transition_at = self.started_at
         self._release_start_weight = 0.0
@@ -285,6 +291,7 @@ class ArmBridgeController:
             self.commanded_right = list(robot.arm_q[7:])
             self.desired_right = tuple(robot.arm_q[7:])
             self.right_velocity = [0.0] * 7
+            self.right_acceleration = [0.0] * 7
             self.weight = 0.0
             self.fault_reason = None
             self.hold_reason = None
@@ -335,6 +342,7 @@ class ArmBridgeController:
             self.commanded_right = list(robot.arm_q[7:])
             self.desired_right = tuple(robot.arm_q[7:])
             self.right_velocity = [0.0] * 7
+            self.right_acceleration = [0.0] * 7
             self.weight = 0.0
             self.fault_reason = None
             self.hold_reason = None
@@ -553,7 +561,10 @@ class ArmBridgeController:
                         self._enter_fault("left_arm_drift", now)
 
             if self.state is ArmState.ARMED:
-                self._interpolate_right(dt)
+                try:
+                    self._interpolate_right(dt)
+                except (ArmBridgeError, RuntimeError, ValueError) as exc:
+                    self._enter_fault(f"trajectory_generation:{exc}", now)
             elif self.state in (ArmState.HOLDING, ArmState.FAULT):
                 elapsed = max(0.0, now - self._transition_at)
                 release_s = self._deadline_trigger_s(self.config.weight_ramp_s)
@@ -770,22 +781,34 @@ class ArmBridgeController:
     def _interpolate_right(self, dt: float) -> None:
         if self.commanded_right is None or self.desired_right is None or dt <= 0.0:
             return
-        vmax = self.config.max_velocity_rad_s
-        amax = self.config.max_acceleration_rad_s2
-        for index in range(7):
-            error = self.desired_right[index] - self.commanded_right[index]
-            requested_velocity = max(-vmax, min(vmax, error / dt))
-            previous_velocity = self.right_velocity[index]
-            velocity_change = max(
-                -amax * dt, min(amax * dt, requested_velocity - previous_velocity)
+        inp = InputParameter(7)
+        out = OutputParameter(7)
+        inp.current_position = list(self.commanded_right)
+        inp.current_velocity = list(self.right_velocity)
+        inp.current_acceleration = list(self.right_acceleration)
+        inp.target_position = list(self.desired_right)
+        inp.target_velocity = [0.0] * 7
+        inp.target_acceleration = [0.0] * 7
+        inp.max_velocity = [self.config.max_velocity_rad_s] * 7
+        inp.max_acceleration = [self.config.max_acceleration_rad_s2] * 7
+        inp.max_jerk = [self.config.max_jerk_rad_s3] * 7
+        result = self._ruckig.update(inp, out)
+        if result not in (Result.Working, Result.Finished):
+            raise ArmBridgeError(
+                f"Ruckig rejected the online arm state: {result}",
+                code="trajectory_generation",
             )
-            velocity = previous_velocity + velocity_change
-            step = velocity * dt
-            if abs(step) > abs(error):
-                step = error
-                velocity = 0.0
-            self.commanded_right[index] += step
-            self.right_velocity[index] = velocity
+        position = [float(value) for value in out.new_position]
+        velocity = [float(value) for value in out.new_velocity]
+        acceleration = [float(value) for value in out.new_acceleration]
+        if not self._finite((*position, *velocity, *acceleration)):
+            raise ArmBridgeError(
+                "Ruckig returned a non-finite arm state",
+                code="trajectory_generation",
+            )
+        self.commanded_right[:] = position
+        self.right_velocity[:] = velocity
+        self.right_acceleration[:] = acceleration
 
     def _publish(self, now: float, robot: RobotState | None) -> None:
         if (
@@ -819,6 +842,7 @@ class ArmBridgeController:
         self._transition_at = now
         self.desired_right = None if self.commanded_right is None else tuple(self.commanded_right)
         self.right_velocity = [0.0] * 7
+        self.right_acceleration = [0.0] * 7
 
     def _enter_fault(self, reason: str, now: float) -> None:
         if self.state is ArmState.FAULT:
@@ -829,6 +853,7 @@ class ArmBridgeController:
         self._transition_at = now
         self.desired_right = None if self.commanded_right is None else tuple(self.commanded_right)
         self.right_velocity = [0.0] * 7
+        self.right_acceleration = [0.0] * 7
 
     def _reset_disarmed(self, now: float) -> None:
         self.state = ArmState.DISARMED
@@ -841,6 +866,7 @@ class ArmBridgeController:
         self.commanded_right = None
         self.desired_right = None
         self.right_velocity = [0.0] * 7
+        self.right_acceleration = [0.0] * 7
         self.weight = 0.0
         self._transition_at = now
 

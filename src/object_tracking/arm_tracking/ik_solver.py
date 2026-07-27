@@ -14,7 +14,12 @@ from .joints import RIGHT_ARM_JOINT_NAMES
 XR_TELEOPERATE_REVISION = "7dc9aa1a6edbf4a9f4f887d8ab6fc449ea5135f6"
 UNITREE_ROS_REVISION = "d96d8f63ae17a7108d4f7229c00ef875ba7129c9"
 RIGHT_ARM_JOINTS = RIGHT_ARM_JOINT_NAMES
-_MAX_START_ESCAPE_PENETRATION_M = 0.005
+# The current lab G1's measured factory hip-rest pose produces 5.9 mm of
+# hand/hip mesh overlap even though the links are physically resting beside
+# one another. Keep this recovery envelope narrow: it applies only to the
+# deterministic, densely sampled exit path below and strict collision-free
+# checking latches as soon as the hand clears.
+_MAX_START_ESCAPE_PENETRATION_M = 0.007
 _MAX_STREAM_JOINT_STEP_RAD = 0.04
 
 # These collision meshes overlap at the G1's factory shoulder articulation
@@ -33,7 +38,7 @@ _ADJACENT_G1_COLLISION_PAIRS = {
 # Deterministic local directions discovered from the measured G1 hip-rest
 # posture. They are hypotheses only: _guided_start_escape densely validates
 # every application against the current pose, full collision model, bounded
-# support region, 5 mm penetration ceiling, collision-free latch, and 10 mm exit gate.
+# support region, 7 mm penetration ceiling, collision-free latch, and 10 mm exit gate.
 _G1_HIP_ESCAPE_DELTAS = (
     # The stock hip-rest pose needs a small simultaneous shoulder-pitch
     # change to clear the thumb mesh by the required 10 mm.  The full edge is
@@ -672,7 +677,7 @@ class G1RightArmIK:
         FCL penetration depth is discontinuous while triangle meshes overlap,
         so comparing every sample with the first contact depth rejects valid
         exits.  Bound the entire semantic hand/hip contact family by the same
-        absolute 5 mm hard limit used for the measured start pose instead.
+        absolute 7 mm hard limit used for the measured start pose instead.
         This permits contact to transfer between adjacent hand mesh components;
         collision-free state still latches strict no-re-entry.
         """
@@ -758,7 +763,7 @@ class G1RightArmIK:
 
         The initial real collision is not added to an allowed-collision set.
         Only right-hand/right-hip contacts may remain touching, none may exceed
-        the 5 mm escape ceiling, and the first collision-free sample latches
+        the 7 mm escape ceiling, and the first collision-free sample latches
         strict mode. The endpoint must have 10 mm modeled clearance.
         """
 
@@ -773,7 +778,7 @@ class G1RightArmIK:
             tuple(sorted(initial)),
         )
         baseline_clearance = min(baseline_distances.values())
-        # More than 5 mm of modeled penetration is not a small mesh-tolerance
+        # More than 7 mm of modeled penetration is not a small mesh-tolerance
         # recovery and must remain an operator-visible hard failure.
         if baseline_clearance < -_MAX_START_ESCAPE_PENETRATION_M:
             return None, f"start_hand_hip_penetration:{baseline_clearance:.5f}"

@@ -161,6 +161,64 @@ def test_arm_command_contains_all_joints_and_latches_left_arm() -> None:
     assert command.weight == 1.0
 
 
+def test_ruckig_limits_velocity_acceleration_and_jerk_during_replanning() -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock)
+    arm(controller, hardware, clock)
+    period = 1.0 / controller.config.control_hz
+    controller.set_target(
+        session_id="session-a",
+        sequence=0,
+        calibration_id="cal-1",
+        right_arm_q=[0.04] * 7,
+        source_timestamp=clock.wall,
+    )
+
+    previous_acceleration = list(controller.right_acceleration)
+    for _ in range(30):
+        clock.advance(period)
+        hardware.state = robot_state(clock)
+        controller.tick()
+        assert max(abs(value) for value in controller.right_velocity) <= (
+            controller.config.max_velocity_rad_s + 1e-9
+        )
+        assert max(abs(value) for value in controller.right_acceleration) <= (
+            controller.config.max_acceleration_rad_s2 + 1e-9
+        )
+        jerk = [
+            (actual - previous) / period
+            for actual, previous in zip(
+                controller.right_acceleration,
+                previous_acceleration,
+            )
+        ]
+        assert max(abs(value) for value in jerk) <= controller.config.max_jerk_rad_s3 + 1e-6
+        previous_acceleration = list(controller.right_acceleration)
+
+    assert controller.commanded_right is not None
+    replacement = [value - 0.03 for value in controller.commanded_right]
+    controller.set_target(
+        session_id="session-a",
+        sequence=1,
+        calibration_id="cal-1",
+        right_arm_q=replacement,
+        source_timestamp=clock.wall,
+    )
+    clock.advance(period)
+    hardware.state = robot_state(clock)
+    controller.tick()
+    replanned_jerk = [
+        (actual - previous) / period
+        for actual, previous in zip(
+            controller.right_acceleration,
+            previous_acceleration,
+        )
+    ]
+    assert max(abs(value) for value in replanned_jerk) <= (
+        controller.config.max_jerk_rad_s3 + 1e-6
+    )
+
+
 def test_target_rejects_replay_wrong_binding_stale_nonfinite_and_discontinuity() -> None:
     clock = FakeClock()
     controller, hardware = bridge(clock)
@@ -318,10 +376,13 @@ def test_stop_is_idempotent_and_high_priority() -> None:
 def test_rate_is_verified_250_hz_default_and_reports_periods() -> None:
     config = ArmBridgeConfig()
     assert config.control_hz == 250.0
+    assert config.max_jerk_rad_s3 == 20.0
     with pytest.raises(ValueError, match="50-250 Hz"):
         ArmBridgeConfig(control_hz=251.0)
     with pytest.raises(ValueError, match="50-250 Hz"):
         ArmBridgeConfig(control_hz=49.0)
+    with pytest.raises(ValueError, match="max_jerk_rad_s3"):
+        ArmBridgeConfig(max_jerk_rad_s3=0.0)
 
     clock = FakeClock()
     controller, _ = bridge(clock)

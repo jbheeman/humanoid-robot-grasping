@@ -863,11 +863,16 @@ class ArmTrackingRuntime:
         if escape_needed:
             ik_step_type = "guided_table_clearance"
             if self._start_escape_path is None:
-                escape = self.ik.plan_guided_clearance(
+                # Tracking only needs to leave the shallow factory hand/hip
+                # contact before normal task IK begins. Do not add the older
+                # generic 25 cm "lift" here: it is slower, can stall near the
+                # hip, and is unrelated to the intercepted Cartesian target.
+                # This narrower planner still densely validates the complete
+                # exit-only path, support clearance, joint limits, a strict
+                # no-reentry latch, and a collision-free endpoint.
+                escape = self.ik.plan_start_collision_escape(
                     last_q,
                     support_plane=plane,
-                    lift_m=0.25,
-                    forward_m=0.06,
                 )
                 if not escape.ok or escape.q_path is None:
                     base_status.update(

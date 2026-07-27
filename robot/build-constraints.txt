@@ -1,0 +1,2 @@
+# Ruckig 0.15.x still uses the pre-0.10 scikit-build-core CMake key.
+scikit-build-core<0.10

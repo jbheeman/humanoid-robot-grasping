@@ -7,6 +7,7 @@ dependencies = [
     "numpy<2",
     "pillow>=10",
     "pyyaml>=6",
+    "ruckig>=0.15,<0.16",
     "tqdm>=4.66",
 ]
 

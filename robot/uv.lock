@@ -28,6 +28,7 @@ source = { virtual = "." }
 dependencies = [
     { name = "numpy" },
     { name = "pyyaml" },
+    { name = "ruckig" },
     { name = "zstandard" },
 ]
 
@@ -35,6 +36,7 @@ dependencies = [
 requires-dist = [
     { name = "numpy", specifier = "==1.24.4" },
     { name = "pyyaml", specifier = ">=6,<7" },
+    { name = "ruckig", specifier = ">=0.15,<0.16" },
     { name = "zstandard", specifier = ">=0.23,<0.24" },
 ]
 
@@ -78,6 +80,12 @@ wheels = [
     { url = "https://files.pythonhosted.org/packages/99/a5/718a8ea22521e06ef19f91945766a892c5ceb1855df6adbde67d997ea7ed/PyYAML-6.0.3-cp38-cp38-win32.whl", hash = "sha256:3ff07ec89bae51176c0549bc4c63aa6202991da2d9a6129d7aef7f1407d3f295", size = 143744, upload-time = "2025-09-29T20:27:44.487Z" },
     { url = "https://files.pythonhosted.org/packages/76/b2/2b69cee94c9eb215216fc05778675c393e3aa541131dc910df8e52c83776/PyYAML-6.0.3-cp38-cp38-win_amd64.whl", hash = "sha256:5cf4e27da7e3fbed4d6c3d8e797387aaad68102272f8f9752883bc32d61cb87b", size = 160082, upload-time = "2025-09-29T20:27:46.049Z" },
 ]
+
+[[package]]
+name = "ruckig"
+version = "0.15.3"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bc/b7/d3d7c7f507ce8b6a7558418468e796d462dd2053ff3c555727c3f384941e/ruckig-0.15.3.tar.gz", hash = "sha256:48f68535080a594e45275201896c3a71123ac4a64c668eb3cf10b8bc42f34183", size = 870129, upload-time = "2025-05-16T14:04:55.521Z" }
 
 [[package]]
 name = "zstandard"

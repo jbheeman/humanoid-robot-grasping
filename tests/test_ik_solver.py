@@ -265,3 +265,46 @@ def test_current_g1_hip_rest_pose_has_bounded_guided_table_clearance() -> None:
         for begin, end in zip(route.q_path, route.q_path[1:])
     ) <= 0.04 + 1e-9
     assert solver.validate_joint_path(route.q_path, support_plane=support) is None
+
+
+def test_lab_g1_hip_rest_pose_has_bounded_guided_table_clearance() -> None:
+    pytest.importorskip("pinocchio")
+    pytest.importorskip("scipy")
+    repo_root = Path(__file__).resolve().parents[1]
+    urdf = default_urdf_path(repo_root)
+    if not urdf.is_file():
+        pytest.skip("pinned G1 arm assets are not installed")
+    solver = G1RightArmIK(urdf)
+    # Read-only lowstate captured from the lab G1 on 2026-07-27. Its factory
+    # rest pose has a 5.9 mm modeled hand/hip overlap, so it must follow the
+    # same exit-only path and become strictly collision-free before task IK.
+    start_q = (
+        0.1428160071,
+        -0.0608439110,
+        0.0212360471,
+        1.4058095217,
+        -0.1720934808,
+        0.1501144022,
+        -0.1068034172,
+    )
+    plane = Plane((0.0, 0.0, 1.0), -0.05)
+    support = SupportRegion.from_ordered_corners(
+        plane,
+        (
+            (0.37, 0.35, 0.05),
+            (0.37, -0.35, 0.05),
+            (0.80, -0.35, 0.05),
+            (0.80, 0.35, 0.05),
+        ),
+    )
+
+    route = solver.plan_start_collision_escape(start_q, support_plane=support)
+
+    assert route.ok, route.reason
+    assert route.q_path is not None
+    assert len(route.q_path) > 2
+    assert max(
+        max(abs(actual - previous) for actual, previous in zip(end, begin))
+        for begin, end in zip(route.q_path, route.q_path[1:])
+    ) <= 0.04 + 1e-9
+    assert solver.validate_joint_path(route.q_path, support_plane=support) is None
