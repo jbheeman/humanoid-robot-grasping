@@ -454,6 +454,58 @@ def test_stale_robot_state_faults_and_ramps_weight_to_zero() -> None:
     assert hardware.commands[-1].weight == 0.0
 
 
+def test_brief_standing_signal_dropout_does_not_fault() -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock, standing_loss_grace_s=0.2)
+    arm(controller, hardware, clock)
+    controller.set_target(
+        session_id="session-a",
+        sequence=1,
+        calibration_id="cal-1",
+        right_arm_q=[0.01] * 7,
+        source_timestamp=clock.wall,
+    )
+
+    hardware.state = robot_state(
+        clock,
+        standing=False,
+        standing_since=None,
+        balance_details=("legs_waist_still",),
+    )
+    controller.tick()
+    assert controller.commanded_right == [0.0] * 7
+    clock.advance(0.1)
+    hardware.state = robot_state(clock)
+    controller.tick()
+
+    assert controller.state is ArmState.ARMED
+    assert controller.state_report()["standing_loss_age_ms"] is None
+
+
+def test_sustained_standing_loss_faults_with_diagnostics() -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock, standing_loss_grace_s=0.2)
+    arm(controller, hardware, clock)
+    lost = {
+        "standing": False,
+        "standing_since": None,
+        "balance_details": ("imu_angular_rate",),
+    }
+
+    hardware.state = robot_state(clock, **lost)
+    controller.tick()
+    clock.advance(0.201)
+    hardware.state = robot_state(clock, **lost)
+    controller.tick()
+
+    assert controller.state is ArmState.FAULT
+    assert controller.fault_reason == "standing_state_lost"
+    assert controller.fault_details == {
+        "duration_ms": 201.0,
+        "balance_details": ["imu_angular_rate"],
+    }
+
+
 def test_stop_is_idempotent_and_high_priority() -> None:
     clock = FakeClock()
     controller, hardware = bridge(clock)

@@ -16,6 +16,11 @@ DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS:-60}"
 # the live G1 and GB10 participants undiscovered.  The live bunny test uses a
 # dedicated domain that is verified end-to-end during commissioning.
 PROJECT_ROS_DOMAIN_ID="${G1_PROJECT_ROS_DOMAIN_ID:-43}"
+LOG_DIR="${ROOT_DIR}/logs/g1-bunny-test"
+mkdir -p "${LOG_DIR}"
+LOG_FILE="${LOG_DIR}/$(date -u +%Y%m%dT%H%M%SZ)-$$.log"
+exec > >(tee -a "${LOG_FILE}") 2>&1
+echo "G1 bunny-test log: ${LOG_FILE}"
 
 while (($#)); do
   case "$1" in
