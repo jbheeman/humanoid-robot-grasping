@@ -458,6 +458,37 @@ def test_start_escape_waypoint_does_not_skip_knots_on_large_servo_residual() -> 
     assert error is None
 
 
+def test_start_escape_waypoint_allows_one_loaded_residual_lookahead() -> None:
+    path = (
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.0, -0.04, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.0, -0.08, 0.0, 0.0, 0.0, 0.0, 0.0),
+    )
+    measured = (0.0, -0.02, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    waypoint, index, error = select_start_escape_waypoint(
+        measured,
+        path,
+        1,
+        last_advance_q_rad=path[0],
+    )
+
+    assert waypoint == path[2]
+    assert index == 2
+    assert error is None
+
+    waypoint, index, error = select_start_escape_waypoint(
+        measured,
+        path,
+        index,
+        last_advance_q_rad=measured,
+    )
+
+    assert waypoint == path[2]
+    assert index == 2
+    assert error is None
+
+
 def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) -> None:
     calibration_path = tmp_path / "calibration.yaml"
     save_calibration_atomic(_calibration(), calibration_path)
@@ -475,12 +506,14 @@ def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) 
     runtime._approach_path = ((0.0,) * 7, (0.01,) * 7)
     runtime._approach_target_index = 1
     runtime._approach_target_xyz = (0.4, 0.0, 0.2)
+    runtime._approach_last_advance_q = (0.0,) * 7
     runtime._approach_completed = True
     runtime._stop_arm("test_stop")
     assert transport.stops == ["test_stop"]
     assert runtime._approach_path is None
     assert runtime._approach_target_index == 1
     assert runtime._approach_target_xyz is None
+    assert runtime._approach_last_advance_q is None
     assert runtime._approach_completed is False
 
 

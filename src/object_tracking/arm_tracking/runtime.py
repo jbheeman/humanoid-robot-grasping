@@ -241,6 +241,9 @@ def select_start_escape_waypoint(
     *,
     reached_tolerance_rad: float = 0.018,
     tracking_tolerance_rad: float = 0.050,
+    last_advance_q_rad: Sequence[float] | None = None,
+    residual_lookahead_rad: float = 0.030,
+    minimum_progress_rad: float = 0.008,
 ) -> tuple[tuple[float, ...] | None, int, str | None]:
     """Select one bounded escape waypoint using measured, not commanded, pose."""
 
@@ -260,6 +263,22 @@ def select_start_escape_waypoint(
         and float(np.max(np.abs(measured - knots[index]))) <= reached_tolerance_rad
     ):
         index += 1
+    elif last_advance_q_rad is not None:
+        last_advance = np.asarray(last_advance_q_rad, dtype=float)
+        if (
+            last_advance.shape != (7,)
+            or not np.all(np.isfinite(last_advance))
+            or residual_lookahead_rad <= reached_tolerance_rad
+            or minimum_progress_rad <= 0.0
+        ):
+            return None, target_index, "invalid_escape_progress"
+        residual = float(np.max(np.abs(measured - knots[index])))
+        progress = float(np.max(np.abs(measured - last_advance)))
+        if residual <= residual_lookahead_rad and progress >= minimum_progress_rad:
+            # Loaded joints can settle a few hundredths short of a knot. Allow
+            # one validated lookahead only after observing new measured motion;
+            # the caller resets the anchor, preventing stationary index races.
+            index += 1
     if index >= len(knots):
         return None, index, None
     previous = knots[index - 1]
@@ -409,6 +428,7 @@ class ArmTrackingRuntime:
         self._approach_path: tuple[tuple[float, ...], ...] | None = None
         self._approach_target_index = 1
         self._approach_target_xyz: tuple[float, float, float] | None = None
+        self._approach_last_advance_q: tuple[float, ...] | None = None
         self._approach_completed = False
         try:
             self.ik = G1RightArmIK(default_urdf_path(repo_root))
@@ -646,6 +666,7 @@ class ArmTrackingRuntime:
             self._approach_path = None
             self._approach_target_index = 1
             self._approach_target_xyz = None
+            self._approach_last_advance_q = None
             self._approach_completed = False
         elif (
             self.intercept_controller is not None
@@ -963,16 +984,22 @@ class ArmTrackingRuntime:
                 self._approach_path = approach.q_path
                 self._approach_target_index = 1
                 self._approach_target_xyz = tuple(float(value) for value in target.position)
+                self._approach_last_advance_q = tuple(float(value) for value in last_q)
                 self._approach_completed = False
+            previous_waypoint_index = self._approach_target_index
             waypoint, waypoint_index, selection_error = select_start_escape_waypoint(
                 last_q,
                 self._approach_path,
                 self._approach_target_index,
+                last_advance_q_rad=self._approach_last_advance_q,
             )
             self._approach_target_index = waypoint_index
+            if waypoint_index > previous_waypoint_index:
+                self._approach_last_advance_q = tuple(float(value) for value in last_q)
             if selection_error is not None:
                 self._approach_path = None
                 self._approach_target_xyz = None
+                self._approach_last_advance_q = None
                 self._reject(base_status, f"ik_{selection_error}", colormap)
                 return
             if waypoint is not None:
@@ -986,6 +1013,7 @@ class ArmTrackingRuntime:
                 if measured_edge_error is not None:
                     self._approach_path = None
                     self._approach_target_xyz = None
+                    self._approach_last_advance_q = None
                     self._reject(
                         base_status,
                         f"ik_measured_edge:{measured_edge_error}",
@@ -996,6 +1024,7 @@ class ArmTrackingRuntime:
                 self._approach_path = None
                 self._approach_target_index = 1
                 self._approach_target_xyz = None
+                self._approach_last_advance_q = None
                 self._approach_completed = True
                 collision_labels = self.ik.collision_labels(last_q)
                 if collision_labels:
@@ -1620,6 +1649,7 @@ class ArmTrackingRuntime:
         self._approach_path = None
         self._approach_target_index = 1
         self._approach_target_xyz = None
+        self._approach_last_advance_q = None
         self._approach_completed = False
 
     def reset_intercept(self) -> None:
