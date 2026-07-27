@@ -7,12 +7,14 @@ and unit tests can import this module without a ROS installation.
 from __future__ import annotations
 
 import json
+import os
 import secrets
 import threading
 import time
 from typing import Any, Callable, Optional, Sequence
 
 from object_tracking.arm_tracking.depth import DepthFrame
+from object_tracking.arm_tracking.depth_tcp import DepthTcpReceiver
 from object_tracking.arm_tracking.protocol import DepthEnvelopeCodec
 from object_tracking.ros2_transport import Ros2NodeRunner
 
@@ -80,6 +82,7 @@ class RosTrackingTransport:
         state_topic_timeout_s: float = 0.5,
         observe_depth_only: bool = False,
         observe_only: bool = False,
+        depth_tcp_receiver: DepthTcpReceiver | None = None,
     ) -> None:
         if service_timeout_s <= 0.0:
             raise ValueError("service_timeout_s must be positive")
@@ -94,6 +97,7 @@ class RosTrackingTransport:
         self._state_topic_timeout_s = state_topic_timeout_s
         self._observe_depth_only = bool(observe_depth_only)
         self._observe_only = bool(observe_only)
+        self._depth_tcp_receiver = depth_tcp_receiver
         if self._observe_depth_only and self._observe_only:
             raise ValueError("observe_depth_only and observe_only are mutually exclusive")
         self._node: Optional[object] = None
@@ -202,6 +206,8 @@ class RosTrackingTransport:
             # first can leave later subscriptions outside its wait set
             # indefinitely on affected rclpy versions.
             runner.start()
+            if self._depth_tcp_receiver is not None:
+                self._depth_tcp_receiver.start()
             self._types = types
             self._runner = runner
             self._node = node
@@ -245,6 +251,8 @@ class RosTrackingTransport:
         with self._depth_condition:
             self._latest_depth = None
             self._depth_condition.notify_all()
+        if self._depth_tcp_receiver is not None:
+            self._depth_tcp_receiver.close()
         if node is not None:
             for method_name, entity in entities:
                 destroy = getattr(node, method_name, None)
@@ -257,19 +265,22 @@ class RosTrackingTransport:
         if timeout_s < 0.0:
             raise ValueError("timeout_s must be non-negative")
         self._require_started()
-        deadline = self._monotonic() + timeout_s
-        with self._depth_condition:
-            while self._latest_depth is None and not self._closed:
-                remaining = deadline - self._monotonic()
-                if remaining <= 0.0:
-                    return None
-                self._depth_condition.wait(remaining)
-            item = self._latest_depth
-            self._latest_depth = None
+        if self._depth_tcp_receiver is not None:
+            item = self._depth_tcp_receiver.receive(timeout_s)
+        else:
+            deadline = self._monotonic() + timeout_s
+            with self._depth_condition:
+                while self._latest_depth is None and not self._closed:
+                    remaining = deadline - self._monotonic()
+                    if remaining <= 0.0:
+                        return None
+                    self._depth_condition.wait(remaining)
+                item = self._latest_depth
+                self._latest_depth = None
         if item is None:
             return None
-        message, receipt_time = item
-        envelope = self._depth_envelope(message)
+        payload, receipt_time = item
+        envelope = payload if isinstance(payload, bytes) else self._depth_envelope(payload)
         decoded = self._codec.decode(envelope)
         header = decoded.header
         if header.sequence <= self._last_depth_sequence:
@@ -549,7 +560,9 @@ def create_ros_tracking_transport(
 ) -> RosTrackingTransport:
     """Create the production GB10 transport without importing ROS eagerly."""
 
+    port = int(os.environ.get("G1_DEPTH_TCP_PORT", "5601"))
     return RosTrackingTransport(
         observe_depth_only=observe_depth_only,
         observe_only=observe_only,
+        depth_tcp_receiver=DepthTcpReceiver(port),
     )

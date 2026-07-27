@@ -227,6 +227,8 @@ if [[ "${CONTROL_MODE}" == "tracking" ]]; then
       --depth-height "${DEPTH_HEIGHT}"
       --depth-capture-fps "${DEPTH_CAPTURE_FPS}"
       --depth-publish-fps "${DEPTH_PUBLISH_FPS}"
+      --depth-tcp-target "${CLIENT_IP}"
+      --depth-tcp-port "${DEPTH_TCP_PORT:-5601}"
     )
     if [[ -n "${CALIBRATION}" ]]; then
       depth_args+=(--calibration "${CALIBRATION}")

@@ -28,6 +28,7 @@ from object_tracking.arm_tracking.arm_commissioning import (
 )
 from object_tracking.arm_tracking.arm_unitree import UnitreeArmHardware
 from object_tracking.arm_tracking.calibration import load_calibration
+from object_tracking.arm_tracking.depth_tcp import DepthTcpSender
 from object_tracking.arm_tracking.joints import joint_contract_id
 from object_tracking.arm_tracking.manual_arm import ManualArmConfig, ManualArmController
 from object_tracking.arm_tracking.joints import ARM_JOINT_NAMES
@@ -104,6 +105,8 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--depth-height", type=int, default=480)
     parser.add_argument("--depth-capture-fps", type=int, default=30)
     parser.add_argument("--depth-publish-fps", type=float, default=15.0)
+    parser.add_argument("--depth-tcp-target", default="")
+    parser.add_argument("--depth-tcp-port", type=int, default=5601)
     parser.add_argument(
         "--quiet-healthy-depth",
         action="store_true",
@@ -250,9 +253,16 @@ class DepthOnlyRosNode:
             transmit_fps=args.depth_publish_fps,
             rgb_relay=rgb_relay,
         )
+        self.depth_tcp = (
+            DepthTcpSender(args.depth_tcp_target, args.depth_tcp_port)
+            if args.depth_tcp_target
+            else None
+        )
         try:
             self.depth_service.start(args.calibration)
         except Exception:
+            if self.depth_tcp is not None:
+                self.depth_tcp.close()
             self.runner.close()
             raise
         self._last_depth_sequence = -1
@@ -296,6 +306,8 @@ class DepthOnlyRosNode:
         if envelope is None or sequence <= self._last_depth_sequence:
             return
         try:
+            if self.depth_tcp is not None:
+                self.depth_tcp.publish(envelope)
             message = self.types["UInt8MultiArray"]()
             # Use a standard ROS message across Foxy and Jazzy. The custom
             # CompressedDepth type is not wire-compatible across those
@@ -309,6 +321,8 @@ class DepthOnlyRosNode:
 
     def close(self) -> None:
         self.depth_service.stop()
+        if self.depth_tcp is not None:
+            self.depth_tcp.close()
         self.runner.close()
 
 
