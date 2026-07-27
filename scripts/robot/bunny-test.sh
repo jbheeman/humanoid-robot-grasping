@@ -198,24 +198,28 @@ while time.monotonic() < deadline:
             health = json.load(response)
         tracking = health.get("arm_tracking") or {}
         command = tracking.get("predicted_bounded_arm_command_rad")
-        ready = (
+        structurally_ready = (
             tracking.get("mode") == "execute"
             and tracking.get("arm_state") == "DISARMED"
             and tracking.get("ik_status") == "ok"
             and isinstance(command, list)
             and len(command) == 7
             and tracking.get("reason") == "arm_not_explicitly_enabled"
+        )
+        ready = (
+            structurally_ready
             and float(tracking.get("depth_age_ms", 1e9)) <= 200.0
             and float(tracking.get("processing_latency_ms", 1e9)) <= 250.0
         )
         if ready:
             ready_samples += 1
-        elif tracking.get("reason") not in {
+        elif not structurally_ready and tracking.get("reason") not in {
             "depth_receive_timeout",
             "rgb_depth_pair_stale",
         }:
-            # A missed asynchronous RGB/depth pair does not invalidate the
-            # prior fresh IK samples. Genuine planning or state failures do.
+            # A missed asynchronous pair or one slow plane-refresh cycle does
+            # not invalidate prior fresh IK samples. Genuine planning or robot
+            # state failures still clear the readiness evidence.
             ready_samples = 0
         if ready_samples >= stable_samples:
             print(

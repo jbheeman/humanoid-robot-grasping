@@ -969,8 +969,8 @@ class ArmTrackingRuntime:
                 measured_edge_error = self.ik.validate_joint_path(
                     (last_q, waypoint),
                     support_plane=plane,
-                    edge_step_rad=0.010,
-                    semantic_edge_step_rad=0.0025,
+                    edge_step_rad=0.020,
+                    semantic_edge_step_rad=0.010,
                     require_escape_cleared=False,
                 )
                 if measured_edge_error is not None:
