@@ -49,6 +49,10 @@ parser.add_argument(
 )
 AppLauncher.add_app_launcher_args(parser)
 args = parser.parse_args()
+# SimulationApp defaults to multi-GPU rendering when this key is omitted.
+# Make the single-G1 validation process genuinely single-GPU before Kit starts;
+# a late Kit setting still allows its IOMMU P2P probe to run on dual-GPU hosts.
+args.multi_gpu = False
 
 if args.physics_hz < 100.0 or args.physics_hz > 250.0:
     parser.error("--physics-hz must be between 100 and 250")
