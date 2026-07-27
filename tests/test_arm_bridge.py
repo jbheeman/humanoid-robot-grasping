@@ -423,7 +423,7 @@ def test_target_rejects_replay_wrong_binding_stale_nonfinite_and_discontinuity()
         ({"sequence": 1}, "stale_sequence"),
         ({"sequence": 2, "session_id": "wrong"}, "session_mismatch"),
         ({"sequence": 2, "calibration_id": "wrong"}, "calibration_mismatch"),
-        ({"sequence": 2, "source_timestamp": clock.wall - 0.301}, "stale_target"),
+        ({"sequence": 2, "source_timestamp": clock.wall - 0.501}, "stale_target"),
         ({"sequence": 2, "right_arm_q": [math.nan] * 7}, "invalid_target"),
     ]
     for changes, expected_code in cases:

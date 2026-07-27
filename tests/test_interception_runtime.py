@@ -222,8 +222,8 @@ planner:
 
 
 def test_config_rejects_ttl_above_robot_limit() -> None:
-    with pytest.raises(ValueError, match="300 ms"):
-        config(perception_ttl_s=0.301)
+    with pytest.raises(ValueError, match="500 ms"):
+        config(perception_ttl_s=0.501)
 
 
 @pytest.mark.parametrize(

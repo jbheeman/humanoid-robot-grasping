@@ -110,12 +110,12 @@ class RuntimeConfig:
     target_hz: float = 20.0
     # The RGB inference result and TCP depth frame use independent arrival
     # clocks. On the live GB10 the measured healthy p95 can exceed 100 ms
-    # while both sources remain fresh; keep this below the separate 300 ms
+    # while both sources remain fresh; keep this below the separate 500 ms
     # end-to-end safety gate rather than rejecting every such pair.
     # RGB and depth are received by independent low-latency transports. Their
     # receipt timestamps can differ by almost one depth publish period plus
     # scheduler jitter even though both samples are individually fresh. The
-    # bridge still enforces the separate 300 ms perception TTL.
+    # bridge still enforces the separate 500 ms perception TTL.
     max_pair_skew_s: float = 0.240
     prediction_horizon_s: float = 0.150
     trajectory_model_path: Path | None = None
@@ -1695,6 +1695,10 @@ class ArmTrackingRuntime:
                     f"expected={expected_size.round(3).tolist()}m "
                     f"ratio={size_ratio.round(3).tolist()}"
                 )
+            support = support.with_dimension_prior(
+                expected_size,
+                source="live_plane_calibrated_near_edge_dimension_prior",
+            )
             self.last_support_plane = support
             self.last_support_plane_at = now
             self.last_support_plane_error = None

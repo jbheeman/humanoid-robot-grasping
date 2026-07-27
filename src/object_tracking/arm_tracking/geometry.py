@@ -329,6 +329,48 @@ class SupportRegion:
             dtype=np.float64,
         )
 
+    def with_dimension_prior(
+        self,
+        expected_size_m: Iterable[float],
+        *,
+        source: str,
+    ) -> "SupportRegion":
+        """Keep the live plane/near edge but use physical table dimensions.
+
+        Saved pixel corners still locate the plane and robot-facing edge after
+        modest setup motion, but no longer define reliable metric dimensions.
+        """
+
+        expected = np.asarray(tuple(expected_size_m), dtype=np.float64)
+        if (
+            expected.shape != (2,)
+            or not np.all(np.isfinite(expected))
+            or np.any(expected <= 0.0)
+        ):
+            raise ValueError("expected support dimensions must be two positive values")
+        center_v = 0.5 * (self.minimum_uv[1] + self.maximum_uv[1])
+        minimum_uv = np.asarray(
+            (self.minimum_uv[0], center_v - 0.5 * expected[1]),
+            dtype=np.float64,
+        )
+        return SupportRegion(
+            plane=self.plane,
+            origin=self.origin,
+            axis_u=self.axis_u,
+            axis_v=self.axis_v,
+            minimum_uv=minimum_uv,
+            maximum_uv=minimum_uv + expected,
+            certified_edges=("u_min",),
+            edge_sources=(
+                ("u_min", "calibrated_pixel_near_edge"),
+                ("u_max", "dimension_prior"),
+                ("v_min", "dimension_prior"),
+                ("v_max", "dimension_prior"),
+            ),
+            lateral_margin_m=self.lateral_margin_m,
+            source=source,
+        )
+
     def requires_clearance(self, point: Iterable[float]) -> bool:
         u, v = self.projection_uv(point)
         margin = self.lateral_margin_m

@@ -132,7 +132,10 @@ class ArmBridgeConfig:
     calibration_id: str | None = None
     joint_contract_id: str | None = None
     control_hz: float = 250.0
-    target_ttl_s: float = 0.300
+    # Route rebuilds can briefly take ~350 ms. Preserve margin for the
+    # newest-only result while the 750 ms deadman remains the independent
+    # upper bound on command loss.
+    target_ttl_s: float = 0.500
     deadman_s: float = 0.750
     state_ttl_s: float = 0.250
     stable_standing_s: float = 2.0

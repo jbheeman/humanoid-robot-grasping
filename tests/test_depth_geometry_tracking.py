@@ -267,6 +267,28 @@ class GeometryTests(unittest.TestCase):
         self.assertTrue(support.has_clearance((0.20, 0.0, -0.10), minimum_clearance_m=0.05))
         self.assertFalse(support.has_clearance((0.55, 0.0, -0.10), minimum_clearance_m=0.05))
 
+    def test_pixel_corner_region_uses_physical_dimension_prior(self) -> None:
+        support = SupportRegion.from_ordered_corners(
+            Plane((0.0, 0.0, 1.0), 0.0),
+            (
+                (0.40, 0.385, 0.0),
+                (0.40, -0.385, 0.0),
+                (0.865, -0.385, 0.0),
+                (0.865, 0.385, 0.0),
+            ),
+        ).with_dimension_prior(
+            (0.34, 0.68),
+            source="live_plane_calibrated_near_edge_dimension_prior",
+        )
+
+        np.testing.assert_allclose(
+            support.maximum_uv - support.minimum_uv,
+            (0.34, 0.68),
+        )
+        self.assertEqual(support.certified_edges, ("u_min",))
+        self.assertEqual(support.edge_source("u_min"), "calibrated_pixel_near_edge")
+        self.assertEqual(support.edge_source("u_max"), "dimension_prior")
+
     def test_support_region_rejects_non_table_plane(self) -> None:
         with self.assertRaisesRegex(ValueError, "tabletop-like"):
             SupportRegion.from_xy_bounds(
