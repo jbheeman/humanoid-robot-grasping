@@ -132,7 +132,8 @@ class RosTrackingTransport:
                 raise RuntimeError("ROS tracking transport is closed")
             types = self._types or _load_types()
             runner = self._runner or Ros2NodeRunner("g1_gb10_tracking")
-            node = runner.start()
+            prepare = getattr(runner, "prepare", None)
+            node = prepare() if callable(prepare) else runner.start()
             qos = types["QoSProfile"](
                 history=types["HistoryPolicy"].KEEP_LAST,
                 depth=5,
@@ -197,6 +198,10 @@ class RosTrackingTransport:
                 if self._owns_runner:
                     runner.close()
                 raise
+            # Create every endpoint before spinning. Starting the executor
+            # first can leave later subscriptions outside its wait set
+            # indefinitely on affected rclpy versions.
+            runner.start()
             self._types = types
             self._runner = runner
             self._node = node

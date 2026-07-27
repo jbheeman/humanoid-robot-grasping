@@ -85,6 +85,7 @@ class Ros2NodeRunner:
         self._context: Optional[object] = None
         self._executor: Optional[object] = None
         self._thread: Optional[threading.Thread] = None
+        self._prepared = False
         self._started = False
         self._lock = threading.Lock()
 
@@ -108,46 +109,63 @@ class Ros2NodeRunner:
         with self._lock:
             if self._started:
                 return self.node
-            bindings = self._bindings or Ros2Bindings.load()
-            self._bindings = bindings
-            if self._node is None:
-                context = bindings.context_type()
-                bindings.rclpy.init(args=self._ros_args, context=context)
-                try:
-                    # Foxy Fast DDS can discover Jazzy's newer automatic
-                    # parameter/type-description services, but intermittently
-                    # fails to deserialize their metadata and eventually
-                    # aborts with std::bad_alloc.  Project nodes do not use
-                    # ROS parameters or rosout, so omit those cross-distro
-                    # readers entirely.
-                    node = bindings.rclpy.create_node(
-                        self.node_name,
-                        context=context,
-                        enable_rosout=False,
-                        start_parameter_services=False,
-                    )
-                    executor = bindings.executor_type(context=context, num_threads=2)
-                    executor.add_node(node)
-                except Exception:
-                    bindings.rclpy.shutdown(context=context)
-                    raise
-                self._context = context
-                self._node = node
-                self._executor = executor
+            node = self._prepare_locked()
+            if self._owns_node:
+                assert self._executor is not None
                 self._thread = threading.Thread(
-                    target=executor.spin,
+                    target=self._executor.spin,
                     daemon=True,
                     name=f"{self.node_name}-ros-executor",
                 )
                 self._thread.start()
             self._started = True
+            return node
+
+    def prepare(self) -> object:
+        """Create the node without spinning so callers can add entities first."""
+
+        with self._lock:
+            return self._prepare_locked()
+
+    def _prepare_locked(self) -> object:
+        if self._prepared:
+            assert self._node is not None
             return self._node
+        bindings = self._bindings or Ros2Bindings.load()
+        self._bindings = bindings
+        if self._node is None:
+            context = bindings.context_type()
+            bindings.rclpy.init(args=self._ros_args, context=context)
+            try:
+                # Foxy Fast DDS can discover Jazzy's newer automatic
+                # parameter/type-description services, but intermittently
+                # fails to deserialize their metadata and eventually
+                # aborts with std::bad_alloc.  Project nodes do not use
+                # ROS parameters or rosout, so omit those cross-distro
+                # readers entirely.
+                node = bindings.rclpy.create_node(
+                    self.node_name,
+                    context=context,
+                    enable_rosout=False,
+                    start_parameter_services=False,
+                )
+                executor = bindings.executor_type(context=context, num_threads=2)
+                executor.add_node(node)
+            except Exception:
+                bindings.rclpy.shutdown(context=context)
+                raise
+            self._context = context
+            self._node = node
+            self._executor = executor
+        self._prepared = True
+        return self._node
 
     def close(self) -> None:
         with self._lock:
-            if not self._started:
+            if not self._prepared:
                 return
             self._started = False
+            self._prepared = False
             if not self._owns_node:
                 return
             executor = self._executor

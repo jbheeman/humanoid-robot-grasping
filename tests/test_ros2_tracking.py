@@ -132,6 +132,21 @@ class FakeRunner:
         raise AssertionError("injected runners are not owned")
 
 
+class PreparedRunner(FakeRunner):
+    def __init__(self) -> None:
+        super().__init__()
+        self.events: list[str] = []
+
+    def prepare(self) -> FakeNode:
+        self.events.append("prepare")
+        return self.node
+
+    def start(self) -> FakeNode:
+        assert "/g1/depth_wire" in self.node.callbacks
+        self.events.append("start")
+        return self.node
+
+
 class Message:
     pass
 
@@ -204,6 +219,15 @@ def test_target_and_service_calls_use_ros_entities() -> None:
     assert target_payload["pipeline_age_ms"] == 12
     assert target_payload["right_arm_q"] == [0.1] * 7
     transport.close()
+
+
+def test_ros_entities_exist_before_owned_runner_starts_spinning() -> None:
+    runner = PreparedRunner()
+    transport = RosTrackingTransport(runner=runner, types=_types())
+
+    transport.start()
+
+    assert runner.events == ["prepare", "start"]
 
 
 @pytest.mark.skipif(
