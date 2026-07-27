@@ -52,6 +52,8 @@ _SUPPORT_PLANE_ARMED_TTL_S = 300.000
 # the generic near-surface pregrasp height. Swept-link validation still checks
 # every incremental IK edge against the complete table support region.
 _TRACKING_PALM_CLEARANCE_M = 0.085
+_TABLETOP_SIZE_RATIO_MIN = 0.60
+_TABLETOP_SIZE_RATIO_MAX = 1.50
 _SOFT_PERCEPTION_REJECTIONS = frozenset(
     {
         "depth_uncertain",
@@ -232,6 +234,29 @@ def project_target_into_workspace(
     if correction > maximum_correction_m:
         return None, correction
     return TargetPose(projected, target.orientation_xyzw), correction
+
+
+def tabletop_footprint_dimensions_plausible(
+    measured_size_m: Sequence[float],
+    expected_size_m: Sequence[float],
+) -> bool:
+    """Accept bounded viewpoint/calibration drift while rejecting wrong planes."""
+
+    measured = np.asarray(measured_size_m, dtype=float)
+    expected = np.asarray(expected_size_m, dtype=float)
+    if (
+        measured.shape != (2,)
+        or expected.shape != (2,)
+        or not np.all(np.isfinite((*measured, *expected)))
+        or np.any(measured <= 0.0)
+        or np.any(expected <= 0.0)
+    ):
+        return False
+    ratio = measured / expected
+    return bool(
+        np.all(ratio >= _TABLETOP_SIZE_RATIO_MIN)
+        and np.all(ratio <= _TABLETOP_SIZE_RATIO_MAX)
+    )
 
 
 def right_arm_ik_seed(
@@ -1660,11 +1685,15 @@ class ArmTrackingRuntime:
             measured_size = support.maximum_uv - support.minimum_uv
             expected_size = np.asarray(self.tabletop_size_m, dtype=float)
             size_ratio = measured_size / expected_size
-            if np.any(size_ratio < 0.65) or np.any(size_ratio > 1.35):
+            if not tabletop_footprint_dimensions_plausible(
+                measured_size,
+                expected_size,
+            ):
                 raise ValueError(
                     "live tabletop footprint dimensions disagree with calibration: "
                     f"measured={measured_size.round(3).tolist()}m "
-                    f"expected={expected_size.round(3).tolist()}m"
+                    f"expected={expected_size.round(3).tolist()}m "
+                    f"ratio={size_ratio.round(3).tolist()}"
                 )
             self.last_support_plane = support
             self.last_support_plane_at = now

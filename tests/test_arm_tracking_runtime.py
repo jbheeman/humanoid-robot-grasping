@@ -37,6 +37,7 @@ from object_tracking.arm_tracking.runtime import (
     register_depth_in_rgb,
     right_arm_ik_seed,
     select_start_escape_waypoint,
+    tabletop_footprint_dimensions_plausible,
 )
 
 
@@ -630,6 +631,28 @@ def test_far_target_is_not_hidden_by_workspace_projection() -> None:
 
     assert projected is None
     assert correction > 0.08
+
+
+def test_close_table_footprint_drift_remains_a_valid_plane_candidate() -> None:
+    assert tabletop_footprint_dimensions_plausible(
+        (0.464, 0.767),
+        (0.34, 0.68),
+    )
+
+
+@pytest.mark.parametrize(
+    "measured",
+    (
+        (0.19, 0.68),
+        (0.52, 0.68),
+        (0.34, 1.03),
+        (float("nan"), 0.68),
+    ),
+)
+def test_gross_tabletop_dimension_mismatch_remains_rejected(
+    measured: tuple[float, float],
+) -> None:
+    assert not tabletop_footprint_dimensions_plausible(measured, (0.34, 0.68))
 
 
 def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) -> None:
