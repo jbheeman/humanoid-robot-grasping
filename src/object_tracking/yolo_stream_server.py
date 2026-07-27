@@ -738,6 +738,11 @@ def viewer() -> FileResponse:
     return FileResponse(GB10_WEB_DIR / "unitree_dual_viewer.html")
 
 
+@app.get("/tabletop-calibration")
+def tabletop_calibration_page() -> FileResponse:
+    return FileResponse(GB10_WEB_DIR / "tabletop_calibration.html")
+
+
 def _commissioning_html() -> str:
     """Serve the existing guarded wizard without the retired bearer-token UI."""
 

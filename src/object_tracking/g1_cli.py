@@ -258,10 +258,21 @@ def _run(route: Route, args: Sequence[str]) -> int:
         else:
             command = [str(launcher), *forwarded]
     try:
-        completed = subprocess.run(command, cwd=root, check=False, env=environment)
+        process = subprocess.Popen(command, cwd=root, env=environment)
     except FileNotFoundError as exc:
         raise SystemExit(f"Workflow launcher not found: {exc.filename}") from exc
-    return int(completed.returncode)
+    try:
+        return int(process.wait())
+    except KeyboardInterrupt:
+        # The foreground launcher receives the same SIGINT and performs its
+        # controlled arm/depth cleanup. Wait for that trap instead of printing
+        # a traceback and returning to a prompt while children still unwind.
+        try:
+            process.wait(timeout=8.0)
+        except subprocess.TimeoutExpired:
+            process.terminate()
+            process.wait(timeout=2.0)
+        return 130
 
 
 def main(argv: Sequence[str] | None = None) -> int:

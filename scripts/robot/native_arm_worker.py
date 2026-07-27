@@ -132,6 +132,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-motion-mode")
     parser.add_argument("--hardware-interface", default="eth0")
     parser.add_argument("--hardware-domain-id", type=int, default=0)
+    parser.add_argument("--weight-ramp-s", type=float, default=1.5)
+    parser.add_argument("--max-velocity-rad-s", type=float, default=0.15)
+    parser.add_argument("--max-acceleration-rad-s2", type=float, default=0.5)
+    parser.add_argument("--max-jerk-rad-s3", type=float, default=2.0)
     parser.add_argument(
         "--max-tilt-deg",
         type=float,
@@ -171,6 +175,10 @@ def main() -> int:
         hardware,
         ArmBridgeConfig(
             allow_movement=args.allow_movement,
+            weight_ramp_s=args.weight_ramp_s,
+            max_velocity_rad_s=args.max_velocity_rad_s,
+            max_acceleration_rad_s2=args.max_acceleration_rad_s2,
+            max_jerk_rad_s3=args.max_jerk_rad_s3,
             calibration_id=None if calibration is None else calibration.calibration_id,
             waist_reference_rad=(
                 None if calibration is None else calibration.waist_reference_rad

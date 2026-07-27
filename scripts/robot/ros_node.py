@@ -308,6 +308,12 @@ class DepthOnlyRosNode:
         try:
             if self.depth_tcp is not None:
                 self.depth_tcp.publish(envelope)
+                # TCP is the canonical cross-version depth transport. Do not
+                # also serialize the same large frame through Foxy DDS: that
+                # duplicate hot path has stalled RealSense capture for seconds.
+                self._last_depth_sequence = sequence
+                self._last_publish_error = None
+                return
             message = self.types["UInt8MultiArray"]()
             # Use a standard ROS message across Foxy and Jazzy. The custom
             # CompressedDepth type is not wire-compatible across those

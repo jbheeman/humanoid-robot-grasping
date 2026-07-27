@@ -976,6 +976,7 @@ class ArmTrackingRuntime:
                 "arm_last_target_age_ms": arm_state.get("last_target_age_ms"),
                 "arm_hold_reason": arm_state.get("hold_reason"),
                 "arm_fault_reason": arm_state.get("fault_reason"),
+                "arm_fault_details": arm_state.get("fault_details"),
                 "arm_loop": arm_state.get("loop") or {},
                 "ik_latency_ms": round(
                     max(0.0, (time.monotonic() - ik_started) * 1000.0),

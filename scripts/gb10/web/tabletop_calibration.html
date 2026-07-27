@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>G1 tabletop calibration</title>
+  <style>
+    body{margin:0;padding:20px;color:#eee;background:#111;font:16px system-ui}main{max-width:1000px;margin:auto}
+    #view{position:relative;width:100%;aspect-ratio:16/9;background:#222}#frame,#overlay{position:absolute;width:100%;height:100%;inset:0}
+    #frame{object-fit:contain}#overlay{cursor:crosshair}.controls{display:flex;gap:12px;flex-wrap:wrap;margin:14px 0;align-items:end}
+    label{display:grid;gap:5px}input,button{font:inherit;padding:8px}button{cursor:pointer}#status{min-height:24px;color:#7ee787}code{color:#fc6}
+  </style>
+</head>
+<body><main>
+  <h1>Tabletop corners</h1>
+  <p>Click in order: <code>near-left → near-right → far-right → far-left</code>. “Near” means closest to the robot/camera.</p>
+  <div id="view"><img id="frame" src="/raw-snapshot.jpg" alt="live camera"><canvas id="overlay"></canvas></div>
+  <div class="controls">
+    <label>Physical width (m)<input id="width" type="number" min=".05" max="5" step=".01" value=".68"></label>
+    <label>Near-to-far depth (m)<input id="depth" type="number" min=".05" max="5" step=".01" value=".34"></label>
+    <button id="undo">Undo</button><button id="clear">Clear</button><button id="save">Save calibration</button>
+  </div><div id="status"></div>
+</main><script>
+const names=["near_left","near_right","far_right","far_left"],colors=["#0f6","#0cf","#f4f","#fc0"];
+const image=document.querySelector("#frame"),canvas=document.querySelector("#overlay"),context=canvas.getContext("2d"),status=document.querySelector("#status");
+let points=[],loaded=false;
+function resize(){canvas.width=image.clientWidth;canvas.height=image.clientHeight;draw()}
+function draw(){
+  context.clearRect(0,0,canvas.width,canvas.height);if(!image.naturalWidth)return;
+  const sx=canvas.width/image.naturalWidth,sy=canvas.height/image.naturalHeight;
+  if(points.length>1){context.beginPath();points.forEach((p,i)=>i?context.lineTo(p.x*sx,p.y*sy):context.moveTo(p.x*sx,p.y*sy));if(points.length===4)context.closePath();context.strokeStyle="#fff";context.lineWidth=2;context.stroke()}
+  points.forEach((p,i)=>{const x=p.x*sx,y=p.y*sy;context.fillStyle=colors[i];context.beginPath();context.arc(x,y,7,0,Math.PI*2);context.fill();context.font="bold 15px system-ui";context.fillText(`${i+1} ${names[i]}`,x+10,y-10)});
+  status.textContent=points.length<4?`Click ${names[points.length]} (${points.length+1}/4)`:"Check the polygon, then save.";
+}
+canvas.onclick=event=>{if(points.length===4||!image.naturalWidth)return;const r=canvas.getBoundingClientRect();points.push({x:(event.clientX-r.left)*image.naturalWidth/r.width,y:(event.clientY-r.top)*image.naturalHeight/r.height});draw()};
+document.querySelector("#undo").onclick=()=>{points.pop();draw()};document.querySelector("#clear").onclick=()=>{points=[];draw()};
+document.querySelector("#save").onclick=async()=>{if(points.length!==4){status.textContent="Select all four corners first.";return}
+  const payload={width_m:Number(document.querySelector("#width").value),depth_m:Number(document.querySelector("#depth").value),image_width:image.naturalWidth,image_height:image.naturalHeight,corners:points.map((p,i)=>({name:names[i],...p}))};
+  const response=await fetch("/api/v1/tabletop-calibration",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}),result=await response.json();
+  status.textContent=response.ok?`Saved ${result.path}`:`Save failed: ${result.detail}`};
+async function load(){if(loaded)return;loaded=true;const result=await(await fetch("/api/v1/tabletop-calibration")).json();if(result.configured){points=result.calibration.corners_px.map(({x,y})=>({x,y}));document.querySelector("#width").value=result.calibration.tabletop.width_m;document.querySelector("#depth").value=result.calibration.tabletop.depth_m}draw()}
+image.onload=()=>{resize();load()};window.onresize=resize;setInterval(()=>{image.src=`/raw-snapshot.jpg?t=${Date.now()}`},500);
+</script></body></html>

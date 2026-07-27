@@ -212,6 +212,7 @@ class ArmBridgeController:
         self.last_target_at: float | None = None
         self.last_target_source_timestamp: float | None = None
         self.fault_reason: str | None = None
+        self.fault_details: dict[str, object] | None = None
         self.hold_reason: str | None = None
         self.left_latch: tuple[float, ...] | None = None
         self.commanded_right: list[float] | None = None
@@ -294,6 +295,7 @@ class ArmBridgeController:
             self.right_acceleration = [0.0] * 7
             self.weight = 0.0
             self.fault_reason = None
+            self.fault_details = None
             self.hold_reason = None
             self.state = ArmState.ARMING
             self._transition_at = now
@@ -345,6 +347,7 @@ class ArmBridgeController:
             self.right_acceleration = [0.0] * 7
             self.weight = 0.0
             self.fault_reason = None
+            self.fault_details = None
             self.hold_reason = None
             self.state = ArmState.ARMING
             self._transition_at = now
@@ -544,11 +547,17 @@ class ArmBridgeController:
                     self._begin_holding("target_deadman", now)
                 elif self.commanded_right is not None and self.weight >= 0.5:
                     measured_right = robot.arm_q[7:]
-                    if any(
-                        abs(measured_right[i] - self.commanded_right[i])
-                        > self.config.max_following_error_rad
-                        for i in range(7)
-                    ):
+                    errors = [
+                        abs(measured_right[i] - self.commanded_right[i]) for i in range(7)
+                    ]
+                    worst_joint = max(range(7), key=errors.__getitem__)
+                    if errors[worst_joint] > self.config.max_following_error_rad:
+                        self.fault_details = {
+                            "joint_index": worst_joint,
+                            "error_rad": errors[worst_joint],
+                            "measured_rad": measured_right[worst_joint],
+                            "commanded_rad": self.commanded_right[worst_joint],
+                        }
                         self._enter_fault("following_error", now)
                     elif (
                         self.control_mode is ArmControlMode.COMMISSIONING
@@ -601,6 +610,7 @@ class ArmBridgeController:
                 "uptime_s": round(self._monotonic() - self.started_at, 3),
                 "loop": self.metrics.as_dict(),
                 "fault_reason": self.fault_reason,
+                "fault_details": self.fault_details,
             }
 
     def state_report(self, now: float | None = None) -> dict[str, object]:
@@ -662,6 +672,7 @@ class ArmBridgeController:
                 "weight": round(self.weight, 6),
                 "hold_reason": self.hold_reason,
                 "fault_reason": self.fault_reason,
+                "fault_details": self.fault_details,
                 "commanded_arm_q": commanded_arm,
                 "visualization": visual,
                 "loop": self.metrics.as_dict(),
