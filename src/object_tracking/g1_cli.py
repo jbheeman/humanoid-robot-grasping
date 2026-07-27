@@ -1,17 +1,10 @@
-"""Unified operator CLI for the humanoid robot grasping project.
-
-The repository has a few intentionally host-specific launchers: the robot
-must not receive the GB10 training environment, and camera/GStreamer setup is
-different from arm commissioning.  This command gives those workflows one
-discoverable namespace without hiding the underlying scripts or changing
-their safety defaults.
+"""Operator CLI for the realtime G1 plush-interception demo.
 
 Examples::
 
     uv run g1 setup robot
-    uv run g1 arm commissioning
-    uv run g1 vision server
-    uv run g1 tune analyze runs/research/arm_tracking
+    uv run g1 robot start --client-ip 192.168.0.66
+    uv run g1 gb10 start --robot-host 192.168.0.213
 
 Arguments after a workflow are forwarded unchanged to the existing command.
 Use ``uv run g1 <group> <workflow> --help`` for that workflow's options.
@@ -43,12 +36,6 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("assets", "build"): Route(
         "module", "object_tracking.g1_asset_builder", "build offline G1 visualization assets"
     ),
-    ("arm", "commissioning"): Route(
-        "script", "scripts/robot/commission.sh", "robot-local guarded arm commissioning"
-    ),
-    ("arm", "remote"): Route(
-        "script", "scripts/gb10/arm-remote.sh", "GB10 ROS 2 manual left/right arm control"
-    ),
     ("calibrate", "camera"): Route(
         "module", "object_tracking.arm_tracking.calibration_cli", "camera calibration workflow"
     ),
@@ -58,29 +45,11 @@ ROUTES: dict[tuple[str, str], Route] = {
     ("calibrate", "tuner"): Route(
         "script", "scripts/robot/localization_tuner.py", "interactive local D435I localization capture"
     ),
-    ("data", "augment"): Route(
-        "module", "object_tracking.augment_plushie_dataset", "train-only dataset augmentation"
-    ),
-    ("data", "capture"): Route(
-        "script", "scripts/data/capture.sh", "capture labeled frames from a running stream"
-    ),
-    ("data", "install"): Route(
-        "script", "scripts/data/install.sh", "install public plushie datasets"
-    ),
     ("inspect", "cameras"): Route(
         "script", "scripts/dev/cameras.sh", "inspect camera device ownership"
     ),
     ("inspect", "ros"): Route(
         "script", "scripts/dev/ros.sh", "inspect ROS 2 discovery and G1 interfaces"
-    ),
-    ("robot", "loco"): Route(
-        "module", "object_tracking.g1_loco_cli", "send a Unitree G1 locomotion command"
-    ),
-    ("robot", "manual-arm"): Route(
-        "script", "scripts/robot/manual-arm.sh", "robot-local ROS 2 manual arm bridge"
-    ),
-    ("robot", "scan"): Route(
-        "module", "object_tracking.g1_scan_cli", "scan the local robot network"
     ),
     ("robot", "services"): Route(
         "script", "scripts/robot/start.sh", "start the disarmed robot ROS 2 node"
@@ -94,57 +63,10 @@ ROUTES: dict[tuple[str, str], Route] = {
         "start the robot bridge and automatically run one guarded bunny-tracking session",
     ),
     ("setup", "gb10"): Route(
-        "script", "scripts/gb10/setup.sh", "install GB10 vision/training environment"
-    ),
-    ("setup", "vla"): Route(
-        "script", "scripts/gb10/vla-setup.sh", "install the pinned official UnifoLM-VLA runtime"
-    ),
-    ("setup", "opencv"): Route(
-        "script", "scripts/local/opencv-setup.sh", "install system-OpenCV vision environment"
+        "script", "scripts/gb10/setup.sh", "install the GB10 interception environment"
     ),
     ("setup", "robot"): Route(
         "script", "scripts/robot/setup.sh", "install the Foxy robot ROS 2 environment"
-    ),
-    ("setup", "vision"): Route(
-        "script", "scripts/local/setup.sh", "install the lightweight vision environment"
-    ),
-    ("setup", "local"): Route(
-        "script", "scripts/local/setup.sh", "install the lightweight vision environment"
-    ),
-    ("stream", "local"): Route(
-        "script", "scripts/local/start.sh", "serve a local camera stream"
-    ),
-    ("stream", "remote"): Route(
-        "script", "scripts/gb10/start.sh", "run the GB10 ROS client, research stream, and UI"
-    ),
-    ("stream", "viewer"): Route(
-        "script", "scripts/local/viewer.sh", "serve the browser viewer"
-    ),
-    ("train", "detector"): Route(
-        "module", "object_tracking.train_plushie_detector", "train the plushie detector"
-    ),
-    ("train", "evaluate"): Route(
-        "script", "scripts/training/evaluate.sh", "evaluate a detector checkpoint"
-    ),
-    ("train", "guarded"): Route(
-        "script", "scripts/training/guarded.sh", "resource-capped detector training"
-    ),
-    ("tune", "analyze"): Route(
-        "module", "object_tracking.tuning_cli", "analyze one research run", ("analyze",)
-    ),
-    ("tune", "compare"): Route(
-        "module", "object_tracking.tuning_cli", "compare controlled research runs", ("compare",)
-    ),
-    ("tune", "joint-audit"): Route(
-        "module", "object_tracking.tuning_cli", "audit the 29-DOF joint contract", ("joint-audit",)
-    ),
-    ("tune", "future-eval"): Route(
-        "module",
-        "object_tracking.future_prediction_cli",
-        "score offline bunny future-position predictions",
-    ),
-    ("vision", "snapshot"): Route(
-        "module", "object_tracking.g1_vision_cli", "capture or diagnose a G1 camera stream"
     ),
     ("vision", "server"): Route(
         "script", "scripts/gb10/start.sh", "run the GB10 ROS client and browser UI"
@@ -157,12 +79,6 @@ ROUTES: dict[tuple[str, str], Route] = {
     ),
     ("gb10", "plushie"): Route(
         "script", "scripts/gb10/plushie.sh", "run the lightweight plushie stream variant"
-    ),
-    ("gb10", "vla"): Route(
-        "script", "scripts/gb10/vla-chat.sh", "open the guarded UnifoLM-VLA task terminal"
-    ),
-    ("local", "start"): Route(
-        "script", "scripts/local/start.sh", "serve a local camera stream"
     ),
 }
 
@@ -185,24 +101,17 @@ def _workflow_parser(parser: argparse.ArgumentParser, group: str) -> None:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="g1",
-        description="One discoverable command for the robot, vision, research, and training workflows.",
-        epilog="Existing scripts remain available for automation; this command is their short operator interface.",
+        description="Launch and inspect the realtime G1 plush-interception demo.",
     )
     subparsers = parser.add_subparsers(dest="group", metavar="GROUP", required=True)
     groups = {
         "assets": "offline browser visualization assets",
-        "arm": "arm commissioning and guarded movement",
         "calibrate": "camera/arm calibration",
-        "data": "dataset capture, install, and augmentation",
         "inspect": "read-only hardware and network diagnostics",
-        "robot": "robot-local services and Unitree commands",
+        "robot": "robot-local interception services",
         "setup": "host-specific environment setup",
-        "stream": "camera streams and browser viewers",
-        "train": "detector training and evaluation",
-        "tune": "offline run and joint-contract analysis",
         "vision": "G1 camera and GB10 perception workflows",
-        "gb10": "GB10 inference and browser server",
-        "local": "local camera and replay server",
+        "gb10": "GB10 realtime inference and interception",
     }
     for group, help_text in groups.items():
         child = subparsers.add_parser(group, help=help_text, description=help_text)
@@ -275,11 +184,6 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
         parser.add_argument("--no-research-record", action="store_true")
         parser.add_argument("--dry-run", action="store_true")
         parser.add_argument("--execute", action="store_true")
-        parser.add_argument(
-            "--vla-preview",
-            action="store_true",
-            help="subscribe to live RGB and arm state without creating an arm command publisher",
-        )
         obsolete = {"--viewer-port", "--arm-url", "--arm-token-file", "--depth-ws"}
         used_obsolete = sorted(
             token.split("=", 1)[0] for token in args if token.split("=", 1)[0] in obsolete
@@ -306,43 +210,7 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
             "RESEARCH_NOTES": namespace.research_notes,
             "RESEARCH_RECORD": "0" if namespace.no_research_record else None,
             "EXECUTE": "1" if namespace.execute else ("0" if namespace.dry_run else None),
-            "VLA_PREVIEW": "1" if namespace.vla_preview else None,
         }
-    elif route.target == "scripts/local/start.sh":
-        parser.add_argument("--source", choices=("camera", "opencv", "realsense", "file"), default="camera")
-        parser.add_argument("--device")
-        parser.add_argument("--pipeline")
-        parser.add_argument("--model")
-        parser.add_argument("--host")
-        parser.add_argument("--port", type=int)
-        parser.add_argument("--imgsz", type=int)
-        parser.add_argument("--conf", type=float)
-        parser.add_argument("--infer-every", type=int)
-        parser.add_argument("--jpeg-quality", type=int)
-        parser.add_argument("--max-det", type=int)
-        namespace = parser.parse_args(args)
-        if namespace.source == "opencv":
-            launcher = root / "scripts/local/opencv.sh"
-        mappings = {
-            "DEVICE": namespace.device,
-            "PIPELINE": namespace.pipeline,
-            "MODEL": namespace.model,
-            "HOST": namespace.host,
-            "PORT": namespace.port,
-            "IMGSZ": namespace.imgsz,
-            "CONF": namespace.conf,
-            "INFER_EVERY": namespace.infer_every,
-            "JPEG_QUALITY": namespace.jpeg_quality,
-            "MAX_DET": namespace.max_det,
-        }
-        if namespace.source == "realsense" and not namespace.pipeline:
-            device = namespace.device or "/dev/video0"
-            mappings["PIPELINE"] = (
-                f"v4l2src device={device} io-mode=2 ! image/jpeg,width=640,height=480,framerate=30/1 "
-                "! jpegdec ! videoconvert ! videoscale ! video/x-raw,width=640,height=360,format=BGR "
-                "! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream "
-                "! appsink sync=false drop=true max-buffers=1"
-            )
     else:  # pragma: no cover - only role launchers call this helper.
         return launcher, list(args), env
 
@@ -362,7 +230,7 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
 def _run(route: Route, args: Sequence[str]) -> int:
     root = _repo_root()
     forwarded = [*route.prefix, *args]
-    role_targets = {"scripts/robot/start.sh", "scripts/gb10/start.sh", "scripts/local/start.sh"}
+    role_targets = {"scripts/robot/start.sh", "scripts/gb10/start.sh"}
     if route.kind == "script" and route.target not in role_targets and list(args) == ["--help"]:
         print(route.description)
         print("This workflow is a host-specific shell launcher; see docs/COMMANDS.md for usage.")
@@ -377,7 +245,7 @@ def _run(route: Route, args: Sequence[str]) -> int:
             sys.argv = old_argv
         return int(result or 0)
     else:
-        if route.target in {"scripts/robot/start.sh", "scripts/gb10/start.sh", "scripts/local/start.sh"}:
+        if route.target in role_targets:
             launcher, forwarded, environment = _role_launcher(route, args)
         else:
             launcher = root / route.target

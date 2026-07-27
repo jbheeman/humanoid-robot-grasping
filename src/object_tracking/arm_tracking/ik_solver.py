@@ -665,8 +665,6 @@ class G1RightArmIK:
         self,
         begin: np.ndarray,
         end: np.ndarray,
-        initial_pairs: set[int],
-        baseline_distances: dict[int, float],
         *,
         step_rad: float = 0.0005,
         numerical_tolerance_m: float = 0.00005,
@@ -789,8 +787,6 @@ class G1RightArmIK:
             if self._hand_hip_edge_is_exit_only(
                 start_q,
                 candidate,
-                initial,
-                baseline_distances,
             ) is not None:
                 return False
             if time.monotonic() >= deadline:
@@ -1572,8 +1568,6 @@ class G1RightArmIK:
                 escape_error = self._hand_hip_edge_is_exit_only(
                     begin,
                     end,
-                    initial_collisions,
-                    baseline_distances,
                     require_cleared_end=False,
                 )
                 if escape_error:

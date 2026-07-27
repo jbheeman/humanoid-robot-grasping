@@ -13,14 +13,11 @@ fi
 MODEL="${MODEL:-${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quality_12h_b24/weights/best.engine}"
 ROBOT_HOST="${ROBOT_HOST:-}"
 ROS_INTERFACE="${ROS_INTERFACE:-auto}"
-# Manual arm control runs in domain 42. Vision-pointing overrides this process
-# to depth domain 43 to keep the large depth stream isolated from arm control.
+# Project DDS domain shared by the GB10 tracker and robot bridge.
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
 # Normal tracking uses the robot launcher's split project process, which runs
 # CycloneDDS independently from native Unitree SDK2. Keep the GB10 on the same
 # RMW so the large custom depth message is discoverable and deserializable.
-# Commissioning/vision-pointing explicitly override this below for their
-# legacy Fast DDS channels.
 export RMW_IMPLEMENTATION="${G1_PROJECT_RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 UDP_PORT="${UDP_PORT:-5600}"
 HOST="${HOST:-0.0.0.0}"
@@ -58,21 +55,12 @@ RESEARCH_NOTES="${RESEARCH_NOTES:-}"
 # to compare a new checkpoint; the launcher should exercise this by default.
 TRAJECTORY_MODEL="${TRAJECTORY_MODEL:-${ROOT_DIR}/models/plushie_detector/trajectory_gru_synth_pretrain_17h/best.pt}"
 GB10_LAN_IP="${GB10_LAN_IP:-}"
-ARM_COMMISSIONING=0
-VISION_POINTING=0
-# This is also set by the unified `g1 gb10 start --vla-preview` wrapper.
-# Preserve an explicit environment value so that wrapper does not need to
-# forward an implementation-only script flag.
-VLA_PREVIEW="${VLA_PREVIEW:-0}"
 server_args=()
 
 while (($#)); do
   case "$1" in
-    --arm-commissioning) ARM_COMMISSIONING=1 ;;
-    --vision-pointing) VISION_POINTING=1 ;;
-    --vla-preview) VLA_PREVIEW=1 ;;
     -h|--help)
-      echo "Usage: scripts/gb10/start.sh [--arm-commissioning|--vision-pointing|--vla-preview] [server options]"
+      echo "Usage: scripts/gb10/start.sh [server options]"
       exit 0
       ;;
     *) server_args+=("$1") ;;
@@ -81,13 +69,7 @@ while (($#)); do
 done
 
 source "${ROOT_DIR}/scripts/shared/run-logging.sh"
-if [[ "${VISION_POINTING}" == "1" ]]; then
-  log_component="gb10-vision-pointing"
-elif [[ "${ARM_COMMISSIONING}" == "1" ]]; then
-  log_component="gb10-arm-commissioning"
-else
-  log_component="gb10-vision"
-fi
+log_component="gb10-vision"
 g1_begin_run_log "${ROOT_DIR}" "${log_component}"
 g1_log_command "$0" "${original_args[@]}"
 server_launched=0
@@ -99,32 +81,6 @@ finish_log() {
   fi
 }
 trap finish_log EXIT
-
-if [[ "${VISION_POINTING}" == "1" && -z "${CALIBRATION}" ]]; then
-  CALIBRATION="${ROOT_DIR}/runs/localization/g1-tabletop-calibration.json"
-fi
-if [[ "${VISION_POINTING}" == "1" ]]; then
-  # Match the existing D435I NVENC service without an unnecessary 720p
-  # upscale or a 30 Hz capture cap. YOLO FPS remains a separate metric.
-  VISION_WIDTH=960
-  VISION_HEIGHT=540
-  VISION_FPS=60
-  STREAM_FPS=60
-  # Depth is a large custom ROS message.  Match the G1 depth process with
-  # Fast DDS; this is the same cross-distro transport used by arm-remote.
-  export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-  ROS_DOMAIN_ID="${G1_DEPTH_ROS_DOMAIN_ID:-43}"
-fi
-
-if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
-  # The stock robot's Foxy participant is stable with Jazzy only when both
-  # sides of the manual arm channel use Fast DDS.
-  export RMW_IMPLEMENTATION=rmw_fastrtps_cpp
-  if [[ "${EXECUTE}" == "1" ]]; then
-    echo "--arm-commissioning cannot be combined with EXECUTE=1 tracking." >&2
-    exit 2
-  fi
-fi
 
 if [[ -z "${ROBOT_HOST}" ]]; then
   echo "ROBOT_HOST (the robot address) is required." >&2
@@ -148,12 +104,6 @@ if [[ ! -f "${MODEL}" ]]; then
   echo "Set MODEL to an existing checkpoint on the GB10." >&2
   exit 1
 fi
-if [[ "${VISION_POINTING}" == "1" && ! -f "${CALIBRATION}" ]]; then
-  echo "Vision pointing calibration not found: ${CALIBRATION}" >&2
-  echo "Set CALIBRATION to the validated D435I camera-to-torso artifact." >&2
-  exit 1
-fi
-
 required_plugins=(udpsrc rtph264depay h264parse avdec_h264 videoconvert videoscale fdsink)
 if ! command -v gst-inspect-1.0 >/dev/null 2>&1; then
   echo "gst-inspect-1.0 is required on the GB10. Run uv run g1 setup gb10" >&2
@@ -186,15 +136,6 @@ export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 PIPELINE="${PIPELINE:-udpsrc address=0.0.0.0 port=${UDP_PORT} buffer-size=1048576 ! application/x-rtp,media=video,encoding-name=H264,clock-rate=90000 ! queue ! rtpjitterbuffer latency=20 drop-on-latency=true ! rtph264depay ! h264parse ! avdec_h264 max-threads=8 ! videoconvert ! videoscale ! video/x-raw,width=${VISION_WIDTH},height=${VISION_HEIGHT},format=BGR ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! appsink sync=false drop=true max-buffers=1}"
 
 tracking_args=(--target-hz "${TARGET_HZ}")
-if [[ "${VISION_POINTING}" == "1" || "${VLA_PREVIEW}" == "1" ]]; then
-  if [[ "${VLA_PREVIEW}" == "1" ]]; then
-    # Keep fresh measured arm state available to the VLA while leaving it as
-    # the sole owner of all command and control publishers.
-    tracking_args+=(--ros-observe-only)
-  else
-    tracking_args+=(--ros-depth-only)
-  fi
-fi
 if [[ -n "${CALIBRATION}" ]]; then
   tracking_args+=(--calibration "${CALIBRATION}")
 fi
@@ -291,22 +232,12 @@ echo "YOLO model:          ${MODEL}"
 echo "Tracking profile:    ${VISION_WIDTH}x${VISION_HEIGHT} at ${VISION_FPS} FPS"
 echo "Movement requested:  ${EXECUTE} (robot safety gates still apply)"
 echo "Nominal plane fallback: ${ALLOW_NOMINAL_SUPPORT_PLANE}"
-echo "Arm commissioning:    ${ARM_COMMISSIONING}"
-echo "Vision pointing:      ${VISION_POINTING} (planner ready; startup never moves the arm)"
-echo "VLA preview:          ${VLA_PREVIEW} (observations only; no arm-control publisher)"
 echo "Research recording:  ${RESEARCH_RECORD} at ${RESEARCH_HZ} Hz"
 echo "Trajectory model:    ${TRAJECTORY_MODEL:-alpha-beta fallback only}"
 echo "Process log:         ${G1_ACTIVE_LOG_FILE}"
 echo
 echo "Open the single GB10 UI:"
 echo "  http://${DISPLAY_HOST}:${PORT}/"
-echo "Commissioning:"
-if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
-  echo "  manual ROS bridge mode; use scripts/gb10/arm-remote.sh"
-else
-  echo "  http://${DISPLAY_HOST}:${PORT}/commissioning/"
-fi
-echo
 echo "For off-LAN access, tunnel only this UI port:"
 echo "  ssh -N -L ${PORT}:127.0.0.1:${PORT} ${USER:-USER}@${DISPLAY_HOST}"
 echo "  http://127.0.0.1:${PORT}/"

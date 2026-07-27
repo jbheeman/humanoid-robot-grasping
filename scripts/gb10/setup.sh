@@ -49,7 +49,7 @@ set +u
 source "${ROS_SETUP}"
 set -u
 if ! ros2 pkg prefix rmw_fastrtps_cpp >/dev/null 2>&1; then
-  echo "Install the Fast DDS RMW used by cross-version manual arm control:"
+  echo "Install the Fast DDS RMW used by the depth-only diagnostic mode:"
   echo "  sudo apt-get install ros-${GB10_ROS_DISTRO}-rmw-fastrtps-cpp"
   exit 1
 fi
@@ -79,7 +79,7 @@ else
 fi
 
 "${ROOT_DIR}/scripts/dev/fetch-arm-assets.sh"
-"${VENV_DIR}/bin/g1" assets build --target gb10
+"${VENV_DIR}/bin/g1" assets build
 
 "${VENV_DIR}/bin/python" - <<'PY'
 import cv2
@@ -105,7 +105,15 @@ print("Unitree/project ROS interfaces: ready")
 PY
 
 echo "Auditing G1 29-DOF URDF joint order and limits"
-"${VENV_DIR}/bin/g1-tune" joint-audit
+"${VENV_DIR}/bin/python" - <<'PY'
+from object_tracking.arm_tracking.ik_solver import default_urdf_path
+from object_tracking.arm_tracking.joints import audit_urdf
+
+result = audit_urdf(default_urdf_path())
+if not result.ok:
+    raise SystemExit(result.message)
+print(result.message)
+PY
 
 echo
 echo "GB10 vision/UI and ROS 2 environment is ready."

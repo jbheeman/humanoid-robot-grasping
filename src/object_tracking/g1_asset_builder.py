@@ -336,22 +336,16 @@ def build_assets(urdf_path: Path, output: Path, *, vendor_dir: Path | None = Non
 
 def main(argv=None) -> int:
     parser = argparse.ArgumentParser(description="Build ignored, offline G1 browser assets")
-    parser.add_argument("--target", choices=("robot", "gb10", "all"), default="all")
     parser.add_argument("--urdf", type=Path)
     parser.add_argument("--output", type=Path, help="single output override (tests/custom builds)")
     parser.add_argument("--vendor-dir", type=Path)
     args = parser.parse_args(argv)
     root = Path(__file__).resolve().parents[2]
     urdf = args.urdf or root / ".deps/xr_teleoperate/assets/g1/g1_body29_hand14.urdf"
-    outputs = [args.output] if args.output else [
-        root / f"scripts/{target}/web/visual"
-        for target in (("robot", "gb10") if args.target == "all" else (args.target,))
-    ]
-    for output in outputs:
-        assert output is not None
-        report = build_assets(urdf, output, vendor_dir=args.vendor_dir)
-        state = "cache hit" if report["cache_hit"] else "built"
-        print(f"{output}: {state} ({report.get('bundle_bytes', 'unchanged')} bytes)")
+    output = args.output or root / "scripts/gb10/web/visual"
+    report = build_assets(urdf, output, vendor_dir=args.vendor_dir)
+    state = "cache hit" if report["cache_hit"] else "built"
+    print(f"{output}: {state} ({report.get('bundle_bytes', 'unchanged')} bytes)")
     return 0
 
 

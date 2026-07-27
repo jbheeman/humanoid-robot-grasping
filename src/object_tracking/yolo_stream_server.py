@@ -206,7 +206,7 @@ def torch_cuda_available() -> bool:
     return bool(torch is not None and torch.cuda.is_available())
 
 
-def require_training_stack() -> tuple[Any, Any]:
+def require_inference_stack() -> tuple[Any, Any]:
     try:
         import torch
         from ultralytics import YOLO
@@ -471,7 +471,7 @@ def _inference_loop(
     infer_every: int,
     max_det: int,
 ) -> None:
-    torch, YOLO = require_training_stack()
+    torch, YOLO = require_inference_stack()
     device = "cuda" if torch.cuda.is_available() else "cpu"
     print("Loading YOLO model:", model_name)
     print("YOLO device:", device)
@@ -1334,7 +1334,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--research-hz",
         type=float,
         default=15.0,
-        help="Structured telemetry sampling rate (default: 15 Hz, suitable for trajectory training)",
+        help="Structured telemetry sampling rate (default: 15 Hz)",
     )
     parser.add_argument("--research-label", default="", help="Human-readable experiment label")
     parser.add_argument("--research-notes", default="", help="Short experimental condition notes")

@@ -229,7 +229,6 @@ def test_depth_message_is_bounded_and_decoded() -> None:
         calibration_id="calibration",
         registered_to_rgb=True,
     )
-    decoded = codec.decode(envelope)
     message = SimpleNamespace(data=envelope)
     runner.node.callbacks["/g1/depth_wire"](message)
 

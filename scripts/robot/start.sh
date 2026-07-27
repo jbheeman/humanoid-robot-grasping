@@ -18,8 +18,6 @@ RGB_MODE="${RGB_MODE:-unitree}"
 ALLOW_MOVEMENT="${ALLOW_MOVEMENT:-0}"
 EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-}"
 G1_ROBOT_ID="${G1_ROBOT_ID:-}"
-ARM_COMMISSIONING=0
-VISION_POINTING=0
 # The robot's RealSense exposes depth directly but not a usable ROS-aligned
 # RGB stream. Prefer that known-good source; operators can explicitly request
 # --depth-source ros when an aligned sensor_msgs/Image pipeline is present.
@@ -39,33 +37,7 @@ REALSENSE_RGB_FPS="${REALSENSE_RGB_FPS:-60}"
 DEPTH_SERIAL="${DEPTH_SERIAL:-}"
 DISABLE_DEPTH="${DISABLE_DEPTH:-0}"
 QUIET_HEALTHY_DEPTH="${QUIET_HEALTHY_DEPTH:-0}"
-usage() {
-  echo "Usage: scripts/robot/start.sh [--arm-commissioning|--vision-pointing]" >&2
-}
-
-while (($#)); do
-  case "$1" in
-    --arm-commissioning) ARM_COMMISSIONING=1 ;;
-    --vision-pointing) ARM_COMMISSIONING=1; VISION_POINTING=1 ;;
-    -h|--help) usage; exit 0 ;;
-    *) echo "Unknown robot launcher argument: $1" >&2; usage; exit 2 ;;
-  esac
-  shift
-done
-
 CONTROL_MODE="tracking"
-if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
-  CONTROL_MODE="manual"
-  ALLOW_MOVEMENT=1
-  EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-ai}"
-fi
-if [[ "${VISION_POINTING}" == "1" ]]; then
-  # Preserve the proven zero-copy V4L2 -> NVENC camera service. The project
-  # node captures depth only, while the existing multicast stream supplies
-  # RGB at the sensor's native 960x540@60 profile.
-  RGB_MODE="highfps-service"
-  DEPTH_SOURCE="librealsense"
-fi
 # The split tracking relay matches GB10's CycloneDDS RMW.  Native SDK2 owns a
 # different CycloneDDS process and domain, so the two implementations no
 # longer load into one interpreter.  Legacy combined modes retain Fast DDS.
@@ -91,16 +63,6 @@ if [[ "${ALLOW_MOVEMENT}" == "1" && -z "${EXPECTED_MOTION_MODE}" ]]; then
   echo "EXPECTED_MOTION_MODE is required when ALLOW_MOVEMENT=1." >&2
   exit 1
 fi
-if [[ "${VISION_POINTING}" == "1" ]] && \
-   ! systemctl is-active --quiet g1-highfps-camera.service; then
-  echo "The native 60 FPS camera publisher is not running." >&2
-  echo "Run: sudo systemctl enable --now g1-highfps-camera.service" >&2
-  exit 1
-fi
-if [[ "${VISION_POINTING}" == "1" ]]; then
-  exec "${ROOT_DIR}/scripts/robot/vision-pointing.sh"
-fi
-
 pids=()
 cleanup() {
   local pid
@@ -293,12 +255,6 @@ fi
 echo "Robot ROS 2 node started control_mode=${CONTROL_MODE} movement_permitted=${ALLOW_MOVEMENT} initial_state=DISARMED."
 if [[ "${CONTROL_MODE}" == "tracking" ]]; then
   echo "Arm transport split: XR Python native worker ${NATIVE_ARM_SOCKET}; Foxy ROS JSON relay."
-fi
-if [[ "${ARM_COMMISSIONING}" == "1" ]]; then
-  echo "Arm commissioning enabled: manual ROS commands are allowed but remain disarmed until a client enables a session."
-fi
-if [[ "${VISION_POINTING}" == "1" ]]; then
-  echo "Vision pointing transport enabled: native 60 FPS RGB relay, RealSense depth, and XR manual arm ROS bridge."
 fi
 echo "ROS domain ${ROS_DOMAIN_ID}; interface ${ROBOT_INTERFACE}; static peers ${CLIENT_IP}, ${UNITREE_CONTROL_PEER}."
 echo "RGB remains RTP/UDP ${CLIENT_IP}:${CLIENT_PORT:-5600}; the robot exposes no HTTP server."
