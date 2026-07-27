@@ -40,6 +40,9 @@ from .visualization import visualization_state
 StatusCallback = Callable[[dict[str, Any], bytes | None], None]
 SnapshotCallback = Callable[[], dict[str, Any]]
 _SUPPORT_PLANE_GRACE_S = 5.000
+# Plane fitting is CPU-heavy and the tabletop cannot physically change at the
+# 20 Hz arm-servo rate. Reuse a recent validated result between 1 Hz refreshes.
+_SUPPORT_PLANE_REFRESH_S = 1.000
 # The table is localized immediately before arming and remains physically
 # fixed during one operator demo. Avoid rerunning expensive plane fitting in
 # the realtime path midway through that session.
@@ -966,7 +969,8 @@ class ArmTrackingRuntime:
                 measured_edge_error = self.ik.validate_joint_path(
                     (last_q, waypoint),
                     support_plane=plane,
-                    edge_step_rad=0.005,
+                    edge_step_rad=0.010,
+                    semantic_edge_step_rad=0.0025,
                     require_escape_cleared=False,
                 )
                 if measured_edge_error is not None:
@@ -1312,6 +1316,12 @@ class ArmTrackingRuntime:
         freeze: bool = False,
     ) -> SupportRegion | None:
         now = time.monotonic()
+        if (
+            not freeze
+            and self.last_support_plane is not None
+            and now - self.last_support_plane_at <= _SUPPORT_PLANE_REFRESH_S
+        ):
+            return self.last_support_plane
         if (
             freeze
             and self.last_support_plane is not None

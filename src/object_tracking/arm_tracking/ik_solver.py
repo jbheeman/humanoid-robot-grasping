@@ -1774,6 +1774,7 @@ class G1RightArmIK:
         *,
         support_plane: Any | None = None,
         edge_step_rad: float = 0.0025,
+        semantic_edge_step_rad: float = 0.0005,
         deadline_s: float | None = None,
         require_escape_cleared: bool = True,
     ) -> str | None:
@@ -1789,6 +1790,8 @@ class G1RightArmIK:
             len(knots) < 2
             or not math.isfinite(edge_step_rad)
             or edge_step_rad <= 0.0
+            or not math.isfinite(semantic_edge_step_rad)
+            or semantic_edge_step_rad <= 0.0
             or (deadline_s is not None and not math.isfinite(deadline_s))
         ):
             return "invalid_joint_path"
@@ -1824,6 +1827,7 @@ class G1RightArmIK:
                 escape_error = self._hand_hip_edge_is_exit_only(
                     begin,
                     end,
+                    step_rad=semantic_edge_step_rad,
                     require_cleared_end=False,
                 )
                 if escape_error:
@@ -1831,6 +1835,7 @@ class G1RightArmIK:
             elif maximum_delta > 0.025 and not self._hand_hip_edge_is_strictly_clear(
                 begin,
                 end,
+                step_rad=semantic_edge_step_rad,
             ):
                 return "hand_hip_collision_reentry"
             steps = max(1, int(np.ceil(np.max(np.abs(end - begin)) / edge_step_rad)))

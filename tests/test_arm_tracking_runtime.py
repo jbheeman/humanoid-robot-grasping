@@ -574,7 +574,7 @@ def test_runtime_receives_depth_from_injected_transport(tmp_path: Path) -> None:
     assert transport.closed is True
 
 
-def test_runtime_reuses_recent_support_plane_after_one_bad_frame(tmp_path: Path) -> None:
+def test_runtime_reuses_recent_support_plane_without_refitting(tmp_path: Path) -> None:
     calibration_path = tmp_path / "calibration.yaml"
     save_calibration_atomic(_calibration(), calibration_path)
     runtime = ArmTrackingRuntime(
@@ -595,7 +595,7 @@ def test_runtime_reuses_recent_support_plane_after_one_bad_frame(tmp_path: Path)
     result = runtime._support_plane(np.ones((3, 4), dtype=np.uint16), 0.001)
 
     assert result is cached
-    assert runtime.last_support_plane_error is not None
+    assert runtime.last_support_plane_error is None
 
 
 def test_runtime_rescales_clicked_corners_to_active_rgb_profile(tmp_path: Path) -> None:
