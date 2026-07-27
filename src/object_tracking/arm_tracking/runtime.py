@@ -472,6 +472,7 @@ class ArmTrackingRuntime:
         base_status: dict[str, Any] = {
             "enabled": True,
             "mode": "execute" if self.config.execute else "dry-run",
+            **getattr(self.transport, "depth_diagnostics", lambda: {})(),
             "depth_sequence": frame.sequence,
             "depth_age_ms": round(age_ms, 3),
             "pair_skew_ms": round(skew_s * 1000.0, 3),
