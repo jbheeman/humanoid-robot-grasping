@@ -232,8 +232,8 @@ def select_start_escape_waypoint(
     path: Sequence[Sequence[float]],
     target_index: int,
     *,
-    reached_tolerance_rad: float = 0.025,
-    tracking_tolerance_rad: float = 0.025,
+    reached_tolerance_rad: float = 0.050,
+    tracking_tolerance_rad: float = 0.050,
 ) -> tuple[tuple[float, ...] | None, int, str | None]:
     """Select one bounded escape waypoint using measured, not commanded, pose."""
 
@@ -248,7 +248,7 @@ def select_start_escape_waypoint(
     ):
         return None, target_index, "invalid_escape_path"
     index = target_index
-    while (
+    if (
         index < len(knots)
         and float(np.max(np.abs(measured - knots[index]))) <= reached_tolerance_rad
     ):
@@ -958,6 +958,22 @@ class ArmTrackingRuntime:
                 self._approach_target_xyz = None
                 self._reject(base_status, f"ik_{selection_error}", colormap)
                 return
+            if waypoint is not None:
+                measured_edge_error = self.ik.validate_joint_path(
+                    (last_q, waypoint),
+                    support_plane=plane,
+                    edge_step_rad=0.005,
+                    require_escape_cleared=False,
+                )
+                if measured_edge_error is not None:
+                    self._approach_path = None
+                    self._approach_target_xyz = None
+                    self._reject(
+                        base_status,
+                        f"ik_measured_edge:{measured_edge_error}",
+                        colormap,
+                    )
+                    return
             if waypoint is None:
                 self._approach_path = None
                 self._approach_target_index = 1

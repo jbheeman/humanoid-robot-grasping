@@ -369,7 +369,7 @@ def test_execute_rejects_intercept_profile_not_physically_validated(
         )
 
 
-def test_start_escape_waypoint_waits_for_measured_progress() -> None:
+def test_start_escape_waypoint_uses_one_knot_measured_lookahead() -> None:
     path = (
         (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         (0.0, -0.04, 0.0, 0.0, 0.0, 0.0, 0.0),
@@ -377,8 +377,8 @@ def test_start_escape_waypoint_waits_for_measured_progress() -> None:
     )
 
     waypoint, index, error = select_start_escape_waypoint(path[0], path, 1)
-    assert waypoint == path[1]
-    assert index == 1
+    assert waypoint == path[2]
+    assert index == 2
     assert error is None
 
     waypoint, index, error = select_start_escape_waypoint(path[1], path, 1)
@@ -414,6 +414,7 @@ def test_start_escape_waypoint_accepts_asynchronous_joint_progress() -> None:
         (0.0, -0.005, 0.0, 0.0, 0.0, 0.0, 0.024),
         path,
         1,
+        reached_tolerance_rad=0.015,
     )
 
     assert waypoint == path[1]
@@ -430,6 +431,24 @@ def test_start_escape_waypoint_advances_past_observed_servo_residual() -> None:
 
     waypoint, index, error = select_start_escape_waypoint(
         (0.0, -0.02468, 0.0, 0.0, 0.0, 0.0, 0.0),
+        path,
+        1,
+    )
+
+    assert waypoint == path[2]
+    assert index == 2
+    assert error is None
+
+
+def test_start_escape_waypoint_advances_past_larger_loaded_servo_residual() -> None:
+    path = (
+        (0.0, -0.30, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.0, -0.34, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.0, -0.38, 0.0, 0.0, 0.0, 0.0, 0.0),
+    )
+
+    waypoint, index, error = select_start_escape_waypoint(
+        (0.0, -0.31377, 0.0, 0.0, 0.0, 0.0, 0.0),
         path,
         1,
     )

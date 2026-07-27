@@ -1775,6 +1775,7 @@ class G1RightArmIK:
         support_plane: Any | None = None,
         edge_step_rad: float = 0.0025,
         deadline_s: float | None = None,
+        require_escape_cleared: bool = True,
     ) -> str | None:
         """Validate a short, already-planned path without invoking RRT or IK.
 
@@ -1859,8 +1860,9 @@ class G1RightArmIK:
                     return "link_support_region_clearance"
             if escaping:
                 escaping = bool(self._collision_pairs(end))
-        if escaping or (
-            started_escaping and self._right_hand_hip_clearance(path[-1]) < 0.01
+        if require_escape_cleared and (
+            escaping
+            or (started_escaping and self._right_hand_hip_clearance(path[-1]) < 0.01)
         ):
             return "start_collision_not_cleared"
         return None
