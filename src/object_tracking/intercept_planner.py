@@ -45,6 +45,11 @@ class InterceptConfig:
     maximum_orientation_error_rad: float = math.radians(25.0)
 
     def __post_init__(self) -> None:
+        nonnegative = (
+            self.compute_delay_s,
+            self.command_delay_s,
+            self.settle_time_s,
+        )
         positive = (
             self.maximum_palm_speed_m_s,
             self.maximum_palm_acceleration_m_s2,
@@ -55,9 +60,7 @@ class InterceptConfig:
             self.maximum_orientation_error_rad,
         )
         if (
-            self.compute_delay_s < 0
-            or self.command_delay_s < 0
-            or self.settle_time_s < 0
+            any(not math.isfinite(value) or value < 0 for value in nonnegative)
             or any(not math.isfinite(value) or value <= 0 for value in positive)
         ):
             raise ValueError("intercept configuration values are invalid")

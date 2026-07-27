@@ -40,6 +40,24 @@ def test_translation_jacobian_rejects_unknown_backend() -> None:
         )
 
 
+def test_zero_motion_local_ik_still_validates_current_collision_edge() -> None:
+    solver = object.__new__(G1RightArmIK)
+    solver.forward_kinematics = lambda q: np.eye(4)  # type: ignore[method-assign]
+    solver.validate_joint_path = (  # type: ignore[method-assign]
+        lambda knots, **kwargs: "link_support_region_clearance"
+    )
+
+    result = solver.solve_local_translation(
+        np.eye(4),
+        np.zeros(7),
+        support_plane=object(),
+    )
+
+    assert not result.ok
+    assert result.q_rad is None
+    assert result.reason == "link_support_region_clearance"
+
+
 def test_collision_aware_path_detours_around_blocked_direct_edge() -> None:
     def valid(q: np.ndarray) -> bool:
         return not (0.35 < q[0] < 0.65 and abs(q[1]) < 0.22)

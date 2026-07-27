@@ -96,6 +96,34 @@ def test_gb10_vla_preview_configures_observation_only_launcher() -> None:
     assert env["VLA_PREVIEW"] == "1"
 
 
+def test_gb10_intercept_profile_is_forwarded_without_implying_execute() -> None:
+    launcher, forwarded, env = _role_launcher(
+        ROUTES[("gb10", "start")],
+        [
+            "--calibration",
+            "/tmp/camera-calibration.yaml",
+            "--intercept-config",
+            "/tmp/demo-lane.yaml",
+            "--dry-run",
+        ],
+    )
+
+    assert launcher.name == "start.sh"
+    assert forwarded == []
+    assert env["CALIBRATION"] == "/tmp/camera-calibration.yaml"
+    assert env["INTERCEPT_CONFIG"] == "/tmp/demo-lane.yaml"
+    assert env["EXECUTE"] == "0"
+
+
+def test_gb10_default_does_not_enable_interception() -> None:
+    _launcher, _forwarded, env = _role_launcher(
+        ROUTES[("gb10", "start")],
+        ["--dry-run"],
+    )
+
+    assert "INTERCEPT_CONFIG" not in env
+
+
 def test_removed_robot_http_flags_have_migration_error() -> None:
     with pytest.raises(SystemExit):
         _role_launcher(

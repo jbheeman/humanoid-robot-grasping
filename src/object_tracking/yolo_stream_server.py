@@ -67,6 +67,59 @@ COMMISSIONING_TEMPLATE = REPO_ROOT / "scripts" / "robot" / "web" / "arm_commissi
 TABLETOP_CALIBRATION_PATH = REPO_ROOT / "runs" / "localization" / "tabletop-rectangle.json"
 
 
+@dataclass(frozen=True)
+class ProcessedFrameBundle:
+    """One immutable detector result tied to the exact copied RGB frame."""
+
+    frame_id: int
+    frame_receipt_monotonic_s: float
+    frame_shape: tuple[int, ...]
+    inference_started_monotonic_s: float
+    inference_completed_monotonic_s: float
+    detections: tuple[dict[str, Any], ...]
+    tracks: tuple[dict[str, Any], ...]
+
+    def __post_init__(self) -> None:
+        if self.frame_id < 0:
+            raise ValueError("processed frame_id must be non-negative")
+        timing = (
+            self.frame_receipt_monotonic_s,
+            self.inference_started_monotonic_s,
+            self.inference_completed_monotonic_s,
+        )
+        if (
+            not all(np.isfinite(value) and value >= 0.0 for value in timing)
+            or self.inference_started_monotonic_s < self.frame_receipt_monotonic_s
+            or self.inference_completed_monotonic_s < self.inference_started_monotonic_s
+        ):
+            raise ValueError("processed frame monotonic timing is invalid")
+        if len(self.frame_shape) not in (2, 3) or any(value <= 0 for value in self.frame_shape):
+            raise ValueError("processed frame shape is invalid")
+        if any(int(track.get("missed_updates", 0)) != 0 for track in self.tracks):
+            raise ValueError("processed frame contains a retained stale track")
+
+
+def current_detection_tracks(
+    tracks: list[dict[str, Any]],
+) -> tuple[dict[str, Any], ...]:
+    """Copy only tracks supported by a detection in this inference batch."""
+
+    return tuple(
+        dict(track)
+        for track in tracks
+        if int(track.get("missed_updates", 0)) == 0
+    )
+
+
+def processed_frame_is_newer(
+    existing: ProcessedFrameBundle | None,
+    candidate: ProcessedFrameBundle,
+) -> bool:
+    """Reject duplicate/out-of-order detector publications."""
+
+    return existing is None or candidate.frame_id > existing.frame_id
+
+
 @dataclass
 class SharedState:
     raw_frame: Optional[np.ndarray] = None
@@ -75,6 +128,7 @@ class SharedState:
     jpeg_bytes: Optional[bytes] = None
     latest_detections: list[dict[str, Any]] = field(default_factory=list)
     latest_tracks: list[dict[str, Any]] = field(default_factory=list)
+    processed_frame: Optional[ProcessedFrameBundle] = None
     tabletop_localization: dict[str, Any] = field(
         default_factory=lambda: {"configured": False, "status": "not_configured"}
     )
@@ -476,7 +530,9 @@ def _inference_loop(
                 continue
             frame = state.raw_frame.copy()
             frame_number = state.frame_count
+            frame_received_monotonic = state.raw_frame_received_monotonic
 
+        inference_started_monotonic = time.monotonic()
         inference_timestamp = time.time()
         with torch.inference_mode():
             results = model.predict(
@@ -498,7 +554,18 @@ def _inference_loop(
             for box in boxes:
                 detections.append(make_detection(box, names, inference_timestamp, frame_number))
 
-        tracks = tracker.update(detections, inference_timestamp)
+        tracks = tracker.update(detections, frame_received_monotonic)
+        current_tracks = current_detection_tracks(tracks)
+        inference_completed_monotonic = time.monotonic()
+        processed = ProcessedFrameBundle(
+            frame_id=frame_number,
+            frame_receipt_monotonic_s=frame_received_monotonic,
+            frame_shape=tuple(int(value) for value in frame.shape),
+            inference_started_monotonic_s=inference_started_monotonic,
+            inference_completed_monotonic_s=inference_completed_monotonic,
+            detections=tuple(dict(detection) for detection in detections),
+            tracks=current_tracks,
+        )
         last_processed_frame_id = frame_number
         yolo_since_fps += 1
 
@@ -510,9 +577,12 @@ def _inference_loop(
             last_yolo_time = now
 
         with frame_ready:
+            if not processed_frame_is_newer(state.processed_frame, processed):
+                continue
             state.latest_detections = detections
             state.latest_tracks = tracks
-            state.tabletop_localization = tabletop_localization(tracks)
+            state.processed_frame = processed
+            state.tabletop_localization = tabletop_localization(list(current_tracks))
             state.yolo_count += 1
             if yolo_fps is not None:
                 state.yolo_fps = yolo_fps
@@ -736,10 +806,16 @@ def arm_enable_api(payload: dict[str, Any]) -> dict[str, Any]:
     calibration_id = str(payload.get("calibration_id") or "")
     if not session_id or not calibration_id:
         raise HTTPException(status_code=422, detail="session_id and calibration_id are required")
-    return _transport_call(
+    if arm_runtime is not None:
+        # Release any prior latched interception before enabling the new
+        # session. Resetting after enable could immediately stop the session
+        # that the operator just created.
+        arm_runtime.reset_intercept()
+    report = _transport_call(
         "arm enable",
         lambda: transport.enable_arm(session_id, calibration_id),
     )
+    return report
 
 
 @app.post("/api/v1/arm/stop")
@@ -752,6 +828,14 @@ def arm_stop_api(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "reason": reason}
 
     return _transport_call("arm stop", stop)
+
+
+@app.post("/api/v1/intercept/reset")
+def intercept_reset_api() -> dict[str, Any]:
+    if arm_runtime is None:
+        raise HTTPException(status_code=503, detail="arm tracking runtime is unavailable")
+    arm_runtime.reset_intercept()
+    return {"ok": True, "state": "ACQUIRING"}
 
 
 @app.get("/api/v1/commissioning/state")
@@ -1223,6 +1307,14 @@ def build_parser() -> argparse.ArgumentParser:
         help="Optional trained 3D trajectory checkpoint; invalid/insufficient history falls back to alpha-beta",
     )
     parser.add_argument(
+        "--intercept-config",
+        help=(
+            "Versioned, calibration-bound fixed-lane interception profile. "
+            "Omit to preserve continuous tracking mode; movement still requires "
+            "robot-side permission and --execute."
+        ),
+    )
+    parser.add_argument(
         "--execute",
         action="store_true",
         help="Publish arm targets only after every calibration and health gate passes",
@@ -1263,10 +1355,23 @@ def assert_port_available(host: str, port: int) -> None:
 
 def arm_tracking_snapshot() -> dict[str, Any]:
     with state.lock:
+        processed = state.processed_frame
+        if processed is None:
+            return {
+                "rgb_receipt_time_s": 0.0,
+                "rgb_shape": None,
+                "rgb_frame_id": None,
+                "inference_started_monotonic_s": None,
+                "inference_completed_monotonic_s": None,
+                "tracks": [],
+            }
         return {
-            "rgb_receipt_time_s": state.raw_frame_received_monotonic,
-            "rgb_shape": None if state.raw_frame is None else state.raw_frame.shape,
-            "tracks": [dict(track) for track in state.latest_tracks],
+            "rgb_receipt_time_s": processed.frame_receipt_monotonic_s,
+            "rgb_shape": processed.frame_shape,
+            "rgb_frame_id": processed.frame_id,
+            "inference_started_monotonic_s": processed.inference_started_monotonic_s,
+            "inference_completed_monotonic_s": processed.inference_completed_monotonic_s,
+            "tracks": [dict(track) for track in processed.tracks],
         }
 
 
@@ -1430,6 +1535,8 @@ def main() -> None:
         )
     if args.execute and not args.calibration:
         raise SystemExit("--execute requires --calibration")
+    if args.intercept_config and not args.calibration:
+        raise SystemExit("--intercept-config requires --calibration")
     if args.research_hz <= 0 or args.research_hz > 30:
         raise SystemExit("--research-hz must be greater than 0 and at most 30")
     configure_runtime(args.opencv_threads, args.torch_threads, detector_enabled)
@@ -1451,6 +1558,7 @@ def main() -> None:
                 "target_hz": args.target_hz,
                 "control_transport": "ros2",
                 "calibration_file": args.calibration,
+                "intercept_config_file": args.intercept_config,
                 "arm_home_file": args.arm_home,
                 "robot_id": args.robot_id,
                 "experiment_label": args.research_label,
@@ -1468,6 +1576,7 @@ def main() -> None:
                     "capture_backend": args.capture_backend,
                     "target_hz": args.target_hz,
                     "research_hz": args.research_hz,
+                    "intercept_config": args.intercept_config,
                 },
             },
         )
@@ -1513,6 +1622,9 @@ def main() -> None:
                     target_hz=args.target_hz,
                     trajectory_model_path=(
                         None if args.trajectory_model is None else Path(args.trajectory_model)
+                    ),
+                    intercept_config_path=(
+                        None if args.intercept_config is None else Path(args.intercept_config)
                     ),
                 ),
                 arm_tracking_snapshot,

@@ -47,13 +47,25 @@ class PositionVelocityFilter:
         self.reset_gap_s = reset_gap_s
         self.max_speed_mps = max_speed_mps
         self._state: TrackedPosition | None = None
+        self._consecutive_observations = 0
+        self._last_residual_m = 0.0
 
     @property
     def state(self) -> TrackedPosition | None:
         return self._state
 
+    @property
+    def consecutive_observations(self) -> int:
+        return self._consecutive_observations
+
+    @property
+    def last_residual_m(self) -> float:
+        return self._last_residual_m
+
     def reset(self) -> None:
         self._state = None
+        self._consecutive_observations = 0
+        self._last_residual_m = 0.0
 
     def update(self, measurement_m: Iterable[float], timestamp_s: float) -> TrackedPosition:
         measurement = _point(measurement_m)
@@ -62,18 +74,22 @@ class PositionVelocityFilter:
         previous = self._state
         if previous is None or timestamp_s - previous.timestamp_s > self.reset_gap_s:
             self._state = TrackedPosition(measurement, np.zeros(3), timestamp_s)
+            self._consecutive_observations = 1
+            self._last_residual_m = 0.0
             return self._state
         dt = timestamp_s - previous.timestamp_s
         if dt <= 0:
             raise ValueError("filter timestamps must be strictly increasing")
         predicted = previous.position_m + previous.velocity_mps * dt
         residual = measurement - predicted
+        self._last_residual_m = float(np.linalg.norm(residual))
         position = predicted + self.position_gain * residual
         velocity = previous.velocity_mps + self.velocity_gain * residual / dt
         speed = float(np.linalg.norm(velocity))
         if speed > self.max_speed_mps:
             velocity = velocity * (self.max_speed_mps / speed)
         self._state = TrackedPosition(position, velocity, timestamp_s)
+        self._consecutive_observations += 1
         return self._state
 
     def predict(self, horizon_s: float = 0.150) -> np.ndarray | None:

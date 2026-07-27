@@ -266,6 +266,7 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
         parser.add_argument("--host")
         parser.add_argument("--port", type=int)
         parser.add_argument("--calibration")
+        parser.add_argument("--intercept-config")
         parser.add_argument("--arm-home")
         parser.add_argument("--robot-id")
         parser.add_argument("--research-root")
@@ -297,6 +298,7 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
             "HOST": namespace.host,
             "PORT": namespace.port,
             "CALIBRATION": namespace.calibration,
+            "INTERCEPT_CONFIG": namespace.intercept_config,
             "ARM_HOME": namespace.arm_home,
             "G1_ROBOT_ID": namespace.robot_id,
             "RESEARCH_ROOT": namespace.research_root,

@@ -39,6 +39,7 @@ ACCESS_LOG="${ACCESS_LOG:-0}"
 CAPTURE_BACKEND="${CAPTURE_BACKEND:-gst-launch}"
 STOP_EXISTING="${STOP_EXISTING:-1}"
 CALIBRATION="${CALIBRATION:-}"
+INTERCEPT_CONFIG="${INTERCEPT_CONFIG:-}"
 ALLOW_NOMINAL_SUPPORT_PLANE="${ALLOW_NOMINAL_SUPPORT_PLANE:-0}"
 ARM_HOME="${ARM_HOME:-}"
 G1_ROBOT_ID="${G1_ROBOT_ID:-}"
@@ -192,6 +193,17 @@ if [[ "${VISION_POINTING}" == "1" || "${VLA_PREVIEW}" == "1" ]]; then
 fi
 if [[ -n "${CALIBRATION}" ]]; then
   tracking_args+=(--calibration "${CALIBRATION}")
+fi
+if [[ -n "${INTERCEPT_CONFIG}" ]]; then
+  if [[ ! -f "${INTERCEPT_CONFIG}" ]]; then
+    echo "INTERCEPT_CONFIG does not exist: ${INTERCEPT_CONFIG}" >&2
+    exit 1
+  fi
+  if [[ -z "${CALIBRATION}" ]]; then
+    echo "INTERCEPT_CONFIG requires CALIBRATION." >&2
+    exit 1
+  fi
+  tracking_args+=(--intercept-config "${INTERCEPT_CONFIG}")
 fi
 if [[ "${ALLOW_NOMINAL_SUPPORT_PLANE}" == "1" ]]; then
   tracking_args+=(--allow-nominal-support-plane)

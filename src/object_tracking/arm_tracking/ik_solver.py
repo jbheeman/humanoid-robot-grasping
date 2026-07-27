@@ -1445,6 +1445,14 @@ class G1RightArmIK:
         error = target[:3, 3] - current[:3, 3]
         initial_error = float(np.linalg.norm(error))
         if initial_error <= 1e-6:
+            if validate_path:
+                validation_error = self.validate_joint_path(
+                    (last_q, last_q),
+                    support_plane=support_plane,
+                    edge_step_rad=0.010,
+                )
+                if validation_error is not None:
+                    return IKResult(False, None, 0.0, 0.0, validation_error)
             return IKResult(True, tuple(float(value) for value in last_q), 0.0, 0.0)
 
         try:

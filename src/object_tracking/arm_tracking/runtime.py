@@ -21,8 +21,17 @@ from .geometry import (
     has_support_clearance,
     Plane,
     SupportRegion,
+    TargetPose,
 )
 from .ik_solver import G1RightArmIK, IKResult, IKUnavailable, default_urdf_path
+from .interception import (
+    InterceptDecision,
+    InterceptObservation,
+    InterceptState,
+    LiveInterceptConfig,
+    LiveInterceptController,
+    load_live_intercept_config,
+)
 from .tracking import PositionVelocityFilter
 from .visualization import visualization_state
 
@@ -76,6 +85,7 @@ class RuntimeConfig:
     max_pair_skew_s: float = 0.100
     prediction_horizon_s: float = 0.150
     trajectory_model_path: Path | None = None
+    intercept_config_path: Path | None = None
 
     def __post_init__(self) -> None:
         if not 10.0 <= self.target_hz <= 30.0:
@@ -165,6 +175,31 @@ def right_arm_ik_seed(
     return [float(value) for value in (home_q or (0.0,) * 7)]
 
 
+def measured_right_arm_for_intercept(
+    arm_state: dict[str, Any],
+    *,
+    maximum_age_s: float = 0.250,
+) -> tuple[tuple[float, ...] | None, str | None]:
+    """Return only fresh measured joints; never fall back to a commanded pose."""
+
+    visualization = arm_state.get("visualization") or {}
+    if not visualization.get("available"):
+        return None, "measured_arm_unavailable"
+    try:
+        age_ms = float(visualization["state_age_ms"])
+    except (KeyError, TypeError, ValueError):
+        return None, "measured_arm_age_unavailable"
+    if not np.isfinite(age_ms) or age_ms < 0.0 or age_ms > maximum_age_s * 1000.0:
+        return None, "measured_arm_stale"
+    measured = visualization.get("measured_pose_rad")
+    if not isinstance(measured, list) or len(measured) != 29:
+        return None, "measured_arm_shape"
+    right = np.asarray(measured[22:29], dtype=float)
+    if right.shape != (7,) or not np.all(np.isfinite(right)):
+        return None, "measured_arm_non_finite"
+    return tuple(float(value) for value in right), None
+
+
 def select_start_escape_waypoint(
     measured_q_rad: Sequence[float],
     path: Sequence[Sequence[float]],
@@ -240,6 +275,17 @@ class ArmTrackingRuntime:
         self.transport = transport
         self.repo_root = repo_root
         self.calibration = load_calibration(config.calibration_path)
+        self.intercept_profile: LiveInterceptConfig | None = None
+        self.intercept_controller: LiveInterceptController | None = None
+        if config.intercept_config_path is not None:
+            self.intercept_profile = load_live_intercept_config(config.intercept_config_path)
+            if self.intercept_profile.calibration_id != self.calibration.calibration_id:
+                raise ValueError("intercept profile calibration does not match camera calibration")
+            if config.execute and not self.intercept_profile.validated_for_execution:
+                raise ValueError(
+                    "intercept profile is not validated_for_execution; use dry-run first"
+                )
+            self.intercept_controller = LiveInterceptController(self.intercept_profile)
         self.tabletop_corners_px: tuple[tuple[float, float], ...] | None = None
         self.tabletop_size_m: tuple[float, float] | None = None
         self.tabletop_footprint_error: str | None = None
@@ -423,7 +469,33 @@ class ArmTrackingRuntime:
             "calibration_id": self.calibration.calibration_id,
             "target_sequence": self.target_sequence,
             "target_age_ms": round(max(0.0, (time.monotonic() - rgb_time) * 1000.0), 3),
+            "rgb_frame_id": snapshot.get("rgb_frame_id"),
+            "timing_clock_domain": "gb10_monotonic_receipt",
+            "localization_filter_latency_ms": None,
+            "intercept_planning_latency_ms": None,
+            "ik_latency_ms": None,
+            "target_publish_latency_ms": None,
         }
+        inference_started = snapshot.get("inference_started_monotonic_s")
+        inference_completed = snapshot.get("inference_completed_monotonic_s")
+        if isinstance(inference_started, (int, float)) and isinstance(
+            inference_completed, (int, float)
+        ):
+            base_status["inference_queue_age_ms"] = round(
+                max(0.0, (float(inference_started) - rgb_time) * 1000.0), 3
+            )
+            base_status["inference_latency_ms"] = round(
+                max(0.0, (float(inference_completed) - float(inference_started)) * 1000.0),
+                3,
+            )
+            base_status["inference_result_age_ms"] = round(
+                max(0.0, (time.monotonic() - float(inference_completed)) * 1000.0),
+                3,
+            )
+            base_status["inference_to_depth_process_ms"] = round(
+                max(0.0, (now - float(inference_completed)) * 1000.0),
+                3,
+            )
         arm_state = self._arm_state()
         base_status["visualization"] = self._visualization_context(arm_state)
         recognized_ids = {
@@ -446,6 +518,33 @@ class ArmTrackingRuntime:
             self._reject(base_status, "rgb_depth_pair_stale", colormap)
             return
 
+        plane: SupportRegion | None = None
+        if self.intercept_controller is not None:
+            # Interception may continue a latched target through a short
+            # detector occlusion, so it needs the current support constraint
+            # before track selection. Continuous tracking keeps its original
+            # target-loss ordering when interception is disabled.
+            plane = self._support_plane(
+                aligned,
+                frame.depth_scale,
+                freeze=arm_state.get("state") in ("ARMING", "ARMED"),
+            )
+            if plane is not None:
+                base_status["visualization"]["support_plane"] = plane.to_dict()
+            base_status["visualization"]["support_plane_status"] = {
+                "available": plane is not None,
+                "age_ms": round(
+                    max(0.0, time.monotonic() - self.last_support_plane_at) * 1000.0,
+                    1,
+                )
+                if self.last_support_plane_at
+                else None,
+                "error": self.last_support_plane_error,
+            }
+            if plane is None:
+                self._reject(base_status, "support_plane_unavailable", colormap)
+                return
+
         tracks = snapshot.get("tracks") or []
         eligible = [
             item
@@ -454,6 +553,15 @@ class ArmTrackingRuntime:
             and item.get("track_id") is not None
             and float(item.get("confidence", 0.0)) >= 0.25
         ]
+        if self.intercept_profile is not None:
+            eligible = [
+                item
+                for item in eligible
+                if self.intercept_profile.track_matches(
+                    str(item.get("class_name", "")),
+                    float(item.get("confidence", 0.0)),
+                )
+            ]
         selected = next(
             (item for item in eligible if int(item["track_id"]) == self.last_target_track),
             None,
@@ -461,9 +569,29 @@ class ArmTrackingRuntime:
         if selected is None and eligible:
             selected = max(eligible, key=lambda item: float(item.get("confidence", 0.0)))
         if selected is None:
+            if self.intercept_controller is not None:
+                decision = self.intercept_controller.current_without_observation(now_s=now)
+                base_status["intercept"] = self._intercept_status(decision)
+                if decision.may_publish and decision.target_palm_position_m is not None:
+                    assert plane is not None
+                    self._process_committed_intercept_target(
+                        np.asarray(decision.target_palm_position_m, dtype=float),
+                        decision,
+                        base_status,
+                        colormap,
+                        plane,
+                        arm_state,
+                    )
+                    return
             self.filter.reset()
             self._reject(base_status, "target_lost", colormap)
             return
+        if (
+            self.intercept_controller is not None
+            and self.intercept_controller.active_track_id is not None
+            and int(selected["track_id"]) != self.intercept_controller.active_track_id
+        ):
+            self.filter.reset()
         base_status["detector_confidence"] = round(float(selected.get("confidence", 0.0)), 5)
         base_status["depth_valid"] = False
         rgb_shape = snapshot.get("rgb_shape")
@@ -479,23 +607,28 @@ class ArmTrackingRuntime:
             float(selected["bbox_xyxy"][2]) * sx,
             float(selected["bbox_xyxy"][3]) * sy,
         )
-        plane = self._support_plane(
-            aligned,
-            frame.depth_scale,
-            freeze=arm_state.get("state") in ("ARMING", "ARMED"),
-        )
-        if plane is not None:
-            base_status["visualization"]["support_plane"] = plane.to_dict()
-        base_status["visualization"]["support_plane_status"] = {
-            "available": plane is not None,
-            "age_ms": round(max(0.0, time.monotonic() - self.last_support_plane_at) * 1000.0, 1)
-            if self.last_support_plane_at
-            else None,
-            "error": self.last_support_plane_error,
-        }
         if plane is None:
-            self._reject(base_status, "support_plane_unavailable", colormap)
-            return
+            plane = self._support_plane(
+                aligned,
+                frame.depth_scale,
+                freeze=arm_state.get("state") in ("ARMING", "ARMED"),
+            )
+            if plane is not None:
+                base_status["visualization"]["support_plane"] = plane.to_dict()
+            base_status["visualization"]["support_plane_status"] = {
+                "available": plane is not None,
+                "age_ms": round(
+                    max(0.0, time.monotonic() - self.last_support_plane_at) * 1000.0,
+                    1,
+                )
+                if self.last_support_plane_at
+                else None,
+                "error": self.last_support_plane_error,
+            }
+            if plane is None:
+                self._reject(base_status, "support_plane_unavailable", colormap)
+                return
+        localization_started = time.monotonic()
         estimate = estimate_adaptive_roi_depth(
             aligned,
             bbox,
@@ -541,16 +674,114 @@ class ArmTrackingRuntime:
         if learned_prediction is not None:
             self._queue_prediction("learned_trajectory", learned_prediction, due_time)
         predicted = learned_prediction if learned_prediction is not None else alpha_beta_prediction
-        # Stop at the bunny's near surface rather than applying the generic
-        # 20 cm manipulation stand-off.  The measured plush radius (~5.5 cm)
-        # plus half the palm thickness (~1.2 cm) calls for a 7 cm preview
-        # offset, which remains non-contacting and inside the certified G1
-        # workspace. Swept-link/table checks still gate the resulting IK path.
-        target = generate_pregrasp_target(
-            predicted,
-            shoulder_position=(0.0, -0.18, 0.35),
-            stand_off_m=0.07,
+        base_status["localization_filter_latency_ms"] = round(
+            max(0.0, (time.monotonic() - localization_started) * 1000.0),
+            3,
         )
+        base_status.update(
+            {
+                "track_id": int(selected["track_id"]),
+                "object_xyz_m": torso.round(5).tolist(),
+                "object_velocity_m_s": tracked.velocity_mps.round(5).tolist(),
+                "estimator_consecutive_observations": self.filter.consecutive_observations,
+                "estimator_residual_m": round(self.filter.last_residual_m, 6),
+                "predicted_xyz_m": predicted.round(5).tolist(),
+                "prediction_source": (
+                    "learned_trajectory"
+                    if learned_prediction is not None
+                    else "alpha_beta_fallback"
+                ),
+            }
+        )
+        base_status["visualization"].update(
+            {
+                "measured_object_xyz_m": base_status["object_xyz_m"],
+                "predicted_object_xyz_m": base_status["predicted_xyz_m"],
+                "predicted_trajectory_xyz_m": [
+                    base_status["object_xyz_m"],
+                    base_status["predicted_xyz_m"],
+                ],
+            }
+        )
+        intercept_decision: InterceptDecision | None = None
+        intercept_measured_q: tuple[float, ...] | None = None
+        intercept_publish_allowed = True
+        if self.intercept_controller is not None and self.intercept_profile is not None:
+            if self.ik is None:
+                base_status.update({"ik_status": "unavailable", "ik_error": self.ik_error})
+                self._reject(base_status, "ik_unavailable", colormap)
+                return
+            measured_q, measured_error = measured_right_arm_for_intercept(arm_state)
+            if measured_q is None:
+                self._reject(base_status, measured_error or "measured_arm_unavailable", colormap)
+                return
+            intercept_measured_q = measured_q
+            if self.intercept_controller.latched_target is None:
+                ready_error = float(
+                    np.max(
+                        np.abs(
+                            np.asarray(measured_q)
+                            - np.asarray(self.intercept_profile.ready_right_arm_q_rad)
+                        )
+                    )
+                )
+                base_status["intercept_ready_pose_error_rad"] = round(ready_error, 6)
+                if ready_error > self.intercept_profile.ready_pose_tolerance_rad:
+                    self._reject(base_status, "intercept_ready_pose_required", colormap)
+                    return
+            palm_position = self.ik.forward_kinematics(measured_q)[:3, 3]
+            intercept_planning_started = time.monotonic()
+            intercept_decision = self.intercept_controller.update(
+                InterceptObservation(
+                    track_id=int(selected["track_id"]),
+                    class_name=str(selected.get("class_name", "")),
+                    confidence=float(selected.get("confidence", 0.0)),
+                    position_m=tuple(float(value) for value in tracked.position_m),
+                    velocity_m_s=tuple(float(value) for value in tracked.velocity_mps),
+                    timestamp_s=tracked.timestamp_s,
+                    consecutive_observations=self.filter.consecutive_observations,
+                    residual_m=self.filter.last_residual_m,
+                ),
+                now_s=now,
+                palm_position_m=palm_position,
+            )
+            base_status["intercept_planning_latency_ms"] = round(
+                max(0.0, (time.monotonic() - intercept_planning_started) * 1000.0),
+                3,
+            )
+            base_status["intercept"] = self._intercept_status(intercept_decision)
+            if intercept_decision.state in (InterceptState.HOLD, InterceptState.EXPIRED):
+                self._reject(
+                    base_status,
+                    f"intercept_{intercept_decision.reason}",
+                    colormap,
+                )
+                return
+            if intercept_decision.target_palm_position_m is None:
+                base_status.update(
+                    {
+                        "status": "intercept_acquiring",
+                        "reason": intercept_decision.reason,
+                    }
+                )
+                self.update_status(base_status, colormap)
+                return
+            target = TargetPose(
+                np.asarray(intercept_decision.target_palm_position_m, dtype=float),
+                np.asarray((0.0, 0.0, 0.0, 1.0), dtype=float),
+            )
+            intercept_publish_allowed = intercept_decision.may_publish
+        else:
+            # Stop at the bunny's near surface rather than applying the generic
+            # 20 cm manipulation stand-off.  The measured plush radius (~5.5 cm)
+            # plus half the palm thickness (~1.2 cm) calls for a 7 cm preview
+            # offset, which remains non-contacting and inside the certified G1
+            # workspace. Swept-link/table checks still gate the resulting IK path.
+            target = generate_pregrasp_target(
+                predicted,
+                shoulder_position=(0.0, -0.18, 0.35),
+                stand_off_m=0.07,
+            )
         base_status.update(
             {
                 "status": "tracking",
@@ -559,6 +790,9 @@ class ArmTrackingRuntime:
                     None if estimate is None else round(estimate.valid_fraction, 4)
                 ),
                 "object_xyz_m": torso.round(5).tolist(),
+                "object_velocity_m_s": tracked.velocity_mps.round(5).tolist(),
+                "estimator_consecutive_observations": self.filter.consecutive_observations,
+                "estimator_residual_m": round(self.filter.last_residual_m, 6),
                 "predicted_xyz_m": predicted.round(5).tolist(),
                 "prediction_source": (
                     "learned_trajectory"
@@ -594,9 +828,17 @@ class ArmTrackingRuntime:
             base_status.update({"ik_status": "unavailable", "ik_error": self.ik_error})
             self._reject(base_status, "ik_unavailable", colormap)
             return
-        last_q = right_arm_ik_seed(arm_state, self.home_q)
+        last_q = (
+            list(intercept_measured_q)
+            if intercept_measured_q is not None
+            else right_arm_ik_seed(arm_state, self.home_q)
+        )
         collision_labels = self.ik.collision_labels(last_q)
+        if intercept_decision is not None and collision_labels:
+            self._reject(base_status, "intercept_current_pose_collision", colormap)
+            return
         escape_needed = self._start_escape_path is not None or bool(collision_labels)
+        ik_started = time.monotonic()
         # The hip-rest escape is an independently planned and fully
         # link/table-validated path. A noisy bunny endpoint must not interrupt
         # it; endpoint workspace/clearance gates become relevant only when
@@ -608,7 +850,11 @@ class ArmTrackingRuntime:
             if not has_support_clearance(target.position, plane):
                 self._reject(base_status, "support_plane_clearance", colormap)
                 return
-        ik_step_type = "analytic_local_translation"
+        ik_step_type = (
+            "intercept_local_translation"
+            if intercept_decision is not None
+            else "analytic_local_translation"
+        )
         # Once a validated hip-rest escape starts, latch it until measured
         # state reaches the collision-free endpoint. The contact sits at the
         # mesh boundary and can flicker clear for one encoder sample; dropping
@@ -699,6 +945,7 @@ class ArmTrackingRuntime:
             {
                 "ik_status": "ok" if ik.ok else ik.reason,
                 "ik_step_type": ik_step_type,
+                "next_edge_collision_checked": bool(ik.ok),
                 "ik_collision_labels": list(collision_labels),
                 "ik_escape_waypoint": (
                     self._start_escape_target_index
@@ -721,6 +968,10 @@ class ArmTrackingRuntime:
                 "arm_hold_reason": arm_state.get("hold_reason"),
                 "arm_fault_reason": arm_state.get("fault_reason"),
                 "arm_loop": arm_state.get("loop") or {},
+                "ik_latency_ms": round(
+                    max(0.0, (time.monotonic() - ik_started) * 1000.0),
+                    3,
+                ),
             }
         )
         if not ik.ok or ik.q_rad is None:
@@ -773,7 +1024,7 @@ class ArmTrackingRuntime:
                     "orientation_error_rad": ik.orientation_error_rad,
                 },
             }
-        if self.config.execute:
+        if self.config.execute and intercept_publish_allowed:
             # Stream bounded targets during the controller's weight ramp.  If
             # we wait for ARMED, the target deadman expires during ARMING and
             # the bridge releases immediately after a small twitch.
@@ -787,12 +1038,17 @@ class ArmTrackingRuntime:
                 (time.monotonic() - min(frame.receipt_time_s, rgb_time)) * 1000.0,
             )
             try:
+                publish_started = time.monotonic()
                 self.transport.publish_target(
                     session_id=str(arm_state["session_id"]),
                     sequence=self.target_sequence,
                     calibration_id=self.calibration.calibration_id,
                     right_arm_q=[float(value) for value in ik.q_rad],
                     pipeline_age_ms=pipeline_age_ms,
+                )
+                base_status["target_publish_latency_ms"] = round(
+                    max(0.0, (time.monotonic() - publish_started) * 1000.0),
+                    3,
                 )
             except Exception as exc:
                 base_status["transport_error"] = f"{type(exc).__name__}: {exc}"
@@ -803,7 +1059,133 @@ class ArmTrackingRuntime:
             base_status["status"] = "target_sent"
             base_status["target_sequence"] = self.target_sequence
             base_status["pipeline_age_ms"] = round(pipeline_age_ms, 3)
+        elif self.config.execute and intercept_decision is not None:
+            base_status["status"] = "intercept_preview"
         self.last_target_track = int(selected["track_id"])
+        self.update_status(base_status, colormap)
+
+    @staticmethod
+    def _intercept_status(decision: InterceptDecision) -> dict[str, Any]:
+        return {
+            "enabled": True,
+            "state": decision.state.value,
+            "reason": decision.reason,
+            "may_publish": decision.may_publish,
+            "target_palm_position_m": (
+                None
+                if decision.target_palm_position_m is None
+                else [round(value, 6) for value in decision.target_palm_position_m]
+            ),
+            "predicted_crossing_m": (
+                None
+                if decision.predicted_crossing_m is None
+                else [round(value, 6) for value in decision.predicted_crossing_m]
+            ),
+            "crossing_time_from_now_s": decision.crossing_time_from_now_s,
+            "arrival_slack_s": decision.arrival_slack_s,
+            "last_confirmation_age_ms": (
+                None
+                if decision.last_confirmation_age_s is None
+                else round(decision.last_confirmation_age_s * 1000.0, 3)
+            ),
+            "planner": None if decision.plan is None else decision.plan.to_dict(),
+        }
+
+    def _process_committed_intercept_target(
+        self,
+        target_position: np.ndarray,
+        decision: InterceptDecision,
+        base_status: dict[str, Any],
+        colormap: bytes | None,
+        plane: SupportRegion,
+        arm_state: dict[str, Any],
+    ) -> None:
+        """Continue one latched Cartesian target through brief bounded occlusion."""
+
+        if self.ik is None:
+            base_status.update({"ik_status": "unavailable", "ik_error": self.ik_error})
+            self._reject(base_status, "ik_unavailable", colormap)
+            return
+        measured_q, measured_error = measured_right_arm_for_intercept(arm_state)
+        if measured_q is None:
+            self._reject(base_status, measured_error or "measured_arm_unavailable", colormap)
+            return
+        if not self.calibration.workspace.contains(target_position):
+            self._reject(base_status, "workspace_violation", colormap)
+            return
+        if not has_support_clearance(target_position, plane):
+            self._reject(base_status, "support_plane_clearance", colormap)
+            return
+        collision_labels = self.ik.collision_labels(measured_q)
+        if collision_labels:
+            self._reject(base_status, "intercept_current_pose_collision", colormap)
+            return
+        ik_started = time.monotonic()
+        transform = self.ik.forward_kinematics(measured_q)
+        transform[:3, 3] = target_position
+        ik = self.ik.solve_local_translation(
+            transform,
+            measured_q,
+            support_plane=plane,
+        )
+        base_status.update(
+            {
+                "status": "intercept_occlusion_hold",
+                "intercept": self._intercept_status(decision),
+                "target_xyz_m": target_position.round(5).tolist(),
+                "ik_status": "ok" if ik.ok else ik.reason,
+                "ik_step_type": "intercept_local_translation",
+                "next_edge_collision_checked": bool(ik.ok),
+                "ik_collision_labels": list(collision_labels),
+                "ik_position_error_m": ik.position_error_m,
+                "ik_orientation_error_rad": ik.orientation_error_rad,
+                "arm_state": arm_state.get("state", "dry-run"),
+                "arm_weight": arm_state.get("weight"),
+                "ik_latency_ms": round(
+                    max(0.0, (time.monotonic() - ik_started) * 1000.0),
+                    3,
+                ),
+            }
+        )
+        if not ik.ok or ik.q_rad is None:
+            self._reject(base_status, f"ik_{ik.reason}", colormap)
+            return
+        base_status["predicted_bounded_arm_command_rad"] = [
+            round(float(value), 6) for value in ik.q_rad
+        ]
+        if self.config.execute:
+            if arm_state.get("state") not in ("ARMING", "ARMED") or not arm_state.get(
+                "session_id"
+            ):
+                self._reject(base_status, "arm_not_explicitly_enabled", colormap)
+                return
+            confirmation_age_s = decision.last_confirmation_age_s
+            if confirmation_age_s is None:
+                self._reject(base_status, "intercept_confirmation_age_missing", colormap)
+                return
+            pipeline_age_ms = max(0.0, confirmation_age_s * 1000.0)
+            try:
+                publish_started = time.monotonic()
+                self.transport.publish_target(
+                    session_id=str(arm_state["session_id"]),
+                    sequence=self.target_sequence,
+                    calibration_id=self.calibration.calibration_id,
+                    right_arm_q=[float(value) for value in ik.q_rad],
+                    pipeline_age_ms=pipeline_age_ms,
+                )
+                base_status["target_publish_latency_ms"] = round(
+                    max(0.0, (time.monotonic() - publish_started) * 1000.0),
+                    3,
+                )
+            except Exception as exc:
+                base_status["transport_error"] = f"{type(exc).__name__}: {exc}"
+                self._stop_arm("arm_target_publish_failed", force=True)
+                self._reject(base_status, "arm_target_publish_failed", colormap)
+                return
+            self.target_sequence += 1
+            base_status["status"] = "target_sent"
+            base_status["target_sequence"] = self.target_sequence
+            base_status["pipeline_age_ms"] = round(pipeline_age_ms, 3)
         self.update_status(base_status, colormap)
 
     def _queue_prediction(self, source: str, position: np.ndarray, due_time_s: float) -> None:
@@ -1038,7 +1420,24 @@ class ArmTrackingRuntime:
             pass
         self.last_target_track = None
 
+    def reset_intercept(self) -> None:
+        if self.intercept_controller is not None:
+            self._stop_arm("intercept_reset")
+        if self.intercept_controller is not None:
+            self.intercept_controller.reset()
+        self.filter.reset()
+        self.last_target_track = None
+
     def _reject(self, status: dict[str, Any], reason: str, colormap: bytes | None) -> None:
+        if self.intercept_controller is not None and reason != "arm_not_explicitly_enabled":
+            if self.intercept_controller.state is InterceptState.COMMITTED:
+                decision = self.intercept_controller.invalidate(reason, now_s=time.monotonic())
+                status["intercept"] = self._intercept_status(decision)
+            elif self.intercept_controller.state not in (
+                InterceptState.HOLD,
+                InterceptState.EXPIRED,
+            ):
+                self.intercept_controller.reset()
         status.update({"status": "rejected", "reason": reason})
         self._stop_arm(reason)
         self.update_status(status, colormap)
