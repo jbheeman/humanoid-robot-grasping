@@ -348,16 +348,28 @@ class SupportRegion:
             or np.any(expected <= 0.0)
         ):
             raise ValueError("expected support dimensions must be two positive values")
+        # The saved polygon may come from an earlier table pose. Preserve only
+        # its live-plane intersection at the robot-facing edge; stale corner
+        # rays must not rotate the metric footprint. Use the same torso-forward
+        # basis as automatic RGB-D support detection.
         center_v = 0.5 * (self.minimum_uv[1] + self.maximum_uv[1])
-        minimum_uv = np.asarray(
-            (self.minimum_uv[0], center_v - 0.5 * expected[1]),
-            dtype=np.float64,
+        near_center = (
+            self.origin
+            + self.minimum_uv[0] * self.axis_u
+            + center_v * self.axis_v
         )
+        axis_u = np.asarray((1.0, 0.0, 0.0), dtype=np.float64)
+        axis_u -= float(np.dot(axis_u, self.plane.normal)) * self.plane.normal
+        axis_u /= np.linalg.norm(axis_u)
+        axis_v = np.cross(self.plane.normal, axis_u)
+        axis_v /= np.linalg.norm(axis_v)
+        near_center -= float(self.plane.signed_distance(near_center)) * self.plane.normal
+        minimum_uv = np.asarray((0.0, -0.5 * expected[1]), dtype=np.float64)
         return SupportRegion(
             plane=self.plane,
-            origin=self.origin,
-            axis_u=self.axis_u,
-            axis_v=self.axis_v,
+            origin=near_center,
+            axis_u=axis_u,
+            axis_v=axis_v,
             minimum_uv=minimum_uv,
             maximum_uv=minimum_uv + expected,
             certified_edges=("u_min",),

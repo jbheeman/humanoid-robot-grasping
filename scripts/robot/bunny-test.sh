@@ -197,11 +197,14 @@ while time.monotonic() < deadline:
         with urllib.request.urlopen(url, timeout=2) as response:
             health = json.load(response)
         tracking = health.get("arm_tracking") or {}
+        visualization = tracking.get("visualization") or {}
+        support_status = visualization.get("support_plane_status") or {}
         command = tracking.get("predicted_bounded_arm_command_rad")
         structurally_ready = (
             tracking.get("mode") == "execute"
             and tracking.get("arm_state") == "DISARMED"
             and tracking.get("ik_status") == "ok"
+            and str(support_status.get("source") or "").startswith("automatic_rgbd_")
             and isinstance(command, list)
             and len(command) == 7
             and tracking.get("reason") == "arm_not_explicitly_enabled"

@@ -288,6 +288,8 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(support.certified_edges, ("u_min",))
         self.assertEqual(support.edge_source("u_min"), "calibrated_pixel_near_edge")
         self.assertEqual(support.edge_source("u_max"), "dimension_prior")
+        np.testing.assert_allclose(support.axis_u, (1.0, 0.0, 0.0), atol=1e-9)
+        np.testing.assert_allclose(support.axis_v, (0.0, 1.0, 0.0), atol=1e-9)
 
     def test_support_region_rejects_non_table_plane(self) -> None:
         with self.assertRaisesRegex(ValueError, "tabletop-like"):

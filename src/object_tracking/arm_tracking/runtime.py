@@ -259,6 +259,48 @@ def tabletop_footprint_dimensions_plausible(
     )
 
 
+def support_region_from_pixel_prior(
+    plane: Plane,
+    corners_px: Sequence[Sequence[float]],
+    intrinsics: Any,
+    optical_to_base: Any,
+    expected_size_m: Sequence[float],
+    *,
+    source: str,
+) -> tuple[SupportRegion, np.ndarray]:
+    """Anchor a live plane to calibrated pixels without inheriting stale yaw."""
+
+    corners_xyz: list[np.ndarray] = []
+    origin = np.asarray(optical_to_base.translation, dtype=float)
+    rotation = np.asarray(optical_to_base.rotation, dtype=float)
+    for u, v in corners_px:
+        optical_ray = np.asarray(
+            (
+                (float(u) - intrinsics.ppx) / intrinsics.fx,
+                (float(v) - intrinsics.ppy) / intrinsics.fy,
+                1.0,
+            ),
+            dtype=float,
+        )
+        torso_ray = rotation @ optical_ray
+        denominator = float(np.dot(plane.normal, torso_ray))
+        if abs(denominator) <= 1e-6:
+            raise ValueError("tabletop corner ray is parallel to the support plane")
+        distance = -float(np.dot(plane.normal, origin) + plane.offset) / denominator
+        if distance <= 0.0:
+            raise ValueError("tabletop corner intersects behind the camera")
+        corners_xyz.append(origin + distance * torso_ray)
+    raw = SupportRegion.from_ordered_corners(
+        plane,
+        corners_xyz,
+        certified_edges=("u_min", "u_max", "v_min", "v_max"),
+        lateral_margin_m=0.07,
+        source="live_plane_calibrated_pixel_corners",
+    )
+    measured_size = raw.maximum_uv - raw.minimum_uv
+    return raw.with_dimension_prior(expected_size_m, source=source), measured_size
+
+
 def right_arm_ik_seed(
     arm_state: dict[str, Any],
     home_q: Sequence[float] | None,
@@ -1593,6 +1635,16 @@ class ArmTrackingRuntime:
                     expected_size_m=self.tabletop_size_m,
                 )
                 self._automatic_support_diagnostics = diagnostics.to_dict()
+                corners_px = self._scaled_tabletop_corners()
+                if corners_px is not None and self.tabletop_size_m is not None:
+                    candidate, _ = support_region_from_pixel_prior(
+                        candidate.plane,
+                        corners_px,
+                        self.calibration.rgb_intrinsics,
+                        self.calibration.optical_to_torso,
+                        self.tabletop_size_m,
+                        source="automatic_rgbd_plane_calibrated_footprint_prior",
+                    )
                 if self._support_candidates_agree(
                     self._automatic_support_candidate,
                     candidate,
@@ -1652,38 +1704,17 @@ class ArmTrackingRuntime:
                 ),
                 stride=8,
             )
-            origin = self.calibration.optical_to_torso.translation
-            rotation = self.calibration.optical_to_torso.rotation
-            intrinsics = self.calibration.rgb_intrinsics
-            corners_xyz: list[np.ndarray] = []
-            for u, v in corners_px:
-                optical_ray = np.asarray(
-                    (
-                        (u - intrinsics.ppx) / intrinsics.fx,
-                        (v - intrinsics.ppy) / intrinsics.fy,
-                        1.0,
-                    ),
-                    dtype=float,
-                )
-                torso_ray = rotation @ optical_ray
-                denominator = float(np.dot(plane.normal, torso_ray))
-                if abs(denominator) <= 1e-6:
-                    raise ValueError("tabletop corner ray is parallel to the support plane")
-                distance = -float(np.dot(plane.normal, origin) + plane.offset) / denominator
-                if distance <= 0.0:
-                    raise ValueError("tabletop corner intersects behind the camera")
-                corners_xyz.append(origin + distance * torso_ray)
-            support = SupportRegion.from_ordered_corners(
-                plane,
-                corners_xyz,
-                certified_edges=("u_min", "u_max", "v_min", "v_max"),
-                lateral_margin_m=0.07,
-                source="live_plane_calibrated_pixel_corners",
-            )
             if self.tabletop_size_m is None:
                 raise ValueError("no calibrated tabletop physical dimensions")
-            measured_size = support.maximum_uv - support.minimum_uv
             expected_size = np.asarray(self.tabletop_size_m, dtype=float)
+            support, measured_size = support_region_from_pixel_prior(
+                plane,
+                corners_px,
+                self.calibration.rgb_intrinsics,
+                self.calibration.optical_to_torso,
+                expected_size,
+                source="live_plane_calibrated_near_edge_dimension_prior",
+            )
             size_ratio = measured_size / expected_size
             if not tabletop_footprint_dimensions_plausible(
                 measured_size,
@@ -1695,10 +1726,6 @@ class ArmTrackingRuntime:
                     f"expected={expected_size.round(3).tolist()}m "
                     f"ratio={size_ratio.round(3).tolist()}"
                 )
-            support = support.with_dimension_prior(
-                expected_size,
-                source="live_plane_calibrated_near_edge_dimension_prior",
-            )
             self.last_support_plane = support
             self.last_support_plane_at = now
             self.last_support_plane_error = None

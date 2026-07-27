@@ -37,6 +37,7 @@ from object_tracking.arm_tracking.runtime import (
     register_depth_in_rgb,
     right_arm_ik_seed,
     select_start_escape_waypoint,
+    support_region_from_pixel_prior,
     tabletop_footprint_dimensions_plausible,
 )
 
@@ -638,6 +639,27 @@ def test_close_table_footprint_drift_remains_a_valid_plane_candidate() -> None:
         (0.464, 0.767),
         (0.34, 0.68),
     )
+
+
+def test_live_plane_uses_calibrated_anchor_but_not_stale_corner_yaw() -> None:
+    support, measured = support_region_from_pixel_prior(
+        Plane((0.0, 0.0, 1.0), -1.0),
+        ((20.0, 80.0), (80.0, 80.0), (80.0, 20.0), (20.0, 20.0)),
+        CameraIntrinsics(100, 100, 100.0, 100.0, 50.0, 50.0),
+        RigidTransform.identity(),
+        (0.34, 0.68),
+        source="automatic_rgbd_plane_calibrated_footprint_prior",
+    )
+
+    assert measured.shape == (2,)
+    np.testing.assert_allclose(support.axis_u, (1.0, 0.0, 0.0), atol=1e-9)
+    np.testing.assert_allclose(support.axis_v, (0.0, 1.0, 0.0), atol=1e-9)
+    np.testing.assert_allclose(
+        support.maximum_uv - support.minimum_uv,
+        (0.34, 0.68),
+        atol=1e-9,
+    )
+    assert support.source == "automatic_rgbd_plane_calibrated_footprint_prior"
 
 
 @pytest.mark.parametrize(
