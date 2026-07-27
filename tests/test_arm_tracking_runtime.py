@@ -435,8 +435,37 @@ def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) 
 
     assert runtime._arm_state() == {"state": "DISARMED", "weight": 0.0}
     runtime.last_target_track = 3
+    runtime._approach_path = ((0.0,) * 7, (0.01,) * 7)
+    runtime._approach_target_index = 1
+    runtime._approach_target_xyz = (0.4, 0.0, 0.2)
     runtime._stop_arm("test_stop")
     assert transport.stops == ["test_stop"]
+    assert runtime._approach_path is None
+    assert runtime._approach_target_index == 1
+    assert runtime._approach_target_xyz is None
+
+
+def test_transient_perception_rejection_leaves_session_for_deadman(tmp_path: Path) -> None:
+    calibration_path = tmp_path / "calibration.yaml"
+    save_calibration_atomic(_calibration(), calibration_path)
+    transport = FakeTrackingTransport()
+    statuses: list[dict[str, object]] = []
+    runtime = ArmTrackingRuntime(
+        RuntimeConfig(calibration_path=calibration_path, execute=True),
+        lambda: {},
+        lambda status, depth: statuses.append(status),
+        transport=transport,
+        repo_root=tmp_path,
+    )
+    runtime.last_target_track = 3
+    runtime._approach_path = ((0.0,) * 7, (0.01,) * 7)
+
+    runtime._reject({}, "rgb_depth_pair_stale", None)
+
+    assert transport.stops == []
+    assert runtime.last_target_track == 3
+    assert runtime._approach_path is not None
+    assert statuses[-1]["reason"] == "rgb_depth_pair_stale"
 
 
 def test_runtime_config_has_no_http_or_token_requirement(tmp_path: Path) -> None:

@@ -474,6 +474,13 @@ def test_brief_standing_signal_dropout_does_not_fault() -> None:
         standing_since=None,
         balance_details=("legs_waist_still",),
     )
+    controller.set_target(
+        session_id="session-a",
+        sequence=2,
+        calibration_id="cal-1",
+        right_arm_q=[0.01] * 7,
+        source_timestamp=clock.wall,
+    )
     controller.tick()
     assert controller.commanded_right == [0.0] * 7
     clock.advance(0.1)

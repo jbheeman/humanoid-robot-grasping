@@ -44,6 +44,14 @@ _SUPPORT_PLANE_GRACE_S = 5.000
 # fixed during one operator demo. Avoid rerunning expensive plane fitting in
 # the realtime path midway through that session.
 _SUPPORT_PLANE_ARMED_TTL_S = 300.000
+_SOFT_PERCEPTION_REJECTIONS = frozenset(
+    {
+        "depth_uncertain",
+        "rgb_depth_pair_stale",
+        "target_lost",
+        "waiting_for_new_rgb_frame",
+    }
+)
 
 
 class TrackingTransport(Protocol):
@@ -435,7 +443,6 @@ class ArmTrackingRuntime:
                 frame = self.transport.receive_depth(timeout_s=0.20)
                 if frame is None:
                     self.last_sequence = -1
-                    self._stop_arm("depth_transport_lost")
                     diagnostics = getattr(self.transport, "depth_diagnostics", lambda: {})()
                     self._report(
                         status="waiting_for_depth",
@@ -1554,6 +1561,11 @@ class ArmTrackingRuntime:
         except Exception:
             pass
         self.last_target_track = None
+        self._start_escape_path = None
+        self._start_escape_target_index = 1
+        self._approach_path = None
+        self._approach_target_index = 1
+        self._approach_target_xyz = None
 
     def reset_intercept(self) -> None:
         if self.intercept_controller is not None:
@@ -1574,7 +1586,8 @@ class ArmTrackingRuntime:
             ):
                 self.intercept_controller.reset()
         status.update({"status": "rejected", "reason": reason})
-        self._stop_arm(reason)
+        if reason not in _SOFT_PERCEPTION_REJECTIONS:
+            self._stop_arm(reason)
         self.update_status(status, colormap)
 
     def _report(self, **values: Any) -> None:

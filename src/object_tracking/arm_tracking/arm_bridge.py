@@ -126,7 +126,7 @@ class ArmBridgeConfig:
     deadman_s: float = 0.750
     state_ttl_s: float = 0.250
     stable_standing_s: float = 2.0
-    standing_loss_grace_s: float = 0.200
+    standing_loss_grace_s: float = 0.500
     startup_settle_s: float = 0.150
     startup_settle_timeout_s: float = 2.0
     startup_max_velocity_rad_s: float = 0.08
@@ -460,7 +460,11 @@ class ArmBridgeController:
                     f"Target exceeds the {self.config.max_target_delta_rad:.3f} rad maximum command delta",
                     code="discontinuous_target",
                 )
-            self._require_safe_robot_state(now, require_stable=False)
+            self._require_safe_robot_state(
+                now,
+                require_stable=False,
+                allow_transient_standing_loss=True,
+            )
             self.last_sequence = sequence
             self.last_target_at = now
             self.last_target_source_timestamp = source
@@ -782,6 +786,7 @@ class ArmBridgeController:
         *,
         require_stable: bool,
         require_commissioning_verification: bool = False,
+        allow_transient_standing_loss: bool = False,
     ) -> RobotState:
         robot = self.hardware.latest_state()
         if robot is None or now - robot.received_at > self.config.state_ttl_s:
@@ -790,7 +795,20 @@ class ArmBridgeController:
             raise ArmBridgeError(
                 "LowState contains a non-finite arm position", code="robot_state_non_finite"
             )
-        if not robot.standing:
+        standing_grace_active = False
+        if (
+            not robot.standing
+            and allow_transient_standing_loss
+            and self.state is ArmState.ARMED
+        ):
+            if self._standing_lost_since is None:
+                self._standing_lost_since = now
+                self.right_velocity = [0.0] * 7
+                self.right_acceleration = [0.0] * 7
+            standing_grace_active = (
+                now - self._standing_lost_since < self.config.standing_loss_grace_s
+            )
+        if not robot.standing and not standing_grace_active:
             raise ArmBridgeError("Robot is not in a balanced standing state", code="not_standing")
         if require_stable and (
             robot.standing_since is None
