@@ -347,6 +347,7 @@ class ArmTrackingRuntime:
         self.target_sequence = 0
         self.last_target_track: int | None = None
         self.last_process_at = 0.0
+        self.last_depth_preview_at = 0.0
         # A support plane is a live safety input, not a calibration constant.
         # Keep the most recent valid extraction so one noisy RANSAC frame does
         # not release an otherwise healthy tracking session. The fallback is
@@ -468,7 +469,13 @@ class ArmTrackingRuntime:
             aligned = frame.z16
         else:
             aligned = register_depth_in_rgb(frame.z16, self.calibration)
-        colormap = depth_colormap_jpeg(aligned, frame.depth_scale)
+        # The depth JPEG is diagnostic UI output, not a control input. Encoding
+        # 960x540 at the 20 Hz IK rate consumed several CPU cores and starved
+        # YOLO preprocessing while the GPU sat underutilized.
+        colormap = None
+        if now - self.last_depth_preview_at >= 0.25:
+            colormap = depth_colormap_jpeg(aligned, frame.depth_scale)
+            self.last_depth_preview_at = now
         base_status: dict[str, Any] = {
             "enabled": True,
             "mode": "execute" if self.config.execute else "dry-run",

@@ -1035,7 +1035,7 @@ def raw_snapshot() -> Response:
         frame_id = state.frame_count
     if frame is None:
         return Response(content=b"No frame yet", media_type="text/plain", status_code=503)
-    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 95])
+    ok, encoded = cv2.imencode(".jpg", frame, [int(cv2.IMWRITE_JPEG_QUALITY), 85])
     if not ok:
         return Response(
             content=b"Could not encode latest frame",

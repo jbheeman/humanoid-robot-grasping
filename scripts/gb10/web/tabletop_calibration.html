@@ -38,5 +38,5 @@ document.querySelector("#save").onclick=async()=>{if(points.length!==4){status.t
   const response=await fetch("/api/v1/tabletop-calibration",{method:"POST",headers:{"Content-Type":"application/json"},body:JSON.stringify(payload)}),result=await response.json();
   status.textContent=response.ok?`Saved ${result.path}`:`Save failed: ${result.detail}`};
 async function load(){if(loaded)return;loaded=true;const result=await(await fetch("/api/v1/tabletop-calibration")).json();if(result.configured){points=result.calibration.corners_px.map(({x,y})=>({x,y}));document.querySelector("#width").value=result.calibration.tabletop.width_m;document.querySelector("#depth").value=result.calibration.tabletop.depth_m}draw()}
-image.onload=()=>{resize();load()};window.onresize=resize;setInterval(()=>{image.src=`/raw-snapshot.jpg?t=${Date.now()}`},500);
+image.onload=()=>{resize();load()};window.onresize=resize;setInterval(()=>{if(!document.hidden)image.src=`/raw-snapshot.jpg?t=${Date.now()}`},1000);
 </script></body></html>
