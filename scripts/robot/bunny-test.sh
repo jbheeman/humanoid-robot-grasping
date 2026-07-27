@@ -12,10 +12,6 @@ READY_TIMEOUT_S="${READY_TIMEOUT_S:-90}"
 # the depth interface so NVENC and ROS depth serialization cannot block the
 # same capture loop.
 DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS:-60}"
-# Capture alone is insufficient: the ROS/TCP relay otherwise retains its
-# conservative 15 Hz default, which can make an otherwise fresh RGB frame
-# fail the RGB/depth skew gate during a live interception run.
-DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS:-60}"
 # Domain 42 is also used by older project processes and has repeatedly left
 # the live G1 and GB10 participants undiscovered.  The live bunny test uses a
 # dedicated domain that is verified end-to-end during commissioning.
@@ -136,7 +132,6 @@ echo "  motion mode: ${EXPECTED_MOTION_MODE}"
 echo "  tilt limit:  ${MAX_TILT_DEG} degrees"
 echo "  waist limit: ${MAX_WAIST_DEVIATION_DEG} degrees"
 echo "  depth rate:  ${DEPTH_CAPTURE_FPS} Hz"
-echo "  depth publish: ${DEPTH_PUBLISH_FPS} Hz"
 echo "  ROS domain:  ${PROJECT_ROS_DOMAIN_ID}"
 echo "Keep the physical E-stop in hand. Ctrl-C performs a controlled stop."
 
@@ -147,7 +142,6 @@ EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE}" \
 MAX_TILT_DEG="${MAX_TILT_DEG}" \
 MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG}" \
 DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS}" \
-DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS}" \
 RGB_MODE=highfps-service \
 G1_PROJECT_ROS_DOMAIN_ID="${PROJECT_ROS_DOMAIN_ID}" \
 QUIET_HEALTHY_DEPTH=1 \
