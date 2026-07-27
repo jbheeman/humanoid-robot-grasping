@@ -219,6 +219,55 @@ def test_ruckig_limits_velocity_acceleration_and_jerk_during_replanning() -> Non
     )
 
 
+def test_ruckig_online_output_persists_across_control_ticks() -> None:
+    clock = FakeClock()
+    starting = (0.0,) * 7 + (0.28, -0.13, 0.01, 0.98, -0.13, 0.02, -0.01)
+    controller, hardware = bridge(
+        clock,
+        weight_ramp_s=1.5,
+        max_velocity_rad_s=0.15,
+        max_acceleration_rad_s2=0.5,
+        max_jerk_rad_s3=2.0,
+    )
+    hardware.state = robot_state(clock, q=starting)
+    target = [0.2675, -0.165, 0.01, 0.98, -0.13, 0.02, -0.01]
+    controller.enable(session_id="session-a", calibration_id="cal-1")
+    controller.set_target(
+        session_id="session-a",
+        sequence=0,
+        calibration_id="cal-1",
+        right_arm_q=target,
+        source_timestamp=clock.wall,
+    )
+    clock.advance(controller.config.weight_ramp_s)
+    hardware.state = robot_state(clock, q=starting)
+    controller.set_target(
+        session_id="session-a",
+        sequence=1,
+        calibration_id="cal-1",
+        right_arm_q=target,
+        source_timestamp=clock.wall,
+    )
+    controller.tick()
+    assert controller.state is ArmState.ARMED
+    period = 1.0 / controller.config.control_hz
+
+    positions = []
+    for _ in range(8):
+        clock.advance(period)
+        hardware.state = robot_state(clock, q=starting)
+        controller.tick()
+        assert controller.commanded_right is not None
+        positions.append(tuple(controller.commanded_right))
+
+    # Recreating OutputParameter on every update makes Ruckig return a
+    # zero-filled Finished result on the second tick. The live robot then
+    # receives a near-full-weight command toward zero and jerks.
+    assert all(position[3] > 0.97 for position in positions)
+    assert all(position != (0.0,) * 7 for position in positions)
+    assert positions[-1][1] < positions[0][1]
+
+
 def test_target_rejects_replay_wrong_binding_stale_nonfinite_and_discontinuity() -> None:
     clock = FakeClock()
     controller, hardware = bridge(clock)

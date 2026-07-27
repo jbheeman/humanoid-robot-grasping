@@ -220,6 +220,8 @@ class ArmBridgeController:
         self.right_velocity = [0.0] * 7
         self.right_acceleration = [0.0] * 7
         self._ruckig = Ruckig(7, 1.0 / self.config.control_hz)
+        self._ruckig_input = InputParameter(7)
+        self._ruckig_output = OutputParameter(7)
         self.weight = 0.0
         self._transition_at = self.started_at
         self._release_start_weight = 0.0
@@ -293,6 +295,7 @@ class ArmBridgeController:
             self.desired_right = tuple(robot.arm_q[7:])
             self.right_velocity = [0.0] * 7
             self.right_acceleration = [0.0] * 7
+            self._reset_ruckig()
             self.weight = 0.0
             self.fault_reason = None
             self.fault_details = None
@@ -345,6 +348,7 @@ class ArmBridgeController:
             self.desired_right = tuple(robot.arm_q[7:])
             self.right_velocity = [0.0] * 7
             self.right_acceleration = [0.0] * 7
+            self._reset_ruckig()
             self.weight = 0.0
             self.fault_reason = None
             self.fault_details = None
@@ -796,8 +800,8 @@ class ArmBridgeController:
     def _interpolate_right(self, dt: float) -> None:
         if self.commanded_right is None or self.desired_right is None or dt <= 0.0:
             return
-        inp = InputParameter(7)
-        out = OutputParameter(7)
+        inp = self._ruckig_input
+        out = self._ruckig_output
         inp.current_position = list(self.commanded_right)
         inp.current_velocity = list(self.right_velocity)
         inp.current_acceleration = list(self.right_acceleration)
@@ -824,6 +828,13 @@ class ArmBridgeController:
         self.commanded_right[:] = position
         self.right_velocity[:] = velocity
         self.right_acceleration[:] = acceleration
+        out.pass_to_input(inp)
+
+    def _reset_ruckig(self) -> None:
+        """Start a new online trajectory without retaining a prior session's clock."""
+
+        self._ruckig_input = InputParameter(7)
+        self._ruckig_output = OutputParameter(7)
 
     def _publish(self, now: float, robot: RobotState | None) -> None:
         if (
