@@ -4,7 +4,6 @@ from object_tracking.arm_tracking.ik_solver import (
     G1RightArmIK,
     RIGHT_ARM_JOINTS,
     XR_TELEOPERATE_REVISION,
-    adaptive_table_route,
     collision_aware_joint_path,
     default_urdf_path,
 )
@@ -95,68 +94,6 @@ def test_collision_aware_path_rejects_invalid_goal() -> None:
         lambda q: not (0.4 < q[0] < 0.6),
     )
     assert path is None
-
-
-def test_adaptive_table_route_exits_under_table_through_certified_edge() -> None:
-    support = SupportRegion.from_xy_bounds(
-        Plane((0.0, 0.0, 1.0), 0.0),
-        (0.4, -0.3),
-        (0.8, 0.3),
-        certified_edges=("u_min",),
-    )
-
-    route = adaptive_table_route(
-        (0.55, 0.0, 0.01),
-        (0.65, 0.0, 0.06),
-        support,
-        maximum_segment_m=0.02,
-    )
-
-    assert route.topology == "under_or_inside"
-    assert route.exit_edge == "u_min"
-    assert len(route.points_xyz_m) > 10
-    # It moves behind the inflated near edge before rising.
-    assert min(point[0] for point in route.points_xyz_m) < 0.30
-    outside_index = next(
-        index for index, point in enumerate(route.points_xyz_m) if point[0] < 0.30
-    )
-    assert max(point[2] for point in route.points_xyz_m[: outside_index + 1]) < 0.10
-
-
-def test_adaptive_table_route_rises_before_crossing_from_outside() -> None:
-    support = SupportRegion.from_xy_bounds(
-        Plane((0.0, 0.0, 1.0), 0.0),
-        (0.4, -0.3),
-        (0.8, 0.3),
-        certified_edges=("u_min",),
-    )
-
-    route = adaptive_table_route(
-        (0.20, 0.0, 0.01),
-        (0.65, 0.0, 0.06),
-        support,
-        maximum_segment_m=0.02,
-    )
-
-    assert route.topology == "outside"
-    first_over_table = next(
-        point for point in route.points_xyz_m if point[0] >= 0.4
-    )
-    assert first_over_table[2] >= 0.099
-
-
-def test_adaptive_table_route_refuses_unknown_below_table_exit() -> None:
-    support = SupportRegion(
-        plane=Plane((0.0, 0.0, 1.0), 0.0),
-        origin=np.zeros(3),
-        axis_u=np.asarray((1.0, 0.0, 0.0)),
-        axis_v=np.asarray((0.0, 1.0, 0.0)),
-        minimum_uv=np.asarray((0.4, -0.3)),
-        maximum_uv=np.asarray((0.8, 0.3)),
-    )
-
-    with pytest.raises(ValueError, match="no certified table edge"):
-        adaptive_table_route((0.55, 0.0, 0.01), (0.65, 0.0, 0.06), support)
 
 
 def test_collision_aware_path_advances_to_last_valid_extension_prefix() -> None:

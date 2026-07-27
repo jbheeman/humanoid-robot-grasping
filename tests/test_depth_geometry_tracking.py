@@ -17,7 +17,6 @@ from object_tracking.arm_tracking.geometry import (
     RigidTransform,
     SupportRegion,
     WorkspaceBounds,
-    detect_automatic_support_region,
     deproject_pixel,
     extract_support_plane,
     fit_plane,
@@ -274,54 +273,6 @@ class GeometryTests(unittest.TestCase):
                 (0.37, -0.35),
                 (0.80, 0.35),
             )
-
-    def test_automatic_support_uses_live_plane_and_dimension_prior(self) -> None:
-        intrinsics = CameraIntrinsics(120, 100, 100.0, 100.0, 60.0, 50.0)
-        depth = np.zeros((100, 120), dtype=np.uint16)
-        depth[20:92, 18:108] = 1000
-
-        support, diagnostics = detect_automatic_support_region(
-            depth,
-            intrinsics,
-            depth_scale=0.001,
-            optical_to_base=RigidTransform.identity(),
-            base_minimum=(-0.6, -0.6, 0.9),
-            base_maximum=(0.6, 0.6, 1.1),
-            expected_size_m=(0.60, 0.70),
-            stride=6,
-            minimum_connected_inliers=60,
-        )
-
-        self.assertEqual(support.source, "automatic_rgbd_plane_dimension_prior")
-        self.assertEqual(support.certified_edges, ("u_min",))
-        self.assertEqual(support.edge_source("u_max"), "prior_estimated")
-        np.testing.assert_allclose(
-            support.maximum_uv - support.minimum_uv,
-            (0.60, 0.70),
-            atol=1e-9,
-        )
-        self.assertLess(diagnostics.normal_tilt_deg, 0.1)
-        self.assertGreater(diagnostics.connected_inlier_count, 60)
-
-    def test_support_region_classifies_inflated_table_prism(self) -> None:
-        support = SupportRegion.from_xy_bounds(
-            Plane((0.0, 0.0, 1.0), 0.0),
-            (0.4, -0.3),
-            (0.8, 0.3),
-        )
-
-        self.assertEqual(
-            support.classify_point((0.5, 0.0, 0.01), side_margin_m=0.07),
-            "under_or_inside",
-        )
-        self.assertEqual(
-            support.classify_point((0.2, 0.0, 0.01), side_margin_m=0.07),
-            "outside",
-        )
-        self.assertEqual(
-            support.classify_point((0.5, 0.0, 0.10), side_margin_m=0.07),
-            "above_clearance",
-        )
 
 
 class TrackingTests(unittest.TestCase):

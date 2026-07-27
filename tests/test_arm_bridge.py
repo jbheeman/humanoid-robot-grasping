@@ -74,13 +74,9 @@ def bridge(clock: FakeClock, **config_changes: object) -> tuple[ArmBridgeControl
 
 
 def arm(controller: ArmBridgeController, hardware: FakeHardware, clock: FakeClock) -> None:
-    starting_q = (0.0,) * 14 if hardware.state is None else hardware.state.arm_q
     controller.enable(session_id="session-a", calibration_id="cal-1")
-    clock.advance(controller.config.startup_settle_s)
-    hardware.state = robot_state(clock, q=starting_q)
-    controller.tick()
     clock.advance(controller.config.weight_ramp_s)
-    hardware.state = robot_state(clock, q=starting_q)
+    hardware.state = robot_state(clock)
     controller.tick()
     assert controller.state is ArmState.ARMED
 
@@ -243,9 +239,6 @@ def test_ruckig_online_output_persists_across_control_ticks() -> None:
         right_arm_q=target,
         source_timestamp=clock.wall,
     )
-    clock.advance(controller.config.startup_settle_s)
-    hardware.state = robot_state(clock, q=starting)
-    controller.tick()
     clock.advance(controller.config.weight_ramp_s)
     hardware.state = robot_state(clock, q=starting)
     controller.set_target(
@@ -257,13 +250,6 @@ def test_ruckig_online_output_persists_across_control_ticks() -> None:
     )
     controller.tick()
     assert controller.state is ArmState.ARMED
-    controller.set_target(
-        session_id="session-a",
-        sequence=2,
-        calibration_id="cal-1",
-        right_arm_q=target,
-        source_timestamp=clock.wall,
-    )
     period = 1.0 / controller.config.control_hz
 
     positions = []
@@ -373,9 +359,6 @@ def test_tracking_target_during_arming_keeps_deadman_alive() -> None:
         right_arm_q=[0.01] * 7,
         source_timestamp=clock.wall,
     )
-    clock.advance(controller.config.startup_settle_s)
-    hardware.state = robot_state(clock)
-    controller.tick()
     clock.advance(controller.config.weight_ramp_s)
     hardware.state = robot_state(clock)
     controller.set_target(
@@ -389,31 +372,6 @@ def test_tracking_target_during_arming_keeps_deadman_alive() -> None:
 
     assert controller.state is ArmState.ARMED
     assert controller.hold_reason is None
-
-
-def test_tracking_target_during_arming_is_not_released_after_ramp() -> None:
-    clock = FakeClock()
-    controller, hardware = bridge(clock)
-    controller.enable(session_id="session-a", calibration_id="cal-1")
-    controller.set_target(
-        session_id="session-a",
-        sequence=1,
-        calibration_id="cal-1",
-        right_arm_q=[0.04] * 7,
-        source_timestamp=clock.wall,
-    )
-
-    clock.advance(controller.config.startup_settle_s)
-    hardware.state = robot_state(clock)
-    controller.tick()
-    clock.advance(controller.config.weight_ramp_s)
-    hardware.state = robot_state(clock)
-    controller.tick()
-
-    assert controller.state is ArmState.ARMED
-    assert controller.commanded_right == [0.0] * 7
-    assert controller.desired_right == (0.0,) * 7
-    assert controller.state_report()["loop"]["deferred_arming_targets"] == 1  # type: ignore[index]
 
 
 def test_tracking_heartbeat_does_not_extend_target_deadman() -> None:

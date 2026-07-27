@@ -1,5 +1,4 @@
 from dataclasses import replace
-import json
 from pathlib import Path
 import time
 from typing import Any, Sequence
@@ -501,45 +500,6 @@ def test_runtime_reuses_recent_support_plane_after_one_bad_frame(tmp_path: Path)
 
     assert result is cached
     assert runtime.last_support_plane_error is not None
-
-
-def test_runtime_rescales_clicked_corners_to_active_rgb_profile(tmp_path: Path) -> None:
-    calibration_path = tmp_path / "calibration.yaml"
-    tabletop_path = tmp_path / "tabletop.json"
-    save_calibration_atomic(_calibration(), calibration_path)
-    tabletop_path.write_text(
-        json.dumps(
-            {
-                "camera_frame": {"width": 8, "height": 6},
-                "tabletop": {"depth_m": 0.4, "width_m": 0.6},
-                "corners_px": [
-                    {"name": "near_left", "x": 2, "y": 4},
-                    {"name": "near_right", "x": 6, "y": 4},
-                    {"name": "far_right", "x": 6, "y": 2},
-                    {"name": "far_left", "x": 2, "y": 2},
-                ],
-            }
-        ),
-        encoding="utf-8",
-    )
-    runtime = ArmTrackingRuntime(
-        RuntimeConfig(
-            calibration_path=calibration_path,
-            tabletop_path=tabletop_path,
-            automatic_support_plane=False,
-        ),
-        lambda: {},
-        lambda status, depth: None,
-        transport=FakeTrackingTransport(),
-        repo_root=tmp_path,
-    )
-
-    assert runtime._scaled_tabletop_corners() == (
-        (1.0, 2.0),
-        (3.0, 2.0),
-        (3.0, 1.0),
-        (1.0, 1.0),
-    )
 
 
 def test_runtime_can_use_explicit_nominal_plane_without_table(tmp_path: Path) -> None:

@@ -102,9 +102,6 @@ def create_and_enable(clock, hardware, bridge, commissioning) -> str:
     )
     session_id = report["session_id"]
     commissioning.enable(session_id)
-    clock.advance(bridge.config.startup_settle_s)
-    hardware.update()
-    bridge.tick()
     clock.advance(bridge.config.weight_ramp_s)
     hardware.update()
     bridge.tick()

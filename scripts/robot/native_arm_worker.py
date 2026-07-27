@@ -133,7 +133,6 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--hardware-interface", default="eth0")
     parser.add_argument("--hardware-domain-id", type=int, default=0)
     parser.add_argument("--weight-ramp-s", type=float, default=1.5)
-    parser.add_argument("--startup-settle-s", type=float, default=0.25)
     parser.add_argument("--max-velocity-rad-s", type=float, default=0.15)
     parser.add_argument("--max-acceleration-rad-s2", type=float, default=0.5)
     parser.add_argument("--max-jerk-rad-s3", type=float, default=2.0)
@@ -176,7 +175,6 @@ def main() -> int:
         hardware,
         ArmBridgeConfig(
             allow_movement=args.allow_movement,
-            startup_settle_s=args.startup_settle_s,
             weight_ramp_s=args.weight_ramp_s,
             max_velocity_rad_s=args.max_velocity_rad_s,
             max_acceleration_rad_s2=args.max_acceleration_rad_s2,
