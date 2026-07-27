@@ -243,7 +243,7 @@ def select_start_escape_waypoint(
     tracking_tolerance_rad: float = 0.050,
     last_advance_q_rad: Sequence[float] | None = None,
     residual_lookahead_rad: float = 0.040,
-    minimum_progress_rad: float = 0.008,
+    minimum_progress_rad: float = 0.004,
 ) -> tuple[tuple[float, ...] | None, int, str | None]:
     """Select one bounded escape waypoint using measured, not commanded, pose."""
 

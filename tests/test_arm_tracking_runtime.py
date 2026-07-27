@@ -509,6 +509,43 @@ def test_start_escape_waypoint_handles_observed_thirty_milliradian_residual() ->
     assert error is None
 
 
+def test_start_escape_waypoint_advances_after_observed_table_height_progress() -> None:
+    path = (
+        (0.95, -0.68, -0.21, -0.31, -0.11, -0.02, 0.0),
+        (0.977349, -0.708261, -0.234266, -0.336836, -0.111218, -0.031664, 0.00297),
+        (0.96, -0.72, -0.24, -0.35, -0.11, -0.04, 0.003),
+    )
+    measured = (
+        0.96290,
+        -0.67702,
+        -0.21476,
+        -0.31522,
+        -0.11104,
+        -0.02372,
+        0.00266,
+    )
+    anchor = (
+        measured[0] - 0.00574,
+        measured[1],
+        measured[2],
+        measured[3],
+        measured[4],
+        measured[5],
+        measured[6],
+    )
+
+    waypoint, index, error = select_start_escape_waypoint(
+        measured,
+        path,
+        1,
+        last_advance_q_rad=anchor,
+    )
+
+    assert waypoint == path[2]
+    assert index == 2
+    assert error is None
+
+
 def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) -> None:
     calibration_path = tmp_path / "calibration.yaml"
     save_calibration_atomic(_calibration(), calibration_path)
