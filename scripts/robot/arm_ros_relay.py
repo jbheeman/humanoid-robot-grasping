@@ -84,6 +84,7 @@ class ArmRosRelay:
 
         self.String = String
         self.client = NativeArmClient(socket_path)
+        self._last_reported_state: str | None = None
         self.runner = Ros2NodeRunner("g1_arm_ros_relay")
         self.node = self.runner.start()
         qos = QoSProfile(
@@ -179,6 +180,23 @@ class ArmRosRelay:
                 "native_worker_error": f"{type(exc).__name__}: {exc}",
                 "robot_state_fresh": False,
             }
+        current_state = str(report.get("state") or "UNKNOWN")
+        if current_state != self._last_reported_state:
+            print(
+                _safe_json(
+                    {
+                        "event": "arm_state_transition",
+                        "from": self._last_reported_state,
+                        "to": current_state,
+                        "weight": report.get("weight"),
+                        "hold_reason": report.get("hold_reason"),
+                        "fault_reason": report.get("fault_reason"),
+                        "fault_details": report.get("fault_details"),
+                    }
+                ),
+                flush=True,
+            )
+            self._last_reported_state = current_state
         outgoing = self.String()
         outgoing.data = _safe_json(report)
         self.state_publisher.publish(outgoing)

@@ -24,6 +24,9 @@ from .joints import (
 from .visualization import visualization_state
 
 
+_WRIST_ARM_OFFSETS = frozenset((4, 5, 6, 11, 12, 13))
+
+
 class ArmState(str, Enum):
     DISARMED = "DISARMED"
     ARMING = "ARMING"
@@ -120,7 +123,7 @@ class ArmBridgeConfig:
     joint_contract_id: str | None = None
     control_hz: float = 250.0
     target_ttl_s: float = 0.250
-    deadman_s: float = 0.500
+    deadman_s: float = 0.750
     state_ttl_s: float = 0.250
     stable_standing_s: float = 2.0
     standing_loss_grace_s: float = 0.200
@@ -136,8 +139,8 @@ class ArmBridgeConfig:
     max_jerk_rad_s3: float = 20.0
     max_following_error_rad: float = 0.35
     max_left_drift_rad: float = 0.01
-    kp: float = 60.0
-    kd: float = 1.5
+    kp: float = 80.0
+    kd: float = 3.0
     right_joint_limits: tuple[tuple[float, float], ...] = DEFAULT_RIGHT_JOINT_LIMITS
     waist_reference_rad: tuple[float, float, float] | None = None
     max_waist_deviation_rad: float = math.radians(3.0)
@@ -970,11 +973,21 @@ class ArmBridgeController:
             return
         mode_machine = 0 if robot is None else robot.mode_machine
         q = (*self.left_latch, *self.commanded_right)
+        # Match the gains used by the installed Unitree XR arm controller:
+        # shoulder/elbow motors use 80/3 and wrists use 40/1.5.
+        kp = tuple(
+            40.0 if offset in _WRIST_ARM_OFFSETS else self.config.kp
+            for offset in range(14)
+        )
+        kd = tuple(
+            1.5 if offset in _WRIST_ARM_OFFSETS else self.config.kd
+            for offset in range(14)
+        )
         command = ArmCommand(
             q=q,
             dq=(0.0,) * 14,
-            kp=(self.config.kp,) * 14,
-            kd=(self.config.kd,) * 14,
+            kp=kp,
+            kd=kd,
             weight=max(0.0, min(1.0, self.weight)),
             mode_machine=mode_machine,
             published_at=now,

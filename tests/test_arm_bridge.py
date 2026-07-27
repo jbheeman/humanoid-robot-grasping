@@ -161,6 +161,8 @@ def test_arm_command_contains_all_joints_and_latches_left_arm() -> None:
     assert len(command.q) == len(command.dq) == len(command.kp) == len(command.kd) == 14
     assert command.q[:7] == starting[:7]
     assert command.mode_machine == 5
+    assert command.kp == (80.0,) * 4 + (40.0,) * 3 + (80.0,) * 4 + (40.0,) * 3
+    assert command.kd == (3.0,) * 4 + (1.5,) * 3 + (3.0,) * 4 + (1.5,) * 3
     assert 0.0 < command.q[7] - starting[7] < 0.04
     assert command.weight == 1.0
 

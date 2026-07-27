@@ -8,6 +8,7 @@ EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-ai}"
 MAX_TILT_DEG="${MAX_TILT_DEG:-8}"
 MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG:-12}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-90}"
+READY_STABLE_SAMPLES="${READY_STABLE_SAMPLES:-4}"
 # RGB uses the root-owned 960x540@60 GStreamer service. Librealsense opens only
 # the depth interface so NVENC and ROS depth serialization cannot block the
 # same capture loop.
@@ -161,7 +162,7 @@ if [[ -z "${bridge_pgid}" ]]; then
   exit 1
 fi
 
-python3 - "${CLIENT_IP}" "${READY_TIMEOUT_S}" <<'PY'
+python3 - "${CLIENT_IP}" "${READY_TIMEOUT_S}" "${READY_STABLE_SAMPLES}" <<'PY'
 import json
 import sys
 import time
@@ -169,6 +170,9 @@ import urllib.request
 
 host = sys.argv[1]
 timeout_s = float(sys.argv[2])
+stable_samples = int(sys.argv[3])
+if stable_samples < 1:
+    raise SystemExit("READY_STABLE_SAMPLES must be positive")
 url = f"http://{host}:8000/health"
 deadline = time.monotonic() + timeout_s
 last_reason = "GB10 has not responded"
@@ -192,7 +196,7 @@ while time.monotonic() < deadline:
             and float(tracking.get("processing_latency_ms", 1e9)) <= 250.0
         )
         ready_samples = ready_samples + 1 if ready else 0
-        if ready_samples >= 8:
+        if ready_samples >= stable_samples:
             print(
                 "GB10 ready: "
                 f"confidence={tracking.get('detector_confidence')} "
@@ -205,7 +209,7 @@ while time.monotonic() < deadline:
         last_reason = (
             str(tracking.get("reason") or tracking.get("status") or "not ready")
             if not ready
-            else f"stability_check_{ready_samples}/8"
+            else f"stability_check_{ready_samples}/{stable_samples}"
         )
     except Exception as exc:
         last_reason = f"{type(exc).__name__}: {exc}"
