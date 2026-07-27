@@ -59,6 +59,31 @@ def test_visualization_endpoint_is_read_only_and_reports_unavailable() -> None:
         yolo_stream_server.state.arm_tracking = previous
 
 
+def test_dashboard_endpoint_is_compact_and_exposes_overlay_state() -> None:
+    previous = yolo_stream_server.state.arm_tracking
+    yolo_stream_server.state.arm_tracking = {
+        "status": "target_sent",
+        "arm_state": "ARMED",
+        "pipeline_age_ms": 123.0,
+        "visualization": {
+            "camera": {"intrinsics": {"width": 960, "height": 540}},
+            "support_plane": {"footprint": {"source": "test"}},
+            "support_plane_status": {"available": True, "source": "test"},
+            "predicted_trajectory_xyz_m": [[0.4, 0.0, 0.1]],
+        },
+        "large_unused_field": list(range(100)),
+    }
+    try:
+        report = TestClient(yolo_stream_server.app).get("/api/v1/dashboard")
+        assert report.status_code == 200
+        payload = report.json()
+        assert payload["tracking"]["arm_state"] == "ARMED"
+        assert payload["visualization"]["support_plane_status"]["available"] is True
+        assert "large_unused_field" not in payload["tracking"]
+    finally:
+        yolo_stream_server.state.arm_tracking = previous
+
+
 def test_raw_snapshot_is_clean_latest_frame_with_freshness_headers() -> None:
     import numpy as np
 

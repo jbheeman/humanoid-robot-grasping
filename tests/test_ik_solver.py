@@ -351,6 +351,57 @@ def test_current_g1_hip_rest_pose_has_bounded_guided_table_clearance() -> None:
     assert solver.validate_joint_path(route.q_path, support_plane=support) is None
 
 
+def test_close_table_lab_pose_uses_staged_right_side_clearance() -> None:
+    pytest.importorskip("pinocchio")
+    pytest.importorskip("scipy")
+    repo_root = Path(__file__).resolve().parents[1]
+    urdf = default_urdf_path(repo_root)
+    if not urdf.is_file():
+        pytest.skip("pinned G1 arm assets are not installed")
+    solver = G1RightArmIK(urdf)
+    start_q = (
+        0.2891673744,
+        -0.1298251152,
+        0.0039188415,
+        0.9780925512,
+        -0.1113813892,
+        -0.0022170816,
+        -0.0082091941,
+    )
+    origin = np.asarray((0.2622941631, 0.0478690107, 0.0129425348))
+    axis_u = np.asarray((0.9993987830, -0.0065124773, 0.0340537822))
+    axis_v = np.asarray((-0.0064480827, -0.9999772100, -0.0020004504))
+    normal = -np.cross(axis_u, axis_v)
+    support = SupportRegion(
+        plane=Plane(normal, -float(normal @ origin)),
+        origin=origin,
+        axis_u=axis_u,
+        axis_v=axis_v,
+        minimum_uv=(0.0, -0.3545687169),
+        maximum_uv=(0.34, 0.3254312831),
+        certified_edges=("u_min",),
+        edge_sources=(("u_min", "calibrated_pixel_near_edge"),),
+        lateral_margin_m=0.07,
+    )
+
+    route = solver.plan_guided_clearance(
+        start_q,
+        support_plane=support,
+        lift_m=0.12,
+        forward_m=0.04,
+    )
+
+    assert route.ok, route.reason
+    assert route.q_path is not None
+    assert solver.validate_joint_path(
+        route.q_path,
+        support_plane=support,
+        edge_step_rad=0.01,
+        semantic_edge_step_rad=0.01,
+        require_escape_cleared=False,
+    ) is None
+
+
 def test_lab_g1_hip_rest_pose_has_bounded_guided_table_clearance() -> None:
     pytest.importorskip("pinocchio")
     pytest.importorskip("scipy")

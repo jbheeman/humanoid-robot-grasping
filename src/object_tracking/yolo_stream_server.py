@@ -1080,6 +1080,67 @@ def arm_tracking() -> dict[str, Any]:
         return dict(state.arm_tracking)
 
 
+@app.get("/api/v1/dashboard")
+def dashboard_state() -> dict[str, Any]:
+    """Return only the newest fields needed by the browser overlay.
+
+    This avoids serializing the complete health/visualization tree twice every
+    refresh and keeps overlay rendering entirely off the camera/YOLO threads.
+    """
+
+    with state.lock:
+        tracking = state.arm_tracking
+        visual = tracking.get("visualization")
+        if not isinstance(visual, dict):
+            visual = {}
+        return {
+            "camera": {
+                "frame_id": state.jpeg_frame_id,
+                "fps": state.fps,
+                "yolo_fps": state.yolo_fps,
+                "encode_fps": state.encode_fps,
+                "inference": state.inference_status,
+                "width": (
+                    None if state.raw_frame is None else int(state.raw_frame.shape[1])
+                ),
+                "height": (
+                    None if state.raw_frame is None else int(state.raw_frame.shape[0])
+                ),
+            },
+            "tracking": {
+                key: tracking.get(key)
+                for key in (
+                    "status",
+                    "reason",
+                    "arm_state",
+                    "arm_weight",
+                    "detector_confidence",
+                    "depth_age_ms",
+                    "pair_skew_ms",
+                    "processing_latency_ms",
+                    "pipeline_age_ms",
+                    "ik_latency_ms",
+                    "ik_step_type",
+                    "target_xyz_m",
+                    "object_xyz_m",
+                )
+            },
+            "visualization": {
+                key: visual.get(key)
+                for key in (
+                    "camera",
+                    "support_plane",
+                    "support_plane_status",
+                    "measured_object_xyz_m",
+                    "predicted_object_xyz_m",
+                    "predicted_trajectory_xyz_m",
+                    "pregrasp_target_xyz_m",
+                    "end_effector_xyz_m",
+                )
+            },
+        }
+
+
 @app.get("/visualization/state")
 def visualization_state_report() -> dict[str, Any]:
     """Read-only scene state; this endpoint has no mutation counterpart."""

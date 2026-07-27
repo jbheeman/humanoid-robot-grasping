@@ -11,6 +11,8 @@
     h1 { margin: 0 0 6px; font-size: 22px; }
     .views { display: grid; grid-template-columns: 2fr 1fr; gap: 12px; }
     img { display: block; width: 100%; min-height: 220px; object-fit: contain; background: #000; }
+    .video { position: relative; }
+    .video canvas { position: absolute; inset: 0; width: 100%; height: 100%; pointer-events: none; }
     pre { min-height: 10em; overflow: auto; white-space: pre-wrap; }
     .ok { color: #5ee0a0; }
     .bad { color: #ff7070; }
@@ -24,7 +26,7 @@
     <span id="status">Connecting…</span>
   </header>
   <section class="views">
-    <div><h2>YOLO RGB</h2><img src="/stream.mjpg" alt="Live annotated RGB"></div>
+    <div><h2>YOLO RGB + support plane</h2><div class="video"><img id="rgb" src="/stream.mjpg" alt="Live annotated RGB"><canvas id="overlay"></canvas></div></div>
     <div><h2>Depth</h2><img id="depth" src="/depth.jpg" alt="Latest depth"></div>
   </section>
   <section>
@@ -35,28 +37,117 @@
 <script>
   const statusNode = document.querySelector("#status");
   const stateNode = document.querySelector("#state");
+  const rgb = document.querySelector("#rgb");
+  const overlay = document.querySelector("#overlay");
+  const context = overlay.getContext("2d");
+  let dashboard = null;
+
+  function project(point, camera) {
+    const intrinsics = camera?.intrinsics, transform = camera?.optical_to_torso;
+    if (!intrinsics || !transform || !Array.isArray(point)) return null;
+    const d = point.map((value, index) => value - transform.translation[index]);
+    const r = transform.rotation;
+    const optical = [
+      r[0][0]*d[0] + r[1][0]*d[1] + r[2][0]*d[2],
+      r[0][1]*d[0] + r[1][1]*d[1] + r[2][1]*d[2],
+      r[0][2]*d[0] + r[1][2]*d[1] + r[2][2]*d[2]
+    ];
+    if (optical[2] <= 0.02) return null;
+    return [
+      intrinsics.fx*optical[0]/optical[2] + intrinsics.ppx,
+      intrinsics.fy*optical[1]/optical[2] + intrinsics.ppy
+    ];
+  }
+
+  function footprintPoints(support) {
+    const f = support?.footprint;
+    if (!f) return [];
+    const result = [];
+    for (const [u,v] of [
+      [f.minimum_uv[0],f.minimum_uv[1]], [f.minimum_uv[0],f.maximum_uv[1]],
+      [f.maximum_uv[0],f.maximum_uv[1]], [f.maximum_uv[0],f.minimum_uv[1]]
+    ]) result.push(f.origin.map((x,i) => x + u*f.axis_u[i] + v*f.axis_v[i]));
+    return result;
+  }
+
+  function drawOverlay() {
+    const rect = rgb.getBoundingClientRect();
+    const ratio = window.devicePixelRatio || 1;
+    const width = Math.max(1, Math.round(rect.width*ratio));
+    const height = Math.max(1, Math.round(rect.height*ratio));
+    if (overlay.width !== width || overlay.height !== height) {
+      overlay.width = width; overlay.height = height;
+    }
+    context.setTransform(ratio,0,0,ratio,0,0);
+    context.clearRect(0,0,rect.width,rect.height);
+    if (!dashboard) return;
+    const camera = dashboard.visualization?.camera;
+    const sourceWidth = camera?.intrinsics?.width || dashboard.camera.width;
+    const sourceHeight = camera?.intrinsics?.height || dashboard.camera.height;
+    if (!sourceWidth || !sourceHeight) return;
+    const scale = Math.min(rect.width/sourceWidth, rect.height/sourceHeight);
+    const offsetX = (rect.width-sourceWidth*scale)/2;
+    const offsetY = (rect.height-sourceHeight*scale)/2;
+    const screen = point => {
+      const pixel = project(point,camera);
+      return pixel && [offsetX+pixel[0]*scale,offsetY+pixel[1]*scale];
+    };
+
+    const footprint = footprintPoints(dashboard.visualization?.support_plane).map(screen);
+    if (footprint.length === 4 && footprint.every(Boolean)) {
+      context.beginPath(); context.moveTo(...footprint[0]);
+      footprint.slice(1).forEach(point => context.lineTo(...point));
+      context.closePath();
+      context.fillStyle="rgba(30,200,255,.16)"; context.fill();
+      context.strokeStyle="#1ed7ff"; context.lineWidth=2; context.stroke();
+    }
+    const trajectory = (dashboard.visualization?.predicted_trajectory_xyz_m || []).map(screen).filter(Boolean);
+    if (trajectory.length > 1) {
+      context.beginPath(); context.moveTo(...trajectory[0]);
+      trajectory.slice(1).forEach(point => context.lineTo(...point));
+      context.strokeStyle="#ffcb3d"; context.lineWidth=2; context.stroke();
+    }
+    for (const [key,color,label] of [
+      ["measured_object_xyz_m","#ff8a3d","object"],
+      ["predicted_object_xyz_m","#ffcb3d","pred"],
+      ["pregrasp_target_xyz_m","#75ff78","target"],
+      ["end_effector_xyz_m","#ff5cf4","hand"]
+    ]) {
+      const point=screen(dashboard.visualization?.[key]); if(!point) continue;
+      context.beginPath(); context.arc(point[0],point[1],5,0,Math.PI*2);
+      context.fillStyle=color; context.fill();
+      context.font="12px system-ui"; context.fillText(label,point[0]+8,point[1]-7);
+    }
+    const t=dashboard.tracking, s=dashboard.visualization?.support_plane_status;
+    const lines=[
+      `arm ${t.arm_state || "—"} | ${t.status || t.reason || "—"}`,
+      `pipeline ${t.pipeline_age_ms ?? "—"} ms | IK ${t.ik_latency_ms ?? "—"} ms`,
+      `depth ${t.depth_age_ms ?? "—"} ms | skew ${t.pair_skew_ms ?? "—"} ms`,
+      `plane ${s?.available ? "ready" : "missing"} | ${s?.source || "—"}`
+    ];
+    context.font="13px ui-monospace,monospace";
+    const boxWidth=Math.max(...lines.map(line=>context.measureText(line).width))+16;
+    context.fillStyle="rgba(0,0,0,.68)"; context.fillRect(8,36,boxWidth,lines.length*19+10);
+    lines.forEach((line,index)=>{context.fillStyle=index===3&&s?.available?"#75ff78":"#fff";context.fillText(line,16,55+index*19)});
+  }
+
   async function refresh() {
     try {
-      const [health, tracking] = await Promise.all([
-        fetch("/health", {cache: "no-store"}).then(r => r.json()),
-        fetch("/arm-tracking", {cache: "no-store"}).then(r => r.json())
-      ]);
-      statusNode.textContent = health.ok ? "Pipeline healthy" : "Pipeline fault";
-      statusNode.className = health.ok ? "ok" : "bad";
-      stateNode.textContent = JSON.stringify({
-        camera_fps: health.fps,
-        yolo_fps: health.yolo_fps,
-        inference: health.inference_status,
-        tracking
-      }, null, 2);
-      document.querySelector("#depth").src = `/depth.jpg?t=${Date.now()}`;
+      dashboard = await fetch("/api/v1/dashboard", {cache: "no-store"}).then(r => r.json());
+      const healthy=dashboard.camera.inference==="ready" && dashboard.camera.fps>0;
+      statusNode.textContent = healthy ? "Pipeline connected" : "Pipeline fault";
+      statusNode.className = healthy ? "ok" : "bad";
+      stateNode.textContent = JSON.stringify({camera:dashboard.camera,tracking:dashboard.tracking},null,2);
+      drawOverlay();
     } catch (error) {
       statusNode.textContent = `Disconnected: ${error.message}`;
       statusNode.className = "bad";
     }
   }
+  setInterval(()=>document.querySelector("#depth").src=`/depth.jpg?t=${Date.now()}`,500);
+  window.addEventListener("resize",drawOverlay);
   refresh();
-  setInterval(refresh, 500);
+  setInterval(refresh, 200);
 </script>
 </body>
 </html>

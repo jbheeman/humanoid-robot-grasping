@@ -1129,6 +1129,7 @@ class G1RightArmIK:
         support_plane: Any | None,
         lift_m: float = 0.25,
         forward_m: float = 0.06,
+        side_m: float = 0.04,
         position_tolerance_m: float = 0.006,
         max_steps_per_phase: int = 100,
     ) -> IKPathResult:
@@ -1140,8 +1141,10 @@ class G1RightArmIK:
             or not np.all(np.isfinite(start_q))
             or not np.isfinite(lift_m)
             or not np.isfinite(forward_m)
+            or not np.isfinite(side_m)
             or lift_m <= 0.0
             or forward_m < 0.0
+            or side_m < 0.0
             or not 0.001 <= position_tolerance_m <= 0.02
             or max_steps_per_phase <= 0
         ):
@@ -1166,13 +1169,38 @@ class G1RightArmIK:
 
         path = list(escape_path)
         q = np.asarray(path[-1], dtype=float)
-        for phase_name, delta_xyz in (
-            # Keep the long XR finger meshes behind the tabletop's 7 cm
-            # uncertainty margin during the subsequent vertical lift.
-            ("retract", np.asarray((-0.015, 0.0, 0.0), dtype=float)),
-            ("lift", np.asarray((0.0, 0.0, lift_m), dtype=float)),
-            ("forward", np.asarray((forward_m, 0.0, 0.0), dtype=float)),
-        ):
+        close_table = bool(
+            hasattr(support_plane, "origin")
+            and float(np.asarray(support_plane.origin, dtype=float)[0]) < 0.32
+        )
+        if close_table:
+            # The captured close-table setup needs a staged right-side route.
+            # One tall vertical hand target chooses a local IK branch whose
+            # elbow crosses the near edge. Two lifts separated by a short
+            # retraction remain collision-free and put the complete long-finger
+            # mesh above the tabletop before any forward motion.
+            initial_clearance = float(
+                support_plane.signed_distance(self.forward_kinematics(q)[:3, 3])
+            )
+            total_lift = max(lift_m, 0.16 - initial_clearance)
+            phases = (
+                ("retract", np.asarray((-0.030, 0.0, 0.0), dtype=float)),
+                ("side", np.asarray((0.0, -side_m, 0.0), dtype=float)),
+                ("lift_initial", np.asarray((0.0, 0.0, lift_m), dtype=float)),
+                ("retract_high", np.asarray((-0.020, 0.0, 0.0), dtype=float)),
+                (
+                    "lift_clear",
+                    np.asarray((0.0, 0.0, max(0.0, total_lift - lift_m)), dtype=float),
+                ),
+                ("forward", np.asarray((forward_m, 0.0, 0.0), dtype=float)),
+            )
+        else:
+            phases = (
+                ("retract", np.asarray((-0.015, 0.0, 0.0), dtype=float)),
+                ("lift", np.asarray((0.0, 0.0, lift_m), dtype=float)),
+                ("forward", np.asarray((forward_m, 0.0, 0.0), dtype=float)),
+            )
+        for phase_name, delta_xyz in phases:
             if float(np.linalg.norm(delta_xyz)) <= 1e-9:
                 continue
             target = self.forward_kinematics(q)
@@ -1196,8 +1224,12 @@ class G1RightArmIK:
                     # swing forward through the tabletop boundary while the
                     # hand is still below it.
                     inverse_joint_cost_weights=(
-                        (2.0, 2.0, 1.5, 2.0, 0.01, 0.01, 0.01)
-                        if phase_name == "lift"
+                        (
+                            (0.5, 3.0, 2.0, 1.0, 0.1, 0.1, 0.1)
+                            if close_table
+                            else (2.0, 2.0, 1.5, 2.0, 0.01, 0.01, 0.01)
+                        )
+                        if phase_name.startswith("lift")
                         else (1.0, 1.0, 1.0, 1.2, 0.6, 3.0, 3.0)
                     ),
                 )
