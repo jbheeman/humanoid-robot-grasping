@@ -907,35 +907,22 @@ class ArmTrackingRuntime:
                     support_plane=plane,
                 )
                 if not approach.ok or approach.q_path is None:
-                    # The new topology route is deliberately conservative.
-                    # Retain the previously validated lift/retract route as a
-                    # demo-safe fallback when the observed table footprint is
-                    # incomplete or its link envelope rejects an adaptive
-                    # edge. It still performs full collision/support checks.
-                    approach = self.ik.plan_guided_clearance(
-                        last_q,
-                        support_plane=plane,
-                        lift_m=0.18,
-                        forward_m=0.04,
+                    base_status.update(
+                        {
+                            "ik_status": approach.reason,
+                            "ik_step_type": ik_step_type,
+                            "ik_collision_labels": list(collision_labels),
+                            "ik_global_backend": self.ik.global_backend,
+                            "ik_local_backend": self.ik.local_backend,
+                            "arm_state": arm_state.get("state", "dry-run"),
+                        }
                     )
-                    ik_step_type = "guided_table_clearance_fallback"
-                    if not approach.ok or approach.q_path is None:
-                        base_status.update(
-                            {
-                                "ik_status": approach.reason,
-                                "ik_step_type": ik_step_type,
-                                "ik_collision_labels": list(collision_labels),
-                                "ik_global_backend": self.ik.global_backend,
-                                "ik_local_backend": self.ik.local_backend,
-                                "arm_state": arm_state.get("state", "dry-run"),
-                            }
-                        )
-                        self._reject(
-                            base_status,
-                            f"ik_{approach.reason or 'guided_approach_failed'}",
-                            colormap,
-                        )
-                        return
+                    self._reject(
+                        base_status,
+                        f"ik_{approach.reason or 'adaptive_approach_failed'}",
+                        colormap,
+                    )
+                    return
                 self._approach_path = approach.q_path
                 self._approach_target_index = 1
                 self._approach_target_xyz = tuple(float(value) for value in target.position)
