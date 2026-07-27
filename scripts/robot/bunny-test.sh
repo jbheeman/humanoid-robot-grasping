@@ -17,6 +17,7 @@ READY_STABLE_SAMPLES="${READY_STABLE_SAMPLES:-4}"
 # the depth interface so NVENC and ROS depth serialization cannot block the
 # same capture loop.
 DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS:-60}"
+DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS:-15}"
 # Domain 42 is also used by older project processes and has repeatedly left
 # the live G1 and GB10 participants undiscovered.  The live bunny test uses a
 # dedicated domain that is verified end-to-end during commissioning.
@@ -144,6 +145,7 @@ echo "  waist limit: ${MAX_WAIST_DEVIATION_DEG} degrees"
 echo "  arm limits:  ${ARM_MAX_VELOCITY_RAD_S} rad/s, ${ARM_MAX_ACCELERATION_RAD_S2} rad/s^2, ${ARM_MAX_JERK_RAD_S3} rad/s^3"
 echo "  weight ramp: ${ARM_WEIGHT_RAMP_S} s"
 echo "  depth rate:  ${DEPTH_CAPTURE_FPS} Hz"
+echo "  depth publish: ${DEPTH_PUBLISH_FPS} Hz"
 echo "  ROS domain:  ${PROJECT_ROS_DOMAIN_ID}"
 echo "Keep the physical E-stop in hand. Ctrl-C performs a controlled stop."
 
@@ -158,6 +160,7 @@ ARM_MAX_VELOCITY_RAD_S="${ARM_MAX_VELOCITY_RAD_S}" \
 ARM_MAX_ACCELERATION_RAD_S2="${ARM_MAX_ACCELERATION_RAD_S2}" \
 ARM_MAX_JERK_RAD_S3="${ARM_MAX_JERK_RAD_S3}" \
 DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS}" \
+DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS}" \
 RGB_MODE=highfps-service \
 G1_PROJECT_ROS_DOMAIN_ID="${PROJECT_ROS_DOMAIN_ID}" \
 QUIET_HEALTHY_DEPTH=1 \
@@ -205,7 +208,15 @@ while time.monotonic() < deadline:
             and float(tracking.get("depth_age_ms", 1e9)) <= 200.0
             and float(tracking.get("processing_latency_ms", 1e9)) <= 250.0
         )
-        ready_samples = ready_samples + 1 if ready else 0
+        if ready:
+            ready_samples += 1
+        elif tracking.get("reason") not in {
+            "depth_receive_timeout",
+            "rgb_depth_pair_stale",
+        }:
+            # A missed asynchronous RGB/depth pair does not invalidate the
+            # prior fresh IK samples. Genuine planning or state failures do.
+            ready_samples = 0
         if ready_samples >= stable_samples:
             print(
                 "GB10 ready: "

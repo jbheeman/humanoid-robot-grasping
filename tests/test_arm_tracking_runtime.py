@@ -508,9 +508,38 @@ def test_transient_perception_rejection_leaves_session_for_deadman(tmp_path: Pat
 def test_runtime_config_has_no_http_or_token_requirement(tmp_path: Path) -> None:
     config = RuntimeConfig(calibration_path=tmp_path / "calibration.yaml", execute=True)
     assert config.execute is True
+    assert config.max_pair_skew_s == pytest.approx(0.240)
     assert not hasattr(config, "depth_ws_url")
     assert not hasattr(config, "arm_url")
     assert not hasattr(config, "arm_token_file")
+
+
+def test_visualization_reports_cached_support_during_pair_miss(tmp_path: Path) -> None:
+    calibration_path = tmp_path / "calibration.yaml"
+    save_calibration_atomic(_calibration(), calibration_path)
+    runtime = ArmTrackingRuntime(
+        RuntimeConfig(calibration_path=calibration_path),
+        lambda: {},
+        lambda status, depth: None,
+        transport=FakeTrackingTransport(),
+        repo_root=tmp_path,
+    )
+    support = SupportRegion.from_xy_bounds(
+        Plane((0.0, 0.0, 1.0), -0.1),
+        (0.0, 0.0),
+        (1.0, 1.0),
+        source="test_cached_plane",
+    )
+    runtime.last_support_plane = support
+    runtime.last_support_plane_at = time.monotonic()
+
+    visualization = runtime._visualization_context({"state": "DISARMED"})
+
+    assert visualization["support_plane"] == support.to_dict()
+    status = visualization["support_plane_status"]
+    assert status["available"] is True
+    assert status["cached"] is True
+    assert status["source"] == "test_cached_plane"
 
 
 def test_runtime_receives_depth_from_injected_transport(tmp_path: Path) -> None:

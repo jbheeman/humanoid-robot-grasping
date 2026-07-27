@@ -101,7 +101,11 @@ class RuntimeConfig:
     # clocks. On the live GB10 the measured healthy p95 can exceed 100 ms
     # while both sources remain fresh; keep this below the separate 250 ms
     # end-to-end safety gate rather than rejecting every such pair.
-    max_pair_skew_s: float = 0.150
+    # RGB and depth are received by independent low-latency transports. Their
+    # receipt timestamps can differ by almost one depth publish period plus
+    # scheduler jitter even though both samples are individually fresh. The
+    # bridge still enforces the separate 250 ms perception TTL.
+    max_pair_skew_s: float = 0.240
     prediction_horizon_s: float = 0.150
     trajectory_model_path: Path | None = None
     intercept_config_path: Path | None = None
@@ -1534,6 +1538,12 @@ class ArmTrackingRuntime:
             if self.home_q is not None:
                 reference[22:29] = self.home_q
             self.reference_body_q = tuple(reference)
+        cached_support = self.last_support_plane
+        cached_support_age_ms = (
+            max(0.0, time.monotonic() - self.last_support_plane_at) * 1000.0
+            if cached_support is not None and self.last_support_plane_at
+            else None
+        )
         result = {
             **robot_visual,
             "reference_pose_rad": (
@@ -1549,12 +1559,21 @@ class ArmTrackingRuntime:
                 "intrinsics": self.calibration.rgb_intrinsics.to_dict(),
                 "optical_to_torso": self.calibration.optical_to_torso.to_dict(),
             },
-            "support_plane": None,
+            "support_plane": (
+                None if cached_support is None else cached_support.to_dict()
+            ),
             "support_plane_status": {
-                "available": False,
-                "age_ms": None,
+                "available": cached_support is not None,
+                "age_ms": (
+                    None
+                    if cached_support_age_ms is None
+                    else round(cached_support_age_ms, 1)
+                ),
                 "error": self.last_support_plane_error,
-                "source": None,
+                "source": (
+                    None if cached_support is None else cached_support.source
+                ),
+                "cached": cached_support is not None,
                 "automatic": self._automatic_support_diagnostics,
                 "stable_samples": self._automatic_support_stable_samples,
             },
