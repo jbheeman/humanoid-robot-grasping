@@ -494,6 +494,7 @@ class ArmBridgeController:
                 require_stable=False,
                 require_standing=False,
                 require_waist_reference=False,
+                require_motion_mode=False,
             )
             self.last_sequence = sequence
             self.last_target_at = now
@@ -600,8 +601,9 @@ class ArmBridgeController:
                 self._enter_fault("robot_state_stale", now)
             elif not self._finite(robot.arm_q):
                 self._enter_fault("robot_state_non_finite", now)
-            elif not robot.compatible_motion_mode:
-                self._enter_fault("incompatible_motion_mode", now)
+            # Motion mode is verified synchronously before enable. The stock
+            # asynchronous CheckMode poll is diagnostic-only for that active
+            # session because it emits false transient names during arm_sdk.
             elif not robot.controller_available:
                 self._enter_fault("competing_arm_controller", now)
             elif (
@@ -826,6 +828,7 @@ class ArmBridgeController:
         require_commissioning_verification: bool = False,
         require_standing: bool = True,
         require_waist_reference: bool = True,
+        require_motion_mode: bool = True,
     ) -> RobotState:
         robot = self.hardware.latest_state()
         if robot is None or now - robot.received_at > self.config.state_ttl_s:
@@ -844,7 +847,7 @@ class ArmBridgeController:
                 f"Standing state must remain stable for {self.config.stable_standing_s:.1f} seconds",
                 code="standing_not_stable",
             )
-        if not robot.compatible_motion_mode:
+        if require_motion_mode and not robot.compatible_motion_mode:
             raise ArmBridgeError(
                 "Robot motion mode is incompatible with arm_sdk", code="incompatible_motion_mode"
             )

@@ -138,6 +138,27 @@ def test_enable_requires_configured_matching_calibration() -> None:
     assert mismatch.value.code == "calibration_mismatch"
 
 
+def test_verified_motion_mode_is_latched_for_the_active_tracking_session() -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock)
+    arm(controller, hardware, clock)
+    period = 1.0 / controller.config.control_hz
+    clock.advance(period)
+    hardware.state = robot_state(clock, compatible_motion_mode=False)
+
+    controller.tick()
+    controller.set_target(
+        session_id="session-a",
+        sequence=0,
+        calibration_id="cal-1",
+        right_arm_q=[0.01] * 7,
+        source_timestamp=clock.wall,
+    )
+
+    assert controller.state is ArmState.ARMED
+    assert controller.fault_reason is None
+
+
 def test_arm_command_contains_all_joints_and_latches_left_arm() -> None:
     clock = FakeClock()
     controller, hardware = bridge(clock)

@@ -23,6 +23,7 @@ from .geometry import (
     Plane,
     SupportRegion,
     TargetPose,
+    WorkspaceBounds,
 )
 from .ik_solver import G1RightArmIK, IKResult, IKUnavailable, default_urdf_path
 from .interception import (
@@ -50,7 +51,7 @@ _SUPPORT_PLANE_ARMED_TTL_S = 300.000
 # Keep the palm center above the plush's upper body instead of descending to
 # the generic near-surface pregrasp height. Swept-link validation still checks
 # every incremental IK edge against the complete table support region.
-_TRACKING_PALM_CLEARANCE_M = 0.140
+_TRACKING_PALM_CLEARANCE_M = 0.085
 _SOFT_PERCEPTION_REJECTIONS = frozenset(
     {
         "depth_uncertain",
@@ -176,7 +177,7 @@ def clamp_point_height_to_support(
     support_plane: Any,
     *,
     minimum_height_m: float = 0.03,
-    maximum_height_m: float = 0.12,
+    maximum_height_m: float = 0.08,
 ) -> tuple[np.ndarray, float]:
     """Keep registered XYZ while bounding only its tabletop-normal height."""
 
@@ -209,6 +210,28 @@ def enforce_tracking_palm_clearance(
         ),
         target.orientation_xyzw,
     )
+
+
+def project_target_into_workspace(
+    target: TargetPose,
+    workspace: WorkspaceBounds,
+    *,
+    margin_m: float = 0.005,
+    maximum_correction_m: float = 0.08,
+) -> tuple[TargetPose | None, float]:
+    """Project a nearby pregrasp target onto the calibrated reachable box."""
+
+    if margin_m < 0.0 or maximum_correction_m <= 0.0:
+        raise ValueError("workspace projection bounds must be positive")
+    minimum = workspace.minimum + margin_m
+    maximum = workspace.maximum - margin_m
+    if np.any(maximum <= minimum):
+        raise ValueError("workspace margin leaves no reachable volume")
+    projected = np.clip(target.position, minimum, maximum)
+    correction = float(np.linalg.norm(projected - target.position))
+    if correction > maximum_correction_m:
+        return None, correction
+    return TargetPose(projected, target.orientation_xyzw), correction
 
 
 def right_arm_ik_seed(
@@ -928,6 +951,21 @@ class ArmTrackingRuntime:
                 stand_off_m=0.07,
             )
             target = enforce_tracking_palm_clearance(target, plane)
+        raw_target_position = target.position.copy()
+        projected_target, workspace_correction_m = project_target_into_workspace(
+            target,
+            self.calibration.workspace,
+        )
+        if projected_target is None:
+            base_status.update(
+                {
+                    "raw_target_xyz_m": raw_target_position.round(5).tolist(),
+                    "workspace_correction_m": round(workspace_correction_m, 5),
+                }
+            )
+            self._reject(base_status, "workspace_violation", colormap)
+            return
+        target = projected_target
         base_status.update(
             {
                 "status": "tracking",
@@ -957,6 +995,8 @@ class ArmTrackingRuntime:
                 ),
                 "prediction_evaluation": self._prediction_evaluation(),
                 "target_xyz_m": target.position.round(5).tolist(),
+                "raw_target_xyz_m": raw_target_position.round(5).tolist(),
+                "workspace_correction_m": round(workspace_correction_m, 5),
             }
         )
         base_status["visualization"].update(
@@ -1013,7 +1053,7 @@ class ArmTrackingRuntime:
                     transform,
                     last_q,
                     support_plane=plane,
-                    top_clearance_m=0.15,
+                    top_clearance_m=0.11,
                 )
                 if not approach.ok or approach.q_path is None:
                     # The new topology route is deliberately conservative.
@@ -1024,7 +1064,7 @@ class ArmTrackingRuntime:
                     approach = self.ik.plan_guided_clearance(
                         last_q,
                         support_plane=plane,
-                        lift_m=0.18,
+                        lift_m=0.12,
                         forward_m=0.04,
                     )
                     ik_step_type = "guided_table_clearance_fallback"
@@ -1346,10 +1386,16 @@ class ArmTrackingRuntime:
         if measured_q is None:
             self._reject(base_status, measured_error or "measured_arm_unavailable", colormap)
             return
-        if not self.calibration.workspace.contains(target_position):
+        projected_target, workspace_correction_m = project_target_into_workspace(
+            TargetPose(target_position, np.asarray((0.0, 0.0, 0.0, 1.0))),
+            self.calibration.workspace,
+        )
+        if projected_target is None:
             self._reject(base_status, "workspace_violation", colormap)
             return
-        if not has_support_clearance(target_position, plane):
+        target_position = projected_target.position
+        base_status["workspace_correction_m"] = round(workspace_correction_m, 5)
+        if not has_support_clearance(target_position, plane, minimum_clearance_m=0.05):
             self._reject(base_status, "support_plane_clearance", colormap)
             return
         collision_labels = self.ik.collision_labels(measured_q)

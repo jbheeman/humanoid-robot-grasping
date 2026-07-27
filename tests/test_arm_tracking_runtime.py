@@ -33,6 +33,7 @@ from object_tracking.arm_tracking.runtime import (
     compress_validated_joint_path,
     enforce_tracking_palm_clearance,
     measured_right_arm_for_intercept,
+    project_target_into_workspace,
     register_depth_in_rgb,
     right_arm_ik_seed,
     select_start_escape_waypoint,
@@ -246,6 +247,15 @@ def test_registered_point_height_accepts_bounded_support_region() -> None:
 
     np.testing.assert_allclose(corrected, (0.52, 0.14, 0.03))
     assert height == 0.03
+
+
+def test_registered_point_height_caps_spurious_tall_depth() -> None:
+    plane = Plane((0.0, 0.0, 1.0), 0.0)
+
+    corrected, height = clamp_point_height_to_support((0.40, -0.05, 0.15), plane)
+
+    np.testing.assert_allclose(corrected, (0.40, -0.05, 0.08))
+    assert height == pytest.approx(0.08)
 
 
 def test_ik_seed_prefers_fresh_measured_right_arm_over_disarmed_command() -> None:
@@ -591,8 +601,35 @@ def test_tracking_target_stays_in_high_tabletop_interaction_corridor() -> None:
 
     elevated = enforce_tracking_palm_clearance(target, support)
 
-    assert support.signed_distance(elevated.position) == pytest.approx(0.14)
+    assert support.signed_distance(elevated.position) == pytest.approx(0.085)
     np.testing.assert_allclose(elevated.position[:2], target.position[:2], atol=1e-9)
+
+
+def test_close_pregrasp_target_projects_into_reachable_workspace() -> None:
+    workspace = WorkspaceBounds((0.37, -0.35, -0.03), (0.80, 0.35, 0.25))
+    target = TargetPose(
+        np.asarray((0.34, -0.06, 0.09)),
+        np.asarray((0.0, 0.0, 0.0, 1.0)),
+    )
+
+    projected, correction = project_target_into_workspace(target, workspace)
+
+    assert projected is not None
+    np.testing.assert_allclose(projected.position, (0.375, -0.06, 0.09))
+    assert correction == pytest.approx(0.035)
+
+
+def test_far_target_is_not_hidden_by_workspace_projection() -> None:
+    workspace = WorkspaceBounds((0.37, -0.35, -0.03), (0.80, 0.35, 0.25))
+    target = TargetPose(
+        np.asarray((0.20, -0.06, 0.09)),
+        np.asarray((0.0, 0.0, 0.0, 1.0)),
+    )
+
+    projected, correction = project_target_into_workspace(target, workspace)
+
+    assert projected is None
+    assert correction > 0.08
 
 
 def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) -> None:
