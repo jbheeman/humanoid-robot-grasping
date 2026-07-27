@@ -293,6 +293,7 @@ class DepthOnlyRosNode:
             "capture_error": health["last_error"],
             "publish_error": self._last_publish_error,
             "rgb_relay": health["rgb_relay"],
+            "depth_tcp": None if self.depth_tcp is None else self.depth_tcp.diagnostics(),
         }
         encoded = _safe_json(status)
         if encoded != self._last_depth_diagnostic:

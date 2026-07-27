@@ -414,7 +414,12 @@ class ArmTrackingRuntime:
                 if frame is None:
                     self.last_sequence = -1
                     self._stop_arm("depth_transport_lost")
-                    self._report(status="waiting_for_depth", reason="depth_receive_timeout")
+                    diagnostics = getattr(self.transport, "depth_diagnostics", lambda: {})()
+                    self._report(
+                        status="waiting_for_depth",
+                        reason="depth_receive_timeout",
+                        **diagnostics,
+                    )
                     continue
                 retry_s = 0.25
                 if frame.sequence <= self.last_sequence:

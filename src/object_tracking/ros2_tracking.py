@@ -315,6 +315,11 @@ class RosTrackingTransport:
         report["topic_age_ms"] = round(age_s * 1000.0, 3)
         return report
 
+    def depth_diagnostics(self) -> dict[str, object]:
+        if self._depth_tcp_receiver is None:
+            return {"depth_transport": "ros"}
+        return self._depth_tcp_receiver.diagnostics()
+
     def enable_arm(self, session_id: str, calibration_id: str) -> dict[str, Any]:
         if not session_id or not calibration_id:
             raise ValueError("session_id and calibration_id are required")
