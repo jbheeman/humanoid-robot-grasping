@@ -66,6 +66,12 @@ DEFAULT_RIGHT_JOINT_LIMITS = (
     (-1.6144, 1.6144),
 )
 
+# Gravity feed-forward is deliberately limited to 30% of the pinned G1 URDF's
+# effort limits (25 Nm for shoulder/elbow/roll, 5 Nm for wrist pitch/yaw).
+# Position feedback remains the primary controller; feed-forward only carries
+# a bounded share of the modeled static arm load.
+RIGHT_ARM_GRAVITY_FF_LIMITS_NM = (7.5, 7.5, 7.5, 7.5, 1.5, 1.5, 1.5)
+
 # The shoulder-roll range is mirrored between sides. The remaining limits use
 # the same signs in Unitree's canonical 29-DOF joint convention.
 DEFAULT_LEFT_JOINT_LIMITS = (

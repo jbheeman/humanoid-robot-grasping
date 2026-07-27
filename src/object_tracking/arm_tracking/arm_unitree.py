@@ -216,7 +216,7 @@ class UnitreeArmHardware:
             motor.dq = command.dq[offset]
             motor.kp = command.kp[offset]
             motor.kd = command.kd[offset]
-            motor.tau = 0.0
+            motor.tau = command.tau[offset]
         # Unitree's arm_sdk convention uses the otherwise-unused motor slot
         # as an arm arbitration weight.  Waist and legs remain untouched.
         low_cmd.motor_cmd[ARM_WEIGHT_INDEX].q = command.weight

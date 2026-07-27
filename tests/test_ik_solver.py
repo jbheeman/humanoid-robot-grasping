@@ -267,6 +267,27 @@ def test_analytic_translation_jacobian_matches_finite_difference() -> None:
     assert analytic == pytest.approx(finite_difference, abs=3e-5)
 
 
+def test_gravity_compensation_uses_pinned_model_and_bounded_effort() -> None:
+    pytest.importorskip("pinocchio")
+    pytest.importorskip("scipy")
+    repo_root = Path(__file__).resolve().parents[1]
+    urdf = default_urdf_path(repo_root)
+    if not urdf.is_file():
+        pytest.skip("pinned G1 arm assets are not installed")
+    solver = G1RightArmIK(urdf)
+
+    torque = solver.gravity_compensation_torque(np.zeros(7))
+
+    assert torque == pytest.approx(
+        (-3.6433, -0.2017, -0.0002, -3.4123, 0.0388, -1.2191, 0.0),
+        abs=1e-3,
+    )
+    assert max(abs(value) for value in torque[:4]) <= 7.5
+    assert max(abs(value) for value in torque[4:]) <= 1.5
+    with pytest.raises(ValueError, match="seven finite"):
+        solver.gravity_compensation_torque([0.0] * 6)
+
+
 def test_global_solver_rejects_unreachable_target() -> None:
     pytest.importorskip("pinocchio")
     pytest.importorskip("scipy")

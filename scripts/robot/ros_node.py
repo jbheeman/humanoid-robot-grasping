@@ -572,6 +572,7 @@ class RobotRosNode:
                 sequence=int(payload.get("sequence", -1)),
                 calibration_id=str(payload.get("calibration_id", "")),
                 right_arm_q=tuple(float(value) for value in payload.get("right_arm_q", ())),
+                right_arm_tau_ff=payload.get("right_arm_tau_ff"),
                 pipeline_age_ms=int(payload.get("pipeline_age_ms", (1 << 32) - 1)),
             )
         except ArmBridgeError:

@@ -345,12 +345,16 @@ class RosTrackingTransport:
         sequence: int,
         calibration_id: str,
         right_arm_q: Sequence[float],
+        right_arm_tau_ff: Sequence[float],
         pipeline_age_ms: float,
     ) -> None:
         self._require_started()
         joints = tuple(float(value) for value in right_arm_q)
         if len(joints) != 7:
             raise ValueError("right_arm_q must contain exactly seven joints")
+        torque = tuple(float(value) for value in right_arm_tau_ff)
+        if len(torque) != 7:
+            raise ValueError("right_arm_tau_ff must contain exactly seven torques")
         if sequence < 0:
             raise ValueError("sequence must be non-negative")
         message = self._types["String"]()
@@ -360,6 +364,7 @@ class RosTrackingTransport:
                 "sequence": int(sequence),
                 "calibration_id": str(calibration_id),
                 "right_arm_q": list(joints),
+                "right_arm_tau_ff": list(torque),
                 "pipeline_age_ms": max(
                     0, min((1 << 32) - 1, int(round(pipeline_age_ms)))
                 ),

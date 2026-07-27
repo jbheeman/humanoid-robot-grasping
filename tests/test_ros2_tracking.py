@@ -199,7 +199,14 @@ def test_target_and_service_calls_use_ros_entities() -> None:
     transport.start()
 
     assert transport.enable_arm("session", "calibration") == {"state": "ARMED"}
-    transport.publish_target("session", 9, "calibration", [0.1] * 7, 12.4)
+    transport.publish_target(
+        "session",
+        9,
+        "calibration",
+        [0.1] * 7,
+        [-0.2] * 7,
+        12.4,
+    )
     transport.heartbeat_arm("session")
     transport.stop_arm("done")
 
@@ -218,6 +225,7 @@ def test_target_and_service_calls_use_ros_entities() -> None:
     assert target_payload["sequence"] == 9
     assert target_payload["pipeline_age_ms"] == 12
     assert target_payload["right_arm_q"] == [0.1] * 7
+    assert target_payload["right_arm_tau_ff"] == [-0.2] * 7
     transport.close()
 
 

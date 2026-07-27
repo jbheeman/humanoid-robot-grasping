@@ -65,6 +65,7 @@ class NativeArmService:
                 sequence=payload.get("sequence"),
                 calibration_id=payload.get("calibration_id"),
                 right_arm_q=payload.get("right_arm_q"),
+                right_arm_tau_ff=payload.get("right_arm_tau_ff"),
                 source_timestamp=payload.get("source_timestamp"),
                 pipeline_age_ms=payload.get("pipeline_age_ms"),
             )

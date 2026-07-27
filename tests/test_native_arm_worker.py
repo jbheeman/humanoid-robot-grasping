@@ -49,6 +49,7 @@ def test_native_service_preserves_guarded_tracking_protocol() -> None:
             "sequence": 7,
             "calibration_id": "c",
             "right_arm_q": [0.01] * 7,
+            "right_arm_tau_ff": [-0.2] * 7,
             "pipeline_age_ms": 12,
         },
     }) == {"last_sequence": 7}
@@ -63,6 +64,7 @@ def test_native_service_preserves_guarded_tracking_protocol() -> None:
     assert target[0] == "target"
     assert target[1]["pipeline_age_ms"] == 12
     assert target[1]["right_arm_q"] == [0.01] * 7
+    assert target[1]["right_arm_tau_ff"] == [-0.2] * 7
 
 
 def test_native_service_rejects_unknown_or_non_object_requests() -> None:

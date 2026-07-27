@@ -19,6 +19,7 @@ from ruckig import InputParameter, OutputParameter, Result, Ruckig
 from .joints import (
     BODY_JOINT_NAMES,
     DEFAULT_RIGHT_JOINT_LIMITS,
+    RIGHT_ARM_GRAVITY_FF_LIMITS_NM,
     RIGHT_ARM_JOINT_NAMES,
 )
 from .visualization import visualization_state
@@ -97,9 +98,12 @@ class ArmCommand:
     weight: float
     mode_machine: int
     published_at: float
+    tau: tuple[float, ...] = (0.0,) * 14
 
     def __post_init__(self) -> None:
-        if not all(len(values) == 14 for values in (self.q, self.dq, self.kp, self.kd)):
+        if not all(
+            len(values) == 14 for values in (self.q, self.dq, self.kp, self.kd, self.tau)
+        ):
             raise ValueError("ArmCommand must represent all 14 arm joints")
 
 
@@ -136,11 +140,13 @@ class ArmBridgeConfig:
     max_velocity_rad_s: float = 0.50
     max_acceleration_rad_s2: float = 2.0
     max_jerk_rad_s3: float = 20.0
+    max_tau_ff_slew_nm_s: float = 20.0
     max_following_error_rad: float = 0.35
     max_left_drift_rad: float = 0.01
     kp: float = 80.0
     kd: float = 3.0
     right_joint_limits: tuple[tuple[float, float], ...] = DEFAULT_RIGHT_JOINT_LIMITS
+    right_tau_ff_limits_nm: tuple[float, ...] = RIGHT_ARM_GRAVITY_FF_LIMITS_NM
     waist_reference_rad: tuple[float, float, float] | None = None
     max_waist_deviation_rad: float = math.radians(3.0)
 
@@ -160,6 +166,7 @@ class ArmBridgeConfig:
             "max_velocity_rad_s": self.max_velocity_rad_s,
             "max_acceleration_rad_s2": self.max_acceleration_rad_s2,
             "max_jerk_rad_s3": self.max_jerk_rad_s3,
+            "max_tau_ff_slew_nm_s": self.max_tau_ff_slew_nm_s,
             "max_following_error_rad": self.max_following_error_rad,
             "max_left_drift_rad": self.max_left_drift_rad,
         }
@@ -174,6 +181,11 @@ class ArmBridgeConfig:
             raise ValueError("control_hz must be within the verified 50-250 Hz range")
         if len(self.right_joint_limits) != 7:
             raise ValueError("right_joint_limits must contain seven ranges")
+        if len(self.right_tau_ff_limits_nm) != 7 or not all(
+            math.isfinite(value) and value > 0.0
+            for value in self.right_tau_ff_limits_nm
+        ):
+            raise ValueError("right_tau_ff_limits_nm must contain seven positive limits")
         if self.joint_limit_margin_rad < 0.0:
             raise ValueError("joint_limit_margin_rad must be >= 0")
         if self.waist_reference_rad is not None and len(self.waist_reference_rad) != 3:
@@ -189,6 +201,7 @@ class LoopMetrics:
     max_period_s: float = 0.0
     maximum_command_step_rad: float = 0.0
     maximum_following_error_rad: float = 0.0
+    maximum_gravity_ff_nm: float = 0.0
     deferred_arming_targets: int = 0
 
     def as_dict(self) -> dict[str, int | float | None]:
@@ -202,6 +215,7 @@ class LoopMetrics:
             "max_period_ms": round(self.max_period_s * 1000.0, 3),
             "maximum_command_step_rad": round(self.maximum_command_step_rad, 7),
             "maximum_following_error_rad": round(self.maximum_following_error_rad, 7),
+            "maximum_gravity_ff_nm": round(self.maximum_gravity_ff_nm, 7),
             "deferred_arming_targets": self.deferred_arming_targets,
         }
 
@@ -237,6 +251,8 @@ class ArmBridgeController:
         self.left_latch: tuple[float, ...] | None = None
         self.commanded_right: list[float] | None = None
         self.desired_right: tuple[float, ...] | None = None
+        self.commanded_right_tau_ff = [0.0] * 7
+        self.desired_right_tau_ff = (0.0,) * 7
         self.right_velocity = [0.0] * 7
         self.right_acceleration = [0.0] * 7
         self._ruckig = Ruckig(7, 1.0 / self.config.control_hz)
@@ -316,6 +332,8 @@ class ArmBridgeController:
             self.left_latch = tuple(robot.arm_q[:7])
             self.commanded_right = list(robot.arm_q[7:])
             self.desired_right = tuple(robot.arm_q[7:])
+            self.commanded_right_tau_ff = [0.0] * 7
+            self.desired_right_tau_ff = (0.0,) * 7
             self.right_velocity = [0.0] * 7
             self.right_acceleration = [0.0] * 7
             self._reset_ruckig()
@@ -372,6 +390,8 @@ class ArmBridgeController:
             self.left_latch = tuple(robot.arm_q[:7])
             self.commanded_right = list(robot.arm_q[7:])
             self.desired_right = tuple(robot.arm_q[7:])
+            self.commanded_right_tau_ff = [0.0] * 7
+            self.desired_right_tau_ff = (0.0,) * 7
             self.right_velocity = [0.0] * 7
             self.right_acceleration = [0.0] * 7
             self._reset_ruckig()
@@ -393,6 +413,7 @@ class ArmBridgeController:
         sequence: object,
         calibration_id: object,
         right_arm_q: object,
+        right_arm_tau_ff: object = None,
         source_timestamp: object = None,
         pipeline_age_ms: object = None,
     ) -> dict[str, object]:
@@ -446,6 +467,7 @@ class ArmBridgeController:
                     f"Target perception age is outside the {ttl_ms} ms TTL", code="stale_target"
                 )
             target = self._validate_target(right_arm_q)
+            tau_ff = self._validate_tau_ff(right_arm_tau_ff)
             assert self.commanded_right is not None
             self._require_safe_robot_state(
                 now,
@@ -464,6 +486,7 @@ class ArmBridgeController:
                 self.metrics.deferred_arming_targets += 1
                 return self.state_report(now)
             self.desired_right = target
+            self.desired_right_tau_ff = tau_ff
             return self.state_report(now)
 
     def set_commissioning_target(
@@ -643,6 +666,9 @@ class ArmBridgeController:
                 "max_velocity_rad_s": self.config.max_velocity_rad_s,
                 "max_acceleration_rad_s2": self.config.max_acceleration_rad_s2,
                 "max_jerk_rad_s3": self.config.max_jerk_rad_s3,
+                "gravity_feedforward": True,
+                "gravity_ff_limits_nm": list(self.config.right_tau_ff_limits_nm),
+                "max_tau_ff_slew_nm_s": self.config.max_tau_ff_slew_nm_s,
                 "target_ttl_ms": round(self.config.target_ttl_s * 1000.0),
                 "deadman_ms": round(self.config.deadman_s * 1000.0),
                 "weight_ramp_ms": round(self.config.weight_ramp_s * 1000.0),
@@ -715,6 +741,8 @@ class ArmBridgeController:
                 "fault_reason": self.fault_reason,
                 "fault_details": self.fault_details,
                 "commanded_arm_q": commanded_arm,
+                "commanded_right_tau_ff_nm": list(self.commanded_right_tau_ff),
+                "desired_right_tau_ff_nm": list(self.desired_right_tau_ff),
                 "visualization": visual,
                 "loop": self.metrics.as_dict(),
             }
@@ -836,6 +864,37 @@ class ArmBridgeController:
                 )
         return target
 
+    def _validate_tau_ff(self, value: object) -> tuple[float, ...]:
+        if value is None:
+            return (0.0,) * 7
+        if isinstance(value, (str, bytes)) or not isinstance(value, Sequence) or len(value) != 7:
+            raise ArmBridgeError(
+                "right_arm_tau_ff must contain seven torques",
+                code="invalid_torque_feedforward",
+            )
+        try:
+            torque = tuple(float(item) for item in value)
+        except (TypeError, ValueError) as exc:
+            raise ArmBridgeError(
+                "right_arm_tau_ff must contain numeric torques",
+                code="invalid_torque_feedforward",
+            ) from exc
+        if not self._finite(torque):
+            raise ArmBridgeError(
+                "right_arm_tau_ff must contain finite torques",
+                code="invalid_torque_feedforward",
+            )
+        for index, (value_nm, limit_nm) in enumerate(
+            zip(torque, self.config.right_tau_ff_limits_nm)
+        ):
+            if abs(value_nm) > limit_nm:
+                raise ArmBridgeError(
+                    f"{RIGHT_ARM_JOINT_NAMES[index]} gravity torque exceeds "
+                    f"{limit_nm:.2f} Nm",
+                    code="torque_feedforward_limit",
+                )
+        return torque
+
     def _interpolate_right(self, dt: float) -> None:
         if self.commanded_right is None or self.desired_right is None or dt <= 0.0:
             return
@@ -880,6 +939,17 @@ class ArmBridgeController:
         self.metrics.maximum_command_step_rad = max(
             self.metrics.maximum_command_step_rad,
             max(abs(actual - prior) for actual, prior in zip(position, previous)),
+        )
+        maximum_tau_step = self.config.max_tau_ff_slew_nm_s * dt
+        for index, desired in enumerate(self.desired_right_tau_ff):
+            delta = desired - self.commanded_right_tau_ff[index]
+            self.commanded_right_tau_ff[index] += max(
+                -maximum_tau_step,
+                min(maximum_tau_step, delta),
+            )
+        self.metrics.maximum_gravity_ff_nm = max(
+            self.metrics.maximum_gravity_ff_nm,
+            max(abs(value) for value in self.commanded_right_tau_ff),
         )
         out.pass_to_input(inp)
 
@@ -954,6 +1024,7 @@ class ArmBridgeController:
             dq=(0.0,) * 14,
             kp=kp,
             kd=kd,
+            tau=(0.0,) * 7 + tuple(self.commanded_right_tau_ff),
             weight=max(0.0, min(1.0, self.weight)),
             mode_machine=mode_machine,
             published_at=now,
@@ -971,6 +1042,7 @@ class ArmBridgeController:
         self._release_start_weight = self.weight
         self._transition_at = now
         self.desired_right = None if self.commanded_right is None else tuple(self.commanded_right)
+        self.desired_right_tau_ff = tuple(self.commanded_right_tau_ff)
         self.right_velocity = [0.0] * 7
         self.right_acceleration = [0.0] * 7
 
@@ -982,6 +1054,7 @@ class ArmBridgeController:
         self._release_start_weight = self.weight
         self._transition_at = now
         self.desired_right = None if self.commanded_right is None else tuple(self.commanded_right)
+        self.desired_right_tau_ff = tuple(self.commanded_right_tau_ff)
         self.right_velocity = [0.0] * 7
         self.right_acceleration = [0.0] * 7
 
@@ -995,6 +1068,8 @@ class ArmBridgeController:
         self.left_latch = None
         self.commanded_right = None
         self.desired_right = None
+        self.commanded_right_tau_ff = [0.0] * 7
+        self.desired_right_tau_ff = (0.0,) * 7
         self._settle_started_at = None
         self._settle_stable_since = None
         self._arming_phase = None

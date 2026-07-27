@@ -69,6 +69,7 @@ class FakeTrackingTransport:
         sequence: int,
         calibration_id: str,
         right_arm_q: Sequence[float],
+        right_arm_tau_ff: Sequence[float],
         pipeline_age_ms: float,
     ) -> None:
         self.published.append(
@@ -77,6 +78,7 @@ class FakeTrackingTransport:
                 "sequence": sequence,
                 "calibration_id": calibration_id,
                 "right_arm_q": tuple(float(value) for value in right_arm_q),
+                "right_arm_tau_ff": tuple(float(value) for value in right_arm_tau_ff),
                 "pipeline_age_ms": pipeline_age_ms,
             }
         )
@@ -192,6 +194,12 @@ class FakeInterceptIK:
     def collision_labels(self, right_arm_q: Sequence[float]) -> tuple[str, ...]:
         del right_arm_q
         return ()
+
+    def gravity_compensation_torque(
+        self, right_arm_q: Sequence[float]
+    ) -> tuple[float, ...]:
+        del right_arm_q
+        return (-1.0, -0.5, 0.0, -0.25, 0.0, -0.1, 0.0)
 
     def solve_local_translation(
         self,

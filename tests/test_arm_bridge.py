@@ -158,13 +158,60 @@ def test_arm_command_contains_all_joints_and_latches_left_arm() -> None:
     controller.tick()
 
     command = hardware.commands[-1]
-    assert len(command.q) == len(command.dq) == len(command.kp) == len(command.kd) == 14
+    assert (
+        len(command.q)
+        == len(command.dq)
+        == len(command.kp)
+        == len(command.kd)
+        == len(command.tau)
+        == 14
+    )
     assert command.q[:7] == starting[:7]
     assert command.mode_machine == 5
     assert command.kp == (80.0,) * 4 + (40.0,) * 3 + (80.0,) * 4 + (40.0,) * 3
     assert command.kd == (3.0,) * 4 + (1.5,) * 3 + (3.0,) * 4 + (1.5,) * 3
     assert 0.0 < command.q[7] - starting[7] < 0.04
     assert command.weight == 1.0
+
+
+def test_gravity_feedforward_is_validated_and_slew_limited() -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock)
+    arm(controller, hardware, clock)
+    period = 1.0 / controller.config.control_hz
+    requested_tau = (-2.0, 1.0, -0.5, -1.5, 0.2, -0.4, 0.1)
+
+    controller.set_target(
+        session_id="session-a",
+        sequence=0,
+        calibration_id="cal-1",
+        right_arm_q=[0.01] * 7,
+        right_arm_tau_ff=requested_tau,
+        source_timestamp=clock.wall,
+    )
+    clock.advance(period)
+    hardware.state = robot_state(clock)
+    controller.tick()
+
+    maximum_step = controller.config.max_tau_ff_slew_nm_s * period
+    assert max(abs(value) for value in controller.commanded_right_tau_ff) <= (
+        maximum_step + 1e-9
+    )
+    assert hardware.commands[-1].tau[:7] == (0.0,) * 7
+    assert hardware.commands[-1].tau[7:] == pytest.approx(
+        controller.commanded_right_tau_ff
+    )
+
+    with pytest.raises(ArmBridgeError) as rejected:
+        controller.set_target(
+            session_id="session-a",
+            sequence=1,
+            calibration_id="cal-1",
+            right_arm_q=[0.01] * 7,
+            right_arm_tau_ff=[8.0] + [0.0] * 6,
+            source_timestamp=clock.wall,
+        )
+    assert rejected.value.code == "torque_feedforward_limit"
 
 
 def test_ruckig_limits_velocity_acceleration_and_jerk_during_replanning() -> None:

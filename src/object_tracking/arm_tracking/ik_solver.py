@@ -8,7 +8,7 @@ from typing import Any, Callable, Sequence
 
 import numpy as np
 
-from .joints import RIGHT_ARM_JOINT_NAMES
+from .joints import RIGHT_ARM_GRAVITY_FF_LIMITS_NM, RIGHT_ARM_JOINT_NAMES
 
 
 XR_TELEOPERATE_REVISION = "7dc9aa1a6edbf4a9f4f887d8ab6fc449ea5135f6"
@@ -535,6 +535,31 @@ class G1RightArmIK:
         if self.casadi is not None and self.cpin is not None:
             self._build_optimizer()
             self.global_backend = "pinocchio_casadi_ipopt"
+
+    def gravity_compensation_torque(
+        self,
+        right_arm_q_rad: Sequence[float],
+    ) -> tuple[float, ...]:
+        """Return bounded static gravity torque for the pinned reduced arm model."""
+
+        q = np.asarray(right_arm_q_rad, dtype=float)
+        if q.shape != (7,) or not np.all(np.isfinite(q)):
+            raise ValueError("right_arm_q_rad must contain seven finite positions")
+        raw = np.asarray(
+            self.pin.rnea(
+                self.model,
+                self.data,
+                q,
+                np.zeros(7, dtype=float),
+                np.zeros(7, dtype=float),
+            ),
+            dtype=float,
+        )
+        limits = np.asarray(RIGHT_ARM_GRAVITY_FF_LIMITS_NM, dtype=float)
+        if raw.shape != (7,) or not np.all(np.isfinite(raw)):
+            raise RuntimeError("Pinocchio returned invalid gravity torque")
+        bounded = np.clip(raw, -limits, limits)
+        return tuple(float(value) for value in bounded)
 
     def _build_optimizer(self) -> None:
         casadi = self.casadi

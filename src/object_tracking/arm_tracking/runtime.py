@@ -84,6 +84,7 @@ class TrackingTransport(Protocol):
         sequence: int,
         calibration_id: str,
         right_arm_q: Sequence[float],
+        right_arm_tau_ff: Sequence[float],
         pipeline_age_ms: float,
     ) -> None: ...
 
@@ -1141,8 +1142,17 @@ class ArmTrackingRuntime:
         if not ik.ok or ik.q_rad is None:
             self._reject(base_status, f"ik_{ik.reason}", colormap)
             return
+        try:
+            gravity_tau_ff = self.ik.gravity_compensation_torque(ik.q_rad)
+        except (RuntimeError, ValueError) as exc:
+            base_status["gravity_feedforward_error"] = f"{type(exc).__name__}: {exc}"
+            self._reject(base_status, "ik_gravity_feedforward", colormap)
+            return
         base_status["predicted_bounded_arm_command_rad"] = [
             round(float(value), 6) for value in ik.q_rad
+        ]
+        base_status["gravity_feedforward_tau_nm"] = [
+            round(float(value), 6) for value in gravity_tau_ff
         ]
         base_status["processing_latency_ms"] = round(
             max(0.0, (time.monotonic() - rgb_time) * 1000.0), 3
@@ -1208,6 +1218,7 @@ class ArmTrackingRuntime:
                     sequence=self.target_sequence,
                     calibration_id=self.calibration.calibration_id,
                     right_arm_q=[float(value) for value in ik.q_rad],
+                    right_arm_tau_ff=gravity_tau_ff,
                     pipeline_age_ms=pipeline_age_ms,
                 )
                 base_status["target_publish_latency_ms"] = round(
@@ -1314,8 +1325,17 @@ class ArmTrackingRuntime:
         if not ik.ok or ik.q_rad is None:
             self._reject(base_status, f"ik_{ik.reason}", colormap)
             return
+        try:
+            gravity_tau_ff = self.ik.gravity_compensation_torque(ik.q_rad)
+        except (RuntimeError, ValueError) as exc:
+            base_status["gravity_feedforward_error"] = f"{type(exc).__name__}: {exc}"
+            self._reject(base_status, "ik_gravity_feedforward", colormap)
+            return
         base_status["predicted_bounded_arm_command_rad"] = [
             round(float(value), 6) for value in ik.q_rad
+        ]
+        base_status["gravity_feedforward_tau_nm"] = [
+            round(float(value), 6) for value in gravity_tau_ff
         ]
         if self.config.execute:
             if arm_state.get("state") not in ("ARMING", "ARMED") or not arm_state.get(
@@ -1335,6 +1355,7 @@ class ArmTrackingRuntime:
                     sequence=self.target_sequence,
                     calibration_id=self.calibration.calibration_id,
                     right_arm_q=[float(value) for value in ik.q_rad],
+                    right_arm_tau_ff=gravity_tau_ff,
                     pipeline_age_ms=pipeline_age_ms,
                 )
                 base_status["target_publish_latency_ms"] = round(

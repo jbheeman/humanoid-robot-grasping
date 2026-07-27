@@ -110,6 +110,7 @@ def arm_command() -> ArmCommand:
         dq=(0.0,) * 14,
         kp=(60.0,) * 14,
         kd=(1.5,) * 14,
+        tau=tuple(-float(index) / 20.0 for index in range(14)),
         weight=0.75,
         mode_machine=5,
         published_at=10.0,
@@ -140,7 +141,7 @@ def test_ros_adapter_writes_all_fourteen_arm_slots_and_weight_without_crc() -> N
         assert motor.dq == 0.0
         assert motor.kp == 60.0
         assert motor.kd == 1.5
-        assert motor.tau == 0.0
+        assert motor.tau == command.tau[offset]
     assert low_command.motor_cmd[ARM_WEIGHT_INDEX].q == 0.75
     assert [low_command.motor_cmd[index].q for index in range(15)] == [0.0] * 15
     assert low_command.motor_cmd[0].kp == 300.0
