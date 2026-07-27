@@ -139,6 +139,12 @@ class DepthTcpReceiver:
                 "depth_tcp_last_frame_age_ms": age_ms,
             }
 
+    def connection_count(self) -> int:
+        """Return the connection generation for sender-restart detection."""
+
+        with self._condition:
+            return self._connections
+
     @staticmethod
     def _read(connection: socket.socket, size: int) -> bytes | None:
         chunks = bytearray()

@@ -265,6 +265,63 @@ def test_depth_message_is_bounded_and_decoded() -> None:
     np.testing.assert_array_equal(frame.z16, z16)
 
 
+@pytest.mark.skipif(
+    importlib.util.find_spec("zstandard") is None,
+    reason="zstandard is installed with the vision dependency group",
+)
+def test_tcp_sender_reconnect_accepts_restarted_sequence() -> None:
+    codec = DepthEnvelopeCodec(max_pixels=100, max_payload_size=4096)
+    z16 = np.arange(12, dtype=np.uint16).reshape(3, 4)
+
+    class FakeDepthTcpReceiver:
+        def __init__(self) -> None:
+            self.connection = 1
+            self.sequence = 80
+
+        def start(self) -> None:
+            pass
+
+        def receive(self, timeout_s: float) -> tuple[bytes, float]:
+            assert timeout_s > 0
+            return (
+                codec.encode(
+                    z16,
+                    sequence=self.sequence,
+                    width=4,
+                    height=3,
+                    depth_scale=0.001,
+                    sensor_timestamp_ms=12.0,
+                    timestamp_domain="sensor",
+                    calibration_id="calibration",
+                    registered_to_rgb=True,
+                ),
+                4.5,
+            )
+
+        def connection_count(self) -> int:
+            return self.connection
+
+        def close(self) -> None:
+            pass
+
+    receiver = FakeDepthTcpReceiver()
+    transport = RosTrackingTransport(
+        runner=FakeRunner(),
+        types=_types(),
+        codec=codec,
+        depth_tcp_receiver=receiver,
+    )
+    transport.start()
+    assert transport.receive_depth(0.1).sequence == 80
+
+    receiver.connection = 2
+    receiver.sequence = 0
+    restarted = transport.receive_depth(0.1)
+
+    assert restarted is not None
+    assert restarted.sequence == 0
+
+
 def test_depth_only_observer_creates_no_arm_or_commissioning_entities() -> None:
     runner = FakeRunner()
     transport = RosTrackingTransport(

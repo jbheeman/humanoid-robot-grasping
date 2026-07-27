@@ -112,6 +112,7 @@ class RosTrackingTransport:
         self._depth_condition = threading.Condition()
         self._latest_depth: Optional[tuple[object, float]] = None
         self._last_depth_sequence = -1
+        self._last_depth_connection = 0
         self._state_lock = threading.Lock()
         self._latest_arm_state: dict[str, Any] = {
             "ok": False,
@@ -267,6 +268,14 @@ class RosTrackingTransport:
         self._require_started()
         if self._depth_tcp_receiver is not None:
             item = self._depth_tcp_receiver.receive(timeout_s)
+            connection = self._depth_tcp_receiver.connection_count()
+            if connection != self._last_depth_connection:
+                # A restarted robot-side sender begins its envelope sequence
+                # at zero. Treat each accepted TCP connection as a new stream
+                # instead of rejecting fresh frames until the old high-water
+                # mark is reached again.
+                self._last_depth_sequence = -1
+                self._last_depth_connection = connection
         else:
             deadline = self._monotonic() + timeout_s
             with self._depth_condition:
