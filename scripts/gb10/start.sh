@@ -25,9 +25,12 @@ export RMW_IMPLEMENTATION="${G1_PROJECT_RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 UDP_PORT="${UDP_PORT:-5600}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
-VISION_WIDTH="${VISION_WIDTH:-1280}"
-VISION_HEIGHT="${VISION_HEIGHT:-720}"
-VISION_FPS="${VISION_FPS:-30}"
+# Match the validated D435I RGB profile and the robot's 60 Hz RTP relay.
+# Upscaling to 1280x720 breaks pixel-space tabletop calibration and adds
+# avoidable decode/resize latency before inference.
+VISION_WIDTH="${VISION_WIDTH:-960}"
+VISION_HEIGHT="${VISION_HEIGHT:-540}"
+VISION_FPS="${VISION_FPS:-60}"
 IMGSZ="${IMGSZ:-960}"
 CONF="${CONF:-0.35}"
 INFER_EVERY="${INFER_EVERY:-1}"
