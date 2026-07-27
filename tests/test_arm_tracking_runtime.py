@@ -23,12 +23,14 @@ from object_tracking.arm_tracking.geometry import (
     Plane,
     RigidTransform,
     SupportRegion,
+    TargetPose,
     WorkspaceBounds,
 )
 from object_tracking.arm_tracking.runtime import (
     ArmTrackingRuntime,
     RuntimeConfig,
     clamp_point_height_to_support,
+    enforce_tracking_palm_clearance,
     measured_right_arm_for_intercept,
     register_depth_in_rgb,
     right_arm_ik_seed,
@@ -544,6 +546,23 @@ def test_start_escape_waypoint_advances_after_observed_table_height_progress() -
     assert waypoint == path[2]
     assert index == 2
     assert error is None
+
+
+def test_tracking_target_stays_in_high_tabletop_interaction_corridor() -> None:
+    support = SupportRegion.from_xy_bounds(
+        Plane((0.0, 0.0, 1.0), -0.005),
+        (0.35, -0.35),
+        (0.80, 0.35),
+    )
+    target = TargetPose(
+        np.asarray((0.65, -0.15, 0.082)),
+        np.asarray((0.0, 0.0, 0.0, 1.0)),
+    )
+
+    elevated = enforce_tracking_palm_clearance(target, support)
+
+    assert support.signed_distance(elevated.position) == pytest.approx(0.14)
+    np.testing.assert_allclose(elevated.position[:2], target.position[:2], atol=1e-9)
 
 
 def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) -> None:

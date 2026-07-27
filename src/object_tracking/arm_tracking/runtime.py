@@ -47,6 +47,10 @@ _SUPPORT_PLANE_REFRESH_S = 1.000
 # fixed during one operator demo. Avoid rerunning expensive plane fitting in
 # the realtime path midway through that session.
 _SUPPORT_PLANE_ARMED_TTL_S = 300.000
+# Keep the palm center above the plush's upper body instead of descending to
+# the generic near-surface pregrasp height. Swept-link validation still checks
+# every incremental IK edge against the complete table support region.
+_TRACKING_PALM_CLEARANCE_M = 0.140
 _SOFT_PERCEPTION_REJECTIONS = frozenset(
     {
         "depth_uncertain",
@@ -187,6 +191,23 @@ def clamp_point_height_to_support(
         normal, dtype=float
     )
     return corrected, clamped_height
+
+
+def enforce_tracking_palm_clearance(
+    target: TargetPose,
+    support: SupportRegion,
+    *,
+    minimum_clearance_m: float = _TRACKING_PALM_CLEARANCE_M,
+) -> TargetPose:
+    """Raise a tracking target into the tabletop interaction corridor."""
+
+    return TargetPose(
+        support.project_to_clearance(
+            target.position,
+            minimum_clearance_m=minimum_clearance_m,
+        ),
+        target.orientation_xyzw,
+    )
 
 
 def right_arm_ik_seed(
@@ -864,6 +885,7 @@ class ArmTrackingRuntime:
                 shoulder_position=(0.0, -0.18, 0.35),
                 stand_off_m=0.07,
             )
+            target = enforce_tracking_palm_clearance(target, plane)
         base_status.update(
             {
                 "status": "tracking",
