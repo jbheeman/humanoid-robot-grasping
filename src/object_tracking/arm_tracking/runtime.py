@@ -409,6 +409,7 @@ class ArmTrackingRuntime:
         self._approach_path: tuple[tuple[float, ...], ...] | None = None
         self._approach_target_index = 1
         self._approach_target_xyz: tuple[float, float, float] | None = None
+        self._approach_completed = False
         try:
             self.ik = G1RightArmIK(default_urdf_path(repo_root))
         except IKUnavailable as exc:
@@ -639,10 +640,17 @@ class ArmTrackingRuntime:
             self.filter.reset()
             self._reject(base_status, "target_lost", colormap)
             return
-        if (
+        selected_track_id = int(selected["track_id"])
+        if self.last_target_track is not None and selected_track_id != self.last_target_track:
+            self.filter.reset()
+            self._approach_path = None
+            self._approach_target_index = 1
+            self._approach_target_xyz = None
+            self._approach_completed = False
+        elif (
             self.intercept_controller is not None
             and self.intercept_controller.active_track_id is not None
-            and int(selected["track_id"]) != self.intercept_controller.active_track_id
+            and selected_track_id != self.intercept_controller.active_track_id
         ):
             self.filter.reset()
         base_status["detector_confidence"] = round(float(selected.get("confidence", 0.0)), 5)
@@ -909,7 +917,7 @@ class ArmTrackingRuntime:
         approach_needed = (
             self._approach_path is not None
             or bool(collision_labels)
-            or start_topology != "above_clearance"
+            or (not self._approach_completed and start_topology != "above_clearance")
         )
         if approach_needed:
             ik_step_type = "adaptive_table_approach"
@@ -920,6 +928,7 @@ class ArmTrackingRuntime:
                     transform,
                     last_q,
                     support_plane=plane,
+                    top_clearance_m=0.15,
                 )
                 if not approach.ok or approach.q_path is None:
                     # The new topology route is deliberately conservative.
@@ -954,6 +963,7 @@ class ArmTrackingRuntime:
                 self._approach_path = approach.q_path
                 self._approach_target_index = 1
                 self._approach_target_xyz = tuple(float(value) for value in target.position)
+                self._approach_completed = False
             waypoint, waypoint_index, selection_error = select_start_escape_waypoint(
                 last_q,
                 self._approach_path,
@@ -986,6 +996,7 @@ class ArmTrackingRuntime:
                 self._approach_path = None
                 self._approach_target_index = 1
                 self._approach_target_xyz = None
+                self._approach_completed = True
                 collision_labels = self.ik.collision_labels(last_q)
                 if collision_labels:
                     self._reject(
@@ -1609,6 +1620,7 @@ class ArmTrackingRuntime:
         self._approach_path = None
         self._approach_target_index = 1
         self._approach_target_xyz = None
+        self._approach_completed = False
 
     def reset_intercept(self) -> None:
         if self.intercept_controller is not None:

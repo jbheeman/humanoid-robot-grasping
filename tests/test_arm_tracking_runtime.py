@@ -475,11 +475,13 @@ def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) 
     runtime._approach_path = ((0.0,) * 7, (0.01,) * 7)
     runtime._approach_target_index = 1
     runtime._approach_target_xyz = (0.4, 0.0, 0.2)
+    runtime._approach_completed = True
     runtime._stop_arm("test_stop")
     assert transport.stops == ["test_stop"]
     assert runtime._approach_path is None
     assert runtime._approach_target_index == 1
     assert runtime._approach_target_xyz is None
+    assert runtime._approach_completed is False
 
 
 def test_transient_perception_rejection_leaves_session_for_deadman(tmp_path: Path) -> None:
