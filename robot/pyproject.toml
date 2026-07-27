@@ -1,0 +1,14 @@
+[project]
+name = "humanoid-robot-grasping-robot"
+version = "0.1.0"
+description = "Minimal runtime dependencies for robot-local G1 services."
+requires-python = ">=3.8,<3.9"
+dependencies = [
+    "numpy==1.24.4",
+    "pyyaml>=6,<7",
+    "ruckig>=0.15,<0.16",
+    "zstandard>=0.23,<0.24",
+]
+
+[tool.uv]
+package = false

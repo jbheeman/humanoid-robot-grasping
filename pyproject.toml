@@ -1,0 +1,81 @@
+[project]
+name = "humanoid-robot-grasping"
+version = "0.1.0"
+description = "Initial plush object tracking utilities for Unitree G1 project."
+requires-python = ">=3.10"
+dependencies = [
+    "numpy<2",
+    "pillow>=10",
+    "pyyaml>=6",
+    "ruckig>=0.15,<0.16",
+    "tqdm>=4.66",
+]
+
+[dependency-groups]
+dev = [
+    "httpx>=0.27",
+    "pytest>=8.3",
+    "pytest-asyncio>=0.24",
+    "ruff>=0.8",
+]
+vision = [
+    "fastapi>=0.111",
+    "uvicorn[standard]>=0.30",
+    "websockets>=14",
+    "zstandard>=0.23",
+]
+train = [
+    "opencv-python>=4.9",
+    "tensorrt-cu13>=7.0.0,!=10.2.0",
+    "torch>=2.2",
+    "ultralytics>=8.2",
+]
+arm = [
+    "casadi>=3.6.7,<4",
+    "pin>=2.7,<4",
+    "pupil-apriltags>=1.0.4.post11",
+    "scipy>=1.11",
+]
+
+[project.scripts]
+object-manual-tracker = "object_tracking.manual_tracker:main"
+loco = "object_tracking.g1_loco_cli:main"
+vision = "object_tracking.g1_vision_cli:main"
+vision-streamlit = "object_tracking.streamlit_viewer_cli:main"
+vision-yolo-stream = "object_tracking.yolo_stream_server:main"
+train-plushie-detector = "object_tracking.train_plushie_detector:main"
+g1-scan = "object_tracking.g1_scan_cli:main"
+arm-calibration = "object_tracking.arm_tracking.calibration_cli:main"
+g1-tune = "object_tracking.tuning_cli:main"
+g1-arm = "object_tracking.arm_commissioning_cli:main"
+g1-arm-remote = "object_tracking.manual_arm_cli:main"
+g1-future-eval = "object_tracking.future_prediction_cli:main"
+g1-vla = "object_tracking.unifolm_vla_cli:main"
+g1 = "object_tracking.g1_cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.uv]
+package = true
+
+[tool.pytest.ini_options]
+addopts = "-m 'not hardware'"
+asyncio_mode = "auto"
+pythonpath = [".", "src"]
+testpaths = ["tests"]
+markers = [
+    "hardware: requires physical robot, camera, or other hardware",
+    "integration: exercises multiple components or service boundaries",
+]
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+
+[tool.ruff.lint]
+select = ["E4", "E7", "E9", "F"]
+
+[tool.ruff.lint.per-file-ignores]
+"scripts/robot/arms_forward.py" = ["F821"]

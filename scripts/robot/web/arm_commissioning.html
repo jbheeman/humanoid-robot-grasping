@@ -1,0 +1,280 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <title>G1 Right-Arm Commissioning</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, sans-serif; margin: 0; padding: 0; background: #0f1115; color: #e8ecf1; }
+      .page { max-width: 960px; margin: 0 auto; padding: 20px; }
+      .card { background: #181c22; border: 1px solid #2c3341; border-radius: 10px; padding: 14px; margin-bottom: 12px; }
+      h1 { font-size: 24px; }
+      .row { display: flex; flex-wrap: wrap; gap: 8px; }
+      .field { margin: 6px 0; }
+      label { display: inline-block; min-width: 130px; }
+      input, button, select, textarea {
+        background: #111722; color: #e8ecf1; border: 1px solid #3b4459; border-radius: 6px; padding: 8px;
+      }
+      button { cursor: pointer; }
+      pre { background: #111722; padding: 10px; border-radius: 6px; max-height: 300px; overflow: auto; }
+      .muted { color: #9aa9c5; font-size: 12px; }
+      .status { font-weight: bold; }
+    </style>
+  </head>
+  <body>
+    <main class="page">
+      <h1>G1 Right-Arm Commissioning</h1>
+      <p class="muted">No bearer token required. Open this page on the GB10 host or trusted LAN.</p>
+
+      <section class="card">
+        <h2>Commissioning session</h2>
+        <div class="field"><label for="operator">Operator</label><input id="operator" value="operator" /></div>
+        <div class="field"><label for="clientId">Client ID</label><input id="clientId" value="browser" /></div>
+        <button id="createSession">Create session</button>
+        <button id="refresh">Refresh state</button>
+      </section>
+
+      <section class="card">
+        <h2>Session actions</h2>
+        <p class="muted" id="motionGate">Checking whether this bridge was started with movement permitted…</p>
+        <div class="field"><label for="sessionId">Session ID</label><input id="sessionId" placeholder="session id" size="36" /></div>
+        <div class="field"><label for="sequence">Sequence</label><input id="sequence" type="number" value="1" min="1" step="1" /></div>
+        <div class="field"><label for="jointName">Joint</label>
+          <select id="jointName"></select>
+        </div>
+        <div class="field"><label for="direction">Direction</label>
+          <select id="direction"><option value="1">+0.01</option><option value="-1">-0.01</option></select>
+        </div>
+        <div class="row">
+          <button id="enable">Enable</button>
+          <button id="jog">Jog</button>
+          <button id="confirm">Confirm</button>
+          <button id="stop">Stop</button>
+          <button id="stopArm">Stop Arm</button>
+        </div>
+        <div class="field"><label for="notes">Notes</label><textarea id="notes" rows="2" cols="40"></textarea></div>
+      </section>
+
+      <section class="card">
+        <h2>Status</h2>
+        <div class="status" id="status">Waiting for data…</div>
+        <pre id="report">{}</pre>
+      </section>
+    </main>
+
+    <script>
+      const JOINTS = [
+        "right_shoulder_pitch_joint",
+        "right_shoulder_roll_joint",
+        "right_shoulder_yaw_joint"
+      ];
+      const HEARTBEAT_INTERVAL_MS = 200;
+      const jointSelect = document.getElementById("jointName");
+      JOINTS.forEach((name) => {
+        const option = document.createElement("option");
+        option.value = name;
+        option.textContent = name;
+        jointSelect.appendChild(option);
+      });
+
+      const stateLabel = document.getElementById("status");
+      const report = document.getElementById("report");
+      const $ = (id) => document.getElementById(id);
+
+      const headers = () => ({ "Content-Type": "application/json" });
+
+      async function requestJson(url, options = {}) {
+        const response = await fetch(url, {
+          ...options,
+          headers: headers(),
+        });
+        if (!response.ok) {
+          const text = await response.text();
+          throw new Error(text);
+        }
+        return response.json();
+      }
+
+      async function refresh() {
+        const [arm, commissioning] = await Promise.all([
+          requestJson("/api/v1/arm/state"),
+          requestJson("/api/v1/commissioning/state"),
+        ]);
+        updateMotionGate(commissioning);
+        stateLabel.textContent = `arm: ${arm.state}; commissioning: ${commissioning.phase || "no session"}`;
+        report.textContent = JSON.stringify(commissioning, null, 2);
+      }
+
+      function updateMotionGate(data) {
+        const bridge = data.bridge || {};
+        const readOnly = Boolean(data.read_only ?? bridge.read_only);
+        const phase = data.phase || "NO_SESSION";
+        const canEnable = !readOnly && phase === "CREATED";
+        const canJog = !readOnly && phase === "READY";
+        const canConfirm = !readOnly && phase === "AWAITING_CONFIRM";
+        $("enable").disabled = !canEnable;
+        $("jog").disabled = !canJog;
+        $("confirm").disabled = !canConfirm;
+
+        if (readOnly) {
+          $("motionGate").textContent = "Preflight only: this robot bridge was started without movement permission. Jog is disabled; restart it in enabled mode before creating a new session.";
+        } else if (!bridge.motion_mode_verified) {
+          $("motionGate").textContent = "Movement bridge is running, but the robot motion mode has not been verified yet. Jog remains disabled.";
+        } else if (phase === "CREATED") {
+          $("motionGate").textContent = "Ready to enable the session. Enable will hold the current arm pose; it does not jog a joint.";
+        } else if (phase === "READY") {
+          $("motionGate").textContent = "Session enabled. One 0.01-rad shoulder jog is available; observe it, then press Confirm.";
+        } else if (phase === "AWAITING_CONFIRM") {
+          $("motionGate").textContent = "A jog was sent. Observe the arm, then press Confirm before another jog.";
+        } else {
+          $("motionGate").textContent = `Commissioning phase: ${phase}.`;
+        }
+      }
+
+      async function createSession() {
+        const result = await requestJson("/api/v1/commissioning/sessions", {
+          method: "POST",
+          body: JSON.stringify({
+            operator: $("operator").value,
+            client_id: $("clientId").value,
+            operator_ack: "I HAVE CLEARED THE ROBOT AREA",
+          }),
+        });
+        $("sessionId").value = result.session_id || "";
+        report.textContent = JSON.stringify(result, null, 2);
+        await refresh();
+      }
+
+      function ensureSession() {
+        const id = $("sessionId").value.trim();
+        if (!id) {
+          throw new Error("session id required");
+        }
+        return id;
+      }
+
+      async function action(actionName, method = "POST", payload = {}) {
+        const session_id = ensureSession();
+        const data = Object.assign({ session_id }, payload);
+        const result = await requestJson(`/api/v1/commissioning/sessions/${encodeURIComponent(session_id)}/${actionName}`, {
+          method,
+          body: JSON.stringify(data),
+        });
+        report.textContent = JSON.stringify(result, null, 2);
+        await refresh();
+        return result;
+      }
+
+      let heartbeatTimer = null;
+      let heartbeatInFlight = false;
+
+      function stopHeartbeat() {
+        if (heartbeatTimer !== null) {
+          window.clearTimeout(heartbeatTimer);
+          heartbeatTimer = null;
+        }
+      }
+
+      function scheduleHeartbeat() {
+        stopHeartbeat();
+        heartbeatTimer = window.setTimeout(sendHeartbeat, HEARTBEAT_INTERVAL_MS);
+      }
+
+      async function sendHeartbeat() {
+        heartbeatTimer = null;
+        if (heartbeatInFlight) {
+          scheduleHeartbeat();
+          return;
+        }
+        heartbeatInFlight = true;
+        try {
+          await action("heartbeat", "POST", {});
+          scheduleHeartbeat();
+        } catch (error) {
+          stateLabel.textContent = `heartbeat failed: ${error.message}`;
+          stopHeartbeat();
+        } finally {
+          heartbeatInFlight = false;
+        }
+      }
+
+      function startHeartbeat() {
+        stopHeartbeat();
+        scheduleHeartbeat();
+      }
+
+      $("createSession").addEventListener("click", async () => {
+        stopHeartbeat();
+        try { await createSession(); } catch (error) { stateLabel.textContent = error.message; }
+      });
+      $("refresh").addEventListener("click", async () => {
+        try { await refresh(); } catch (error) { stateLabel.textContent = error.message; }
+      });
+      $("enable").addEventListener("click", async () => {
+        const session_id = ensureSession();
+        try {
+          const result = await requestJson(`/api/v1/commissioning/sessions/${encodeURIComponent(session_id)}/enable`, {
+            method: "POST",
+            body: JSON.stringify({ session_id }),
+          });
+          report.textContent = JSON.stringify(result, null, 2);
+          await refresh();
+          startHeartbeat();
+        } catch (error) { stateLabel.textContent = error.message; }
+      });
+      $("jog").addEventListener("click", async () => {
+        const session_id = ensureSession();
+        const sequence = Number($("sequence").value || 1);
+        try {
+          const result = await requestJson(`/api/v1/commissioning/sessions/${encodeURIComponent(session_id)}/jogs`, {
+            method: "POST",
+            body: JSON.stringify({
+              sequence,
+              joint_name: $("jointName").value,
+              direction: Number($("direction").value),
+              notes: $("notes").value,
+            }),
+          });
+          report.textContent = JSON.stringify(result, null, 2);
+          await refresh();
+        } catch (error) { stateLabel.textContent = error.message; }
+      });
+      $("confirm").addEventListener("click", async () => {
+        try {
+          const sequence = Number($("sequence").value || 1);
+          await action("confirmations", "POST", {
+            sequence,
+            outcome: "accepted",
+            notes: $("notes").value,
+          });
+          $("sequence").value = sequence + 1;
+        } catch (error) {
+          stateLabel.textContent = error.message;
+        }
+      });
+      $("stop").addEventListener("click", async () => {
+        stopHeartbeat();
+        try {
+          await action("stop", "POST", { reason: "operator_stop" });
+        } catch (error) {
+          stateLabel.textContent = error.message;
+        }
+      });
+      $("stopArm").addEventListener("click", async () => {
+        stopHeartbeat();
+        try {
+          const result = await requestJson("/api/v1/arm/stop", {
+            method: "POST",
+            body: JSON.stringify({ reason: "operator_stop" }),
+          });
+          report.textContent = JSON.stringify(result, null, 2);
+        } catch (error) {
+          stateLabel.textContent = error.message;
+        }
+      });
+
+      refresh().catch(() => {});
+      window.addEventListener("pagehide", stopHeartbeat);
+    </script>
+  </body>
+</html>

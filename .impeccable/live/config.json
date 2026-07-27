@@ -1,0 +1,7 @@
+{
+  "files": ["scripts/vision_viewer/**/*.html"],
+  "exclude": [],
+  "insertBefore": "</body>",
+  "commentSyntax": "html",
+  "cspChecked": true
+}

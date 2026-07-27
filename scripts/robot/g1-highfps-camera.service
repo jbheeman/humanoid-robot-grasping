@@ -1,0 +1,23 @@
+[Unit]
+Description=G1 high-FPS main-camera RTP publisher
+After=master_service.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+Environment=RGB_DEVICE=/dev/video4
+Environment=RGB_WIDTH=960
+Environment=RGB_HEIGHT=540
+Environment=RGB_FPS=60
+Environment=RGB_BITRATE=8000000
+Environment=ROBOT_INTERFACE=eth0
+Environment=MULTICAST_GROUP=230.1.1.1
+Environment=MULTICAST_PORT=1720
+ExecStart=/home/unitree/humanoid-robot-grasping/scripts/robot/highfps-camera-service.sh
+Restart=always
+RestartSec=2
+TimeoutStopSec=5
+
+[Install]
+WantedBy=multi-user.target

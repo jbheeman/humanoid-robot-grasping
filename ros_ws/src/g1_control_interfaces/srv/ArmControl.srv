@@ -1,0 +1,11 @@
+# Supported operations are enable, heartbeat, and stop. Unused request fields
+# are empty for a given operation.
+string operation
+string session_id
+string calibration_id
+string reason
+---
+bool ok
+string error_code
+string message
+string report_json

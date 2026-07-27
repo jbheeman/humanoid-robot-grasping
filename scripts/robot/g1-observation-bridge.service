@@ -1,0 +1,24 @@
+[Unit]
+Description=G1 read-only observation bridge for GB10
+After=master_service.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=unitree
+WorkingDirectory=/home/unitree/humanoid-robot-grasping
+# The bridge is deliberately observation-only.  Do not add ALLOW_MOVEMENT or
+# EXPECTED_MOTION_MODE here: execution must remain a deliberate operator step.
+Environment=CLIENT_IP=192.168.0.66
+Environment=ROBOT_INTERFACE=wlan0
+Environment=HARDWARE_INTERFACE=eth0
+Environment=G1_PROJECT_ROS_DOMAIN_ID=42
+Environment=RGB_MODE=unitree
+Environment=UNITREE_SDK_PYTHONPATH=/home/unitree/unitree_sdk2_python
+ExecStart=/home/unitree/humanoid-robot-grasping/scripts/robot/start.sh
+Restart=always
+RestartSec=3
+TimeoutStopSec=10
+
+[Install]
+WantedBy=multi-user.target

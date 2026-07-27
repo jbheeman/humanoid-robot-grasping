@@ -1,0 +1,156 @@
+"""Canonical G1 29-DOF arm joint contract and offline URDF checks."""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any
+import xml.etree.ElementTree as ET
+import hashlib
+import json
+
+from object_tracking._compat import strict_zip
+
+
+LEFT_ARM_JOINT_NAMES = (
+    "left_shoulder_pitch_joint",
+    "left_shoulder_roll_joint",
+    "left_shoulder_yaw_joint",
+    "left_elbow_joint",
+    "left_wrist_roll_joint",
+    "left_wrist_pitch_joint",
+    "left_wrist_yaw_joint",
+)
+RIGHT_ARM_JOINT_NAMES = tuple(name.replace("left_", "right_") for name in LEFT_ARM_JOINT_NAMES)
+ARM_JOINT_NAMES = LEFT_ARM_JOINT_NAMES + RIGHT_ARM_JOINT_NAMES
+
+# Canonical Unitree G1 29-DOF LowState/LowCmd motor order.  This is deliberately
+# independent of URDF traversal order: SDK messages are positional contracts.
+LEFT_LEG_JOINT_NAMES = (
+    "left_hip_pitch_joint",
+    "left_hip_roll_joint",
+    "left_hip_yaw_joint",
+    "left_knee_joint",
+    "left_ankle_pitch_joint",
+    "left_ankle_roll_joint",
+)
+RIGHT_LEG_JOINT_NAMES = tuple(name.replace("left_", "right_") for name in LEFT_LEG_JOINT_NAMES)
+WAIST_JOINT_NAMES = (
+    "waist_yaw_joint",
+    "waist_roll_joint",
+    "waist_pitch_joint",
+)
+BODY_JOINT_NAMES = (
+    LEFT_LEG_JOINT_NAMES
+    + RIGHT_LEG_JOINT_NAMES
+    + WAIST_JOINT_NAMES
+    + ARM_JOINT_NAMES
+)
+BODY_JOINT_INDICES = tuple(range(29))
+BODY_MODEL_ID = "unitree-g1-body29-hand14-xr-teleoperate"
+
+# Unitree G1 29-DOF LowState/LowCmd slots. Wrist pitch/yaw do not exist on
+# 23-DOF G1 variants, so the contract must be audited against the actual robot.
+LEFT_ARM_INDICES = (15, 16, 17, 18, 19, 20, 21)
+RIGHT_ARM_INDICES = (22, 23, 24, 25, 26, 27, 28)
+ARM_INDICES = LEFT_ARM_INDICES + RIGHT_ARM_INDICES
+ARM_WEIGHT_INDEX = 29
+
+# Unitree description limits, before the bridge applies its additional margin.
+DEFAULT_RIGHT_JOINT_LIMITS = (
+    (-3.0892, 2.6704),
+    (-2.2515, 1.5882),
+    (-2.6180, 2.6180),
+    (-1.0472, 2.0944),
+    (-1.9722, 1.9722),
+    (-1.6144, 1.6144),
+    (-1.6144, 1.6144),
+)
+
+# The shoulder-roll range is mirrored between sides. The remaining limits use
+# the same signs in Unitree's canonical 29-DOF joint convention.
+DEFAULT_LEFT_JOINT_LIMITS = (
+    DEFAULT_RIGHT_JOINT_LIMITS[0],
+    (-DEFAULT_RIGHT_JOINT_LIMITS[1][1], -DEFAULT_RIGHT_JOINT_LIMITS[1][0]),
+    *DEFAULT_RIGHT_JOINT_LIMITS[2:],
+)
+
+
+def joint_contract() -> list[dict[str, Any]]:
+    """Return the right-arm command order shared by IK and the ROS 2 arm node."""
+
+    return [
+        {
+            "position": position,
+            "name": name,
+            "sdk_index": sdk_index,
+            "lower_rad": limits[0],
+            "upper_rad": limits[1],
+        }
+        for position, (name, sdk_index, limits) in enumerate(
+            strict_zip(
+                RIGHT_ARM_JOINT_NAMES,
+                RIGHT_ARM_INDICES,
+                DEFAULT_RIGHT_JOINT_LIMITS,
+            )
+        )
+    ]
+
+
+def joint_contract_id() -> str:
+    payload = json.dumps(joint_contract(), separators=(",", ":"), sort_keys=True).encode()
+    return f"g1-29dof-right-arm-{hashlib.sha256(payload).hexdigest()[:16]}"
+
+
+def audit_urdf(path: str | Path, *, tolerance_rad: float = 1e-3) -> dict[str, Any]:
+    """Check joint presence, order, and limits without importing Pinocchio."""
+
+    urdf_path = Path(path)
+    report: dict[str, Any] = {
+        "ok": False,
+        "urdf": str(urdf_path),
+        "contract": joint_contract(),
+        "errors": [],
+        "warnings": [],
+    }
+    if not urdf_path.is_file():
+        report["errors"].append("URDF file is missing")
+        return report
+    try:
+        root = ET.parse(urdf_path).getroot()
+    except (ET.ParseError, OSError) as exc:
+        report["errors"].append(f"URDF could not be parsed: {exc}")
+        return report
+
+    movable = [
+        element for element in root.findall("joint") if element.attrib.get("type", "") != "fixed"
+    ]
+    movable_names = [element.attrib.get("name", "") for element in movable]
+    positions: list[int] = []
+    urdf_limits: dict[str, tuple[float, float]] = {}
+    for name, expected_limits in strict_zip(RIGHT_ARM_JOINT_NAMES, DEFAULT_RIGHT_JOINT_LIMITS):
+        matches = [element for element in movable if element.attrib.get("name") == name]
+        if len(matches) != 1:
+            report["errors"].append(f"expected exactly one movable joint named {name!r}")
+            continue
+        positions.append(movable_names.index(name))
+        limit = matches[0].find("limit")
+        if limit is None or "lower" not in limit.attrib or "upper" not in limit.attrib:
+            report["errors"].append(f"{name} has no finite position limits")
+            continue
+        try:
+            actual = (float(limit.attrib["lower"]), float(limit.attrib["upper"]))
+        except ValueError:
+            report["errors"].append(f"{name} has non-numeric position limits")
+            continue
+        urdf_limits[name] = actual
+        if any(abs(a - b) > tolerance_rad for a, b in strict_zip(actual, expected_limits)):
+            report["warnings"].append(
+                f"{name} bridge limits {expected_limits} differ from URDF limits {actual}"
+            )
+
+    if len(positions) == 7 and positions != sorted(positions):
+        report["errors"].append("right-arm URDF order does not match the HTTP/SDK command order")
+    report["urdf_joint_positions"] = positions
+    report["urdf_limits"] = urdf_limits
+    report["ok"] = not report["errors"]
+    return report
