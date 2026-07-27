@@ -9,7 +9,10 @@ CLIENT_IP="${CLIENT_IP:-${GB10_HOST:-192.168.0.66}}"
 ROBOT_INTERFACE="${ROBOT_INTERFACE:-wlan0}"
 HARDWARE_INTERFACE="${HARDWARE_INTERFACE:-eth0}"
 UNITREE_CONTROL_PEER="${UNITREE_CONTROL_PEER:-192.168.123.1}"
-ROS_DOMAIN_ID="${G1_PROJECT_ROS_DOMAIN_ID:-42}"
+# Keep standalone robot/GB10 launches on the same dedicated project domain.
+# Domain 42 was used by older processes and caused silent split-brain launches
+# when bunny-test used 43 while `robot start` retained this default.
+ROS_DOMAIN_ID="${G1_PROJECT_ROS_DOMAIN_ID:-43}"
 HARDWARE_DOMAIN_ID="${HARDWARE_DOMAIN_ID:-0}"
 MAX_TILT_DEG="${MAX_TILT_DEG:-5}"
 MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG:-3}"

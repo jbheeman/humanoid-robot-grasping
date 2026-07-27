@@ -14,7 +14,7 @@ MODEL="${MODEL:-${ROOT_DIR}/models/plushie_detector/yolo11x_plushie_quality_12h_
 ROBOT_HOST="${ROBOT_HOST:-}"
 ROS_INTERFACE="${ROS_INTERFACE:-auto}"
 # Project DDS domain shared by the GB10 tracker and robot bridge.
-ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
+ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-43}"
 # Normal tracking uses the robot launcher's split project process, which runs
 # CycloneDDS independently from native Unitree SDK2. Keep the GB10 on the same
 # RMW so the large custom depth message is discoverable and deserializable.
