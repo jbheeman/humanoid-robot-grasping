@@ -102,12 +102,12 @@ class RuntimeConfig:
     target_hz: float = 20.0
     # The RGB inference result and TCP depth frame use independent arrival
     # clocks. On the live GB10 the measured healthy p95 can exceed 100 ms
-    # while both sources remain fresh; keep this below the separate 250 ms
+    # while both sources remain fresh; keep this below the separate 300 ms
     # end-to-end safety gate rather than rejecting every such pair.
     # RGB and depth are received by independent low-latency transports. Their
     # receipt timestamps can differ by almost one depth publish period plus
     # scheduler jitter even though both samples are individually fresh. The
-    # bridge still enforces the separate 250 ms perception TTL.
+    # bridge still enforces the separate 300 ms perception TTL.
     max_pair_skew_s: float = 0.240
     prediction_horizon_s: float = 0.150
     trajectory_model_path: Path | None = None
@@ -239,7 +239,7 @@ def select_start_escape_waypoint(
     path: Sequence[Sequence[float]],
     target_index: int,
     *,
-    reached_tolerance_rad: float = 0.050,
+    reached_tolerance_rad: float = 0.018,
     tracking_tolerance_rad: float = 0.050,
 ) -> tuple[tuple[float, ...] | None, int, str | None]:
     """Select one bounded escape waypoint using measured, not commanded, pose."""
@@ -1106,7 +1106,7 @@ class ArmTrackingRuntime:
                     base_status.get("predicted_xyz_m"),
                 ],
                 "pregrasp_target_xyz_m": base_status.get("target_xyz_m"),
-                "end_effector_xyz_m": base_status.get("target_xyz_m"),
+                "end_effector_xyz_m": current_transform[:3, 3].round(5).tolist(),
                 "ik_result": {
                     "ok": True,
                     "right_arm_q_rad": [float(value) for value in ik.q_rad],

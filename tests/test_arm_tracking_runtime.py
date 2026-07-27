@@ -369,7 +369,7 @@ def test_execute_rejects_intercept_profile_not_physically_validated(
         )
 
 
-def test_start_escape_waypoint_uses_one_knot_measured_lookahead() -> None:
+def test_start_escape_waypoint_advances_only_after_measured_arrival() -> None:
     path = (
         (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
         (0.0, -0.04, 0.0, 0.0, 0.0, 0.0, 0.0),
@@ -377,8 +377,8 @@ def test_start_escape_waypoint_uses_one_knot_measured_lookahead() -> None:
     )
 
     waypoint, index, error = select_start_escape_waypoint(path[0], path, 1)
-    assert waypoint == path[2]
-    assert index == 2
+    assert waypoint == path[1]
+    assert index == 1
     assert error is None
 
     waypoint, index, error = select_start_escape_waypoint(path[1], path, 1)
@@ -440,7 +440,7 @@ def test_start_escape_waypoint_advances_past_observed_servo_residual() -> None:
     assert error is None
 
 
-def test_start_escape_waypoint_advances_past_larger_loaded_servo_residual() -> None:
+def test_start_escape_waypoint_does_not_skip_knots_on_large_servo_residual() -> None:
     path = (
         (0.0, -0.30, 0.0, 0.0, 0.0, 0.0, 0.0),
         (0.0, -0.34, 0.0, 0.0, 0.0, 0.0, 0.0),
@@ -453,8 +453,8 @@ def test_start_escape_waypoint_advances_past_larger_loaded_servo_residual() -> N
         1,
     )
 
-    assert waypoint == path[2]
-    assert index == 2
+    assert waypoint == path[1]
+    assert index == 1
     assert error is None
 
 

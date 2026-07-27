@@ -209,7 +209,7 @@ while time.monotonic() < deadline:
         ready = (
             structurally_ready
             and float(tracking.get("depth_age_ms", 1e9)) <= 200.0
-            and float(tracking.get("processing_latency_ms", 1e9)) <= 250.0
+            and float(tracking.get("processing_latency_ms", 1e9)) <= 300.0
         )
         if ready:
             ready_samples += 1

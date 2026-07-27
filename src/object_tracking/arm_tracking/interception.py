@@ -119,8 +119,8 @@ class LiveInterceptConfig:
             raise ValueError("intercept timing and tolerance values must be finite and positive")
         if self.minimum_observations < 2:
             raise ValueError("minimum_observations must be at least two")
-        if self.perception_ttl_s > 0.250:
-            raise ValueError("perception_ttl_s cannot exceed the robot bridge 250 ms limit")
+        if self.perception_ttl_s > 0.300:
+            raise ValueError("perception_ttl_s cannot exceed the robot bridge 300 ms limit")
         if self.post_crossing_hold_s > self.perception_ttl_s:
             raise ValueError("post_crossing_hold_s cannot exceed perception_ttl_s")
         if self.commit_horizon_s > self.planner.maximum_crossing_horizon_s:

@@ -122,7 +122,7 @@ class ArmBridgeConfig:
     calibration_id: str | None = None
     joint_contract_id: str | None = None
     control_hz: float = 250.0
-    target_ttl_s: float = 0.250
+    target_ttl_s: float = 0.300
     deadman_s: float = 0.750
     state_ttl_s: float = 0.250
     stable_standing_s: float = 2.0
