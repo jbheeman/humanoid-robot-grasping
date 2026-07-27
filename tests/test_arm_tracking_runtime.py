@@ -489,6 +489,26 @@ def test_start_escape_waypoint_allows_one_loaded_residual_lookahead() -> None:
     assert error is None
 
 
+def test_start_escape_waypoint_handles_observed_thirty_milliradian_residual() -> None:
+    path = (
+        (0.0, -0.30, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.0, -0.38, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.0, -0.42, 0.0, 0.0, 0.0, 0.0, 0.0),
+    )
+    measured = (0.0, -0.3497, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    waypoint, index, error = select_start_escape_waypoint(
+        measured,
+        path,
+        1,
+        last_advance_q_rad=path[0],
+    )
+
+    assert waypoint == path[2]
+    assert index == 2
+    assert error is None
+
+
 def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) -> None:
     calibration_path = tmp_path / "calibration.yaml"
     save_calibration_atomic(_calibration(), calibration_path)

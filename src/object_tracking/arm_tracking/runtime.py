@@ -242,7 +242,7 @@ def select_start_escape_waypoint(
     reached_tolerance_rad: float = 0.018,
     tracking_tolerance_rad: float = 0.050,
     last_advance_q_rad: Sequence[float] | None = None,
-    residual_lookahead_rad: float = 0.030,
+    residual_lookahead_rad: float = 0.040,
     minimum_progress_rad: float = 0.008,
 ) -> tuple[tuple[float, ...] | None, int, str | None]:
     """Select one bounded escape waypoint using measured, not commanded, pose."""
@@ -987,6 +987,29 @@ class ArmTrackingRuntime:
                 self._approach_last_advance_q = tuple(float(value) for value in last_q)
                 self._approach_completed = False
             previous_waypoint_index = self._approach_target_index
+            active_waypoint = np.asarray(
+                self._approach_path[self._approach_target_index],
+                dtype=float,
+            )
+            base_status["ik_waypoint_residual_rad"] = round(
+                float(np.max(np.abs(np.asarray(last_q) - active_waypoint))),
+                6,
+            )
+            base_status["ik_progress_since_advance_rad"] = (
+                None
+                if self._approach_last_advance_q is None
+                else round(
+                    float(
+                        np.max(
+                            np.abs(
+                                np.asarray(last_q)
+                                - np.asarray(self._approach_last_advance_q)
+                            )
+                        )
+                    ),
+                    6,
+                )
+            )
             waypoint, waypoint_index, selection_error = select_start_escape_waypoint(
                 last_q,
                 self._approach_path,
