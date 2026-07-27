@@ -254,6 +254,77 @@ def test_motion_mode_poll_keeps_a_recent_verified_mode_through_one_rpc_failure()
     assert hardware._motion_mode_error == "RuntimeError: temporary rpc timeout"
 
 
+def test_motion_mode_poll_debounces_one_false_mismatch() -> None:
+    now = [10.0]
+    hardware = UnitreeArmHardware(
+        monotonic=lambda: now[0],
+        expected_motion_mode="ai",
+        motion_poll_s=0.01,
+        motion_mode_mismatch_confirm_s=1.0,
+    )
+
+    class Client:
+        replies = iter(("ai", "unknown", "ai"))
+
+        def CheckMode(self) -> object:
+            now[0] += 0.25
+            return (0, {"name": next(self.replies)})
+
+    class StopAfterThreePolls:
+        def __init__(self) -> None:
+            self.waits = 0
+
+        def is_set(self) -> bool:
+            return self.waits >= 3
+
+        def wait(self, _: float) -> bool:
+            self.waits += 1
+            return self.is_set()
+
+    hardware._motion_client = Client()
+    hardware._motion_stop = StopAfterThreePolls()  # type: ignore[assignment]
+    hardware._poll_motion_mode()
+
+    assert hardware._motion_mode_name == "ai"
+    assert hardware._motion_mode_candidate is None
+    assert hardware._motion_mode_verified_at == 10.75
+
+
+def test_motion_mode_poll_applies_a_persistent_mismatch() -> None:
+    now = [10.0]
+    hardware = UnitreeArmHardware(
+        monotonic=lambda: now[0],
+        expected_motion_mode="ai",
+        motion_poll_s=0.01,
+        motion_mode_mismatch_confirm_s=1.0,
+    )
+
+    class Client:
+        replies = iter(("ai", "sport", "sport", "sport", "sport", "sport"))
+
+        def CheckMode(self) -> object:
+            now[0] += 0.25
+            return (0, {"name": next(self.replies)})
+
+    class StopAfterSixPolls:
+        def __init__(self) -> None:
+            self.waits = 0
+
+        def is_set(self) -> bool:
+            return self.waits >= 6
+
+        def wait(self, _: float) -> bool:
+            self.waits += 1
+            return self.is_set()
+
+    hardware._motion_client = Client()
+    hardware._motion_stop = StopAfterSixPolls()  # type: ignore[assignment]
+    hardware._poll_motion_mode()
+
+    assert hardware._motion_mode_name == "sport"
+    assert hardware._motion_mode_candidate is None
+
+
 def test_motion_mode_verification_expires_after_bounded_grace() -> None:
     now = [10.0]
     hardware = UnitreeArmHardware(monotonic=lambda: now[0], motion_mode_grace_s=5.0)

@@ -49,6 +49,7 @@ class UnitreeArmHardware:
         ownership_quiet_s: float = 1.0,
         motion_poll_s: float = 0.25,
         motion_mode_grace_s: float = 30.0,
+        motion_mode_mismatch_confirm_s: float = 1.0,
     ) -> None:
         if ownership_quiet_s < 0.0:
             raise ValueError("ownership_quiet_s must be non-negative")
@@ -56,6 +57,8 @@ class UnitreeArmHardware:
             raise ValueError("motion_poll_s must be positive")
         if motion_mode_grace_s <= 0.0:
             raise ValueError("motion_mode_grace_s must be positive")
+        if motion_mode_mismatch_confirm_s <= 0.0:
+            raise ValueError("motion_mode_mismatch_confirm_s must be positive")
         self.interface = interface
         self.domain_id = domain_id
         self._monotonic = monotonic
@@ -66,6 +69,7 @@ class UnitreeArmHardware:
         self.ownership_quiet_s = ownership_quiet_s
         self.motion_poll_s = motion_poll_s
         self.motion_mode_grace_s = motion_mode_grace_s
+        self.motion_mode_mismatch_confirm_s = motion_mode_mismatch_confirm_s
         self._lock = threading.Lock()
         self._state: Optional[RobotState] = None
         self._standing_since: Optional[float] = None
@@ -83,6 +87,8 @@ class UnitreeArmHardware:
         self._motion_mode_checked = False
         self._motion_mode_verified_at: Optional[float] = None
         self._motion_mode_error: Optional[str] = None
+        self._motion_mode_candidate: Optional[str] = None
+        self._motion_mode_candidate_since: Optional[float] = None
         self._motion_thread: Optional[threading.Thread] = None
         self._motion_stop = threading.Event()
 
@@ -141,6 +147,8 @@ class UnitreeArmHardware:
         self._motion_mode_checked = False
         self._motion_mode_verified_at = None
         self._motion_mode_error = None
+        self._motion_mode_candidate = None
+        self._motion_mode_candidate_since = None
         self._motion_stop.clear()
         self._started = True
         self._motion_thread = threading.Thread(
@@ -262,20 +270,38 @@ class UnitreeArmHardware:
                     name = str(candidate).strip() if candidate is not None else None
                 if not name:
                     raise RuntimeError("MotionSwitcherClient.CheckMode returned no mode name")
+                now = self._monotonic()
                 with self._lock:
-                    # A successful reply that names a *different* mode must
-                    # take effect immediately.  A transient RPC failure below
-                    # must not turn a verified \"ai\" mode into a false fault.
-                    self._motion_mode_name = name
                     self._motion_mode_checked = True
-                    self._motion_mode_verified_at = self._monotonic()
                     self._motion_mode_error = None
+                    if (
+                        self.expected_motion_mode is None
+                        or self._motion_mode_name is None
+                        or name == self.expected_motion_mode
+                    ):
+                        self._motion_mode_name = name
+                        self._motion_mode_candidate = None
+                        self._motion_mode_candidate_since = None
+                        if self.expected_motion_mode is None or name == self.expected_motion_mode:
+                            self._motion_mode_verified_at = now
+                    elif self._motion_mode_candidate != name:
+                        # CheckMode has produced isolated false mode names on
+                        # the stock image while arm DDS remains healthy.
+                        self._motion_mode_candidate = name
+                        self._motion_mode_candidate_since = now
+                    elif (
+                        self._motion_mode_candidate_since is not None
+                        and now - self._motion_mode_candidate_since
+                        >= self.motion_mode_mismatch_confirm_s
+                    ):
+                        self._motion_mode_name = name
+                        self._motion_mode_candidate = None
+                        self._motion_mode_candidate_since = None
             except Exception as exc:
                 # CheckMode occasionally drops a reply on the stock G1 image
                 # while native arm DDS remains healthy.  Keep the last
                 # verified result only for the bounded grace window; a real
-                # mode change is still applied immediately on the next valid
-                # reply and a persistent outage fails closed after the grace.
+                # persistent outage still fails closed after the grace.
                 with self._lock:
                     self._motion_mode_error = f"{type(exc).__name__}: {exc}"
             self._motion_stop.wait(self.motion_poll_s)

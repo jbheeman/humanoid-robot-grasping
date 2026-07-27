@@ -317,6 +317,45 @@ def select_start_escape_waypoint(
     return tuple(float(value) for value in target), index, None
 
 
+def compress_validated_joint_path(
+    path: Sequence[Sequence[float]],
+    edge_is_valid: Callable[[tuple[float, ...], tuple[float, ...]], bool],
+    *,
+    maximum_span_rad: float = 0.20,
+    maximum_skip_knots: int = 8,
+) -> tuple[tuple[float, ...], ...] | None:
+    """Greedily combine dense IK knots into longer collision-checked edges."""
+
+    knots = tuple(tuple(float(value) for value in knot) for knot in path)
+    if (
+        len(knots) < 2
+        or any(len(knot) != 7 or not np.all(np.isfinite(knot)) for knot in knots)
+        or not np.isfinite(maximum_span_rad)
+        or maximum_span_rad <= 0.0
+        or maximum_skip_knots < 1
+    ):
+        return None
+    compressed = [knots[0]]
+    source_index = 0
+    while source_index < len(knots) - 1:
+        best_index: int | None = None
+        last_candidate = min(len(knots) - 1, source_index + maximum_skip_knots)
+        for candidate_index in range(source_index + 1, last_candidate + 1):
+            span = max(
+                abs(actual - start)
+                for actual, start in zip(knots[candidate_index], knots[source_index])
+            )
+            if span > maximum_span_rad:
+                continue
+            if edge_is_valid(knots[source_index], knots[candidate_index]):
+                best_index = candidate_index
+        if best_index is None:
+            return None
+        compressed.append(knots[best_index])
+        source_index = best_index
+    return tuple(compressed)
+
+
 def depth_colormap_jpeg(z16: np.ndarray, depth_scale: float) -> bytes | None:
     try:
         import cv2
@@ -451,6 +490,7 @@ class ArmTrackingRuntime:
         self._approach_target_index = 1
         self._approach_target_xyz: tuple[float, float, float] | None = None
         self._approach_last_advance_q: tuple[float, ...] | None = None
+        self._approach_raw_waypoint_count: int | None = None
         self._approach_completed = False
         try:
             self.ik = G1RightArmIK(default_urdf_path(repo_root))
@@ -689,6 +729,7 @@ class ArmTrackingRuntime:
             self._approach_target_index = 1
             self._approach_target_xyz = None
             self._approach_last_advance_q = None
+            self._approach_raw_waypoint_count = None
             self._approach_completed = False
         elif (
             self.intercept_controller is not None
@@ -1004,7 +1045,23 @@ class ArmTrackingRuntime:
                             colormap,
                         )
                         return
-                self._approach_path = approach.q_path
+                raw_approach_path = approach.q_path
+                compressed_path = compress_validated_joint_path(
+                    raw_approach_path,
+                    lambda begin, end: self.ik.validate_joint_path(
+                        (begin, end),
+                        support_plane=plane,
+                        edge_step_rad=0.020,
+                        semantic_edge_step_rad=0.010,
+                        require_escape_cleared=False,
+                    )
+                    is None,
+                )
+                if compressed_path is None:
+                    self._reject(base_status, "ik_approach_path_compression", colormap)
+                    return
+                self._approach_raw_waypoint_count = len(raw_approach_path)
+                self._approach_path = compressed_path
                 self._approach_target_index = 1
                 self._approach_target_xyz = tuple(float(value) for value in target.position)
                 self._approach_last_advance_q = tuple(float(value) for value in last_q)
@@ -1046,6 +1103,7 @@ class ArmTrackingRuntime:
                 self._approach_path = None
                 self._approach_target_xyz = None
                 self._approach_last_advance_q = None
+                self._approach_raw_waypoint_count = None
                 self._reject(base_status, f"ik_{selection_error}", colormap)
                 return
             if waypoint is not None:
@@ -1060,6 +1118,7 @@ class ArmTrackingRuntime:
                     self._approach_path = None
                     self._approach_target_xyz = None
                     self._approach_last_advance_q = None
+                    self._approach_raw_waypoint_count = None
                     self._reject(
                         base_status,
                         f"ik_measured_edge:{measured_edge_error}",
@@ -1071,6 +1130,7 @@ class ArmTrackingRuntime:
                 self._approach_target_index = 1
                 self._approach_target_xyz = None
                 self._approach_last_advance_q = None
+                self._approach_raw_waypoint_count = None
                 self._approach_completed = True
                 collision_labels = self.ik.collision_labels(last_q)
                 if collision_labels:
@@ -1120,6 +1180,7 @@ class ArmTrackingRuntime:
                     if self._approach_path is not None
                     else None
                 ),
+                "ik_escape_raw_waypoint_count": self._approach_raw_waypoint_count,
                 "ik_approach_target_xyz_m": self._approach_target_xyz,
                 "ik_global_backend": self.ik.global_backend,
                 "ik_local_backend": self.ik.local_backend,
@@ -1716,6 +1777,7 @@ class ArmTrackingRuntime:
         self._approach_target_index = 1
         self._approach_target_xyz = None
         self._approach_last_advance_q = None
+        self._approach_raw_waypoint_count = None
         self._approach_completed = False
 
     def reset_intercept(self) -> None:

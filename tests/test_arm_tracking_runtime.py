@@ -30,6 +30,7 @@ from object_tracking.arm_tracking.runtime import (
     ArmTrackingRuntime,
     RuntimeConfig,
     clamp_point_height_to_support,
+    compress_validated_joint_path,
     enforce_tracking_palm_clearance,
     measured_right_arm_for_intercept,
     register_depth_in_rgb,
@@ -395,6 +396,27 @@ def test_start_escape_waypoint_advances_only_after_measured_arrival() -> None:
     assert waypoint == path[2]
     assert index == 2
     assert error is None
+
+
+def test_dense_approach_path_is_compressed_into_long_validated_segments() -> None:
+    path = tuple((index * 0.02, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0) for index in range(11))
+    checked: list[tuple[tuple[float, ...], tuple[float, ...]]] = []
+
+    compressed = compress_validated_joint_path(
+        path,
+        lambda begin, end: checked.append((begin, end)) is None,
+        maximum_span_rad=0.10,
+        maximum_skip_knots=8,
+    )
+
+    assert compressed == (path[0], path[5], path[10])
+    assert len(checked) > len(compressed)
+
+
+def test_approach_path_compression_rejects_an_invalid_adjacent_edge() -> None:
+    path = ((0.0,) * 7, (0.02,) * 7)
+
+    assert compress_validated_joint_path(path, lambda begin, end: False) is None
 
 
 def test_start_escape_waypoint_rejects_tracking_drift() -> None:
