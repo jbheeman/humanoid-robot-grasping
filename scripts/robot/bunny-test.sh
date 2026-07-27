@@ -8,8 +8,9 @@ EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE:-ai}"
 MAX_TILT_DEG="${MAX_TILT_DEG:-8}"
 MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG:-12}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-90}"
-# One synchronized librealsense owner supplies RGB and depth. Independent
-# V4L2/librealsense ownership of this D435I repeatedly stalls depth.
+# RGB uses the root-owned 960x540@60 GStreamer service. Librealsense opens only
+# the depth interface so NVENC and ROS depth serialization cannot block the
+# same capture loop.
 DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS:-60}"
 # Domain 42 is also used by older project processes and has repeatedly left
 # the live G1 and GB10 participants undiscovered.  The live bunny test uses a
@@ -61,9 +62,14 @@ if [[ ! -f "${CALIBRATION}" ]]; then
   exit 1
 fi
 
-if systemctl is-active --quiet g1-highfps-camera.service; then
-  echo "Stopping the conflicting V4L2 camera service (sudo may prompt)..."
-  sudo systemctl stop g1-highfps-camera.service
+if ! systemctl is-active --quiet g1-highfps-camera.service; then
+  echo "Starting the 960x540@60 GStreamer camera service (sudo may prompt)..."
+  sudo systemctl start g1-highfps-camera.service
+fi
+if ! systemctl is-active --quiet g1-highfps-camera.service; then
+  echo "g1-highfps-camera.service did not become active." >&2
+  sudo systemctl status g1-highfps-camera.service --no-pager >&2 || true
+  exit 1
 fi
 
 bridge_pid=""
@@ -136,7 +142,7 @@ EXPECTED_MOTION_MODE="${EXPECTED_MOTION_MODE}" \
 MAX_TILT_DEG="${MAX_TILT_DEG}" \
 MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG}" \
 DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS}" \
-RGB_MODE=realsense \
+RGB_MODE=highfps-service \
 G1_PROJECT_ROS_DOMAIN_ID="${PROJECT_ROS_DOMAIN_ID}" \
 QUIET_HEALTHY_DEPTH=1 \
   setsid "${ROOT_DIR}/scripts/robot/start.sh" &
@@ -163,6 +169,7 @@ deadline = time.monotonic() + timeout_s
 last_reason = "GB10 has not responded"
 last_reported_reason = None
 last_report_at = 0.0
+ready_samples = 0
 while time.monotonic() < deadline:
     try:
         with urllib.request.urlopen(url, timeout=2) as response:
@@ -179,16 +186,22 @@ while time.monotonic() < deadline:
             and float(tracking.get("depth_age_ms", 1e9)) <= 200.0
             and float(tracking.get("processing_latency_ms", 1e9)) <= 250.0
         )
-        if ready:
+        ready_samples = ready_samples + 1 if ready else 0
+        if ready_samples >= 8:
             print(
                 "GB10 ready: "
                 f"confidence={tracking.get('detector_confidence')} "
                 f"IK={tracking.get('ik_step_type')} "
-                f"latency_ms={tracking.get('processing_latency_ms')}",
+                f"latency_ms={tracking.get('processing_latency_ms')} "
+                f"stable_samples={ready_samples}",
                 flush=True,
             )
             break
-        last_reason = str(tracking.get("reason") or tracking.get("status") or "not ready")
+        last_reason = (
+            str(tracking.get("reason") or tracking.get("status") or "not ready")
+            if not ready
+            else f"stability_check_{ready_samples}/8"
+        )
     except Exception as exc:
         last_reason = f"{type(exc).__name__}: {exc}"
     now = time.monotonic()
