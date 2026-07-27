@@ -40,7 +40,10 @@ from .visualization import visualization_state
 StatusCallback = Callable[[dict[str, Any], bytes | None], None]
 SnapshotCallback = Callable[[], dict[str, Any]]
 _SUPPORT_PLANE_GRACE_S = 5.000
-_SUPPORT_PLANE_ARMED_TTL_S = 30.000
+# The table is localized immediately before arming and remains physically
+# fixed during one operator demo. Avoid rerunning expensive plane fitting in
+# the realtime path midway through that session.
+_SUPPORT_PLANE_ARMED_TTL_S = 300.000
 
 
 class TrackingTransport(Protocol):

@@ -16,6 +16,10 @@ ROS_DOMAIN_ID="${G1_PROJECT_ROS_DOMAIN_ID:-43}"
 HARDWARE_DOMAIN_ID="${HARDWARE_DOMAIN_ID:-0}"
 MAX_TILT_DEG="${MAX_TILT_DEG:-5}"
 MAX_WAIST_DEVIATION_DEG="${MAX_WAIST_DEVIATION_DEG:-3}"
+ARM_WEIGHT_RAMP_S="${ARM_WEIGHT_RAMP_S:-1.5}"
+ARM_MAX_VELOCITY_RAD_S="${ARM_MAX_VELOCITY_RAD_S:-0.15}"
+ARM_MAX_ACCELERATION_RAD_S2="${ARM_MAX_ACCELERATION_RAD_S2:-0.5}"
+ARM_MAX_JERK_RAD_S3="${ARM_MAX_JERK_RAD_S3:-2.0}"
 CALIBRATION="${CALIBRATION:-}"
 RGB_MODE="${RGB_MODE:-unitree}"
 ALLOW_MOVEMENT="${ALLOW_MOVEMENT:-0}"
@@ -106,6 +110,10 @@ if [[ "${CONTROL_MODE}" == "tracking" ]]; then
     --hardware-domain-id "${HARDWARE_DOMAIN_ID}"
     --max-tilt-deg "${MAX_TILT_DEG}"
     --max-waist-deviation-deg "${MAX_WAIST_DEVIATION_DEG}"
+    --weight-ramp-s "${ARM_WEIGHT_RAMP_S}"
+    --max-velocity-rad-s "${ARM_MAX_VELOCITY_RAD_S}"
+    --max-acceleration-rad-s2 "${ARM_MAX_ACCELERATION_RAD_S2}"
+    --max-jerk-rad-s3 "${ARM_MAX_JERK_RAD_S3}"
   )
   if [[ -n "${CALIBRATION}" ]]; then
     native_args+=(--calibration "${CALIBRATION}")
