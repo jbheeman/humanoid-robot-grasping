@@ -16,11 +16,12 @@ ROS_INTERFACE="${ROS_INTERFACE:-auto}"
 # Manual arm control runs in domain 42. Vision-pointing overrides this process
 # to depth domain 43 to keep the large depth stream isolated from arm control.
 ROS_DOMAIN_ID="${ROS_DOMAIN_ID:-42}"
-# The robot project node must use Fast DDS because native Unitree SDK2 owns a
-# separate CycloneDDS instance in the same robot process.  Keep the Foxy and
-# Jazzy ends on the same RMW: mixed Fast DDS/Cyclone discovery succeeded over
-# Wi-Fi but malformed a project subscription and crashed Foxy with bad_alloc.
-export RMW_IMPLEMENTATION="${G1_PROJECT_RMW_IMPLEMENTATION:-rmw_fastrtps_cpp}"
+# Normal tracking uses the robot launcher's split project process, which runs
+# CycloneDDS independently from native Unitree SDK2. Keep the GB10 on the same
+# RMW so the large custom depth message is discoverable and deserializable.
+# Commissioning/vision-pointing explicitly override this below for their
+# legacy Fast DDS channels.
+export RMW_IMPLEMENTATION="${G1_PROJECT_RMW_IMPLEMENTATION:-rmw_cyclonedds_cpp}"
 UDP_PORT="${UDP_PORT:-5600}"
 HOST="${HOST:-0.0.0.0}"
 PORT="${PORT:-8000}"
