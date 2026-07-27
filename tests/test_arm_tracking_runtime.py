@@ -236,9 +236,16 @@ def test_registered_point_height_accepts_bounded_support_region() -> None:
     assert height == 0.03
 
 
-def test_ik_seed_uses_measured_right_arm_when_no_command_exists() -> None:
+def test_ik_seed_prefers_fresh_measured_right_arm_over_disarmed_command() -> None:
     measured = [float(index) for index in range(29)]
-    state = {"visualization": {"measured_pose_rad": measured}}
+    state = {
+        "commanded_arm_q": [0.0] * 14,
+        "visualization": {
+            "available": True,
+            "state_age_ms": 12.0,
+            "measured_pose_rad": measured,
+        },
+    }
 
     assert right_arm_ik_seed(state, None) == measured[22:29]
 

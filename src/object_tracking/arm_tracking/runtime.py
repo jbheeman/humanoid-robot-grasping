@@ -163,15 +163,19 @@ def right_arm_ik_seed(
     arm_state: dict[str, Any],
     home_q: Sequence[float] | None,
 ) -> list[float]:
-    """Prefer the commanded arm, then the observed 29-DOF right-arm state."""
+    """Seed IK from fresh measured joints, then commanded/home fallbacks.
 
+    A disarmed bridge reports its zero-weight release command in
+    ``commanded_arm_q``.  Treating that as the physical pose can turn the first
+    tracking target into a large jump and immediately trip following-error.
+    """
+
+    measured, _ = measured_right_arm_for_intercept(arm_state)
+    if measured is not None:
+        return list(measured)
     commanded = arm_state.get("commanded_arm_q")
     if isinstance(commanded, list) and len(commanded) == 14:
         return [float(value) for value in commanded[-7:]]
-    visualization = arm_state.get("visualization") or {}
-    measured = visualization.get("measured_pose_rad")
-    if isinstance(measured, list) and len(measured) == 29:
-        return [float(value) for value in measured[22:29]]
     return [float(value) for value in (home_q or (0.0,) * 7)]
 
 
