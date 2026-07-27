@@ -21,6 +21,7 @@ from object_tracking.arm_tracking.arm_bridge import (
 )
 from object_tracking.arm_tracking.arm_unitree import UnitreeArmHardware
 from object_tracking.arm_tracking.calibration import load_calibration
+from object_tracking.arm_tracking.gravity import UrdfGravityCompensator
 
 
 MAX_REQUEST_BYTES = 16 * 1024
@@ -133,6 +134,17 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--expected-motion-mode")
     parser.add_argument("--hardware-interface", default="eth0")
     parser.add_argument("--hardware-domain-id", type=int, default=0)
+    parser.add_argument(
+        "--gravity-urdf",
+        default=str(
+            Path(__file__).resolve().parents[2]
+            / ".deps"
+            / "xr_teleoperate"
+            / "assets"
+            / "g1"
+            / "g1_body29_hand14.urdf"
+        ),
+    )
     parser.add_argument("--weight-ramp-s", type=float, default=1.5)
     parser.add_argument("--startup-settle-s", type=float, default=0.25)
     parser.add_argument("--max-velocity-rad-s", type=float, default=0.15)
@@ -173,6 +185,7 @@ def main() -> int:
         max_tilt_rad=math.radians(args.max_tilt_deg),
         expected_motion_mode=args.expected_motion_mode,
     )
+    gravity_compensator = UrdfGravityCompensator(args.gravity_urdf)
     controller = ArmBridgeController(
         hardware,
         ArmBridgeConfig(
@@ -192,6 +205,7 @@ def main() -> int:
             # normal balance compensation midway through the escape path.
             max_waist_deviation_rad=math.radians(args.max_waist_deviation_deg),
         ),
+        gravity_compensator=gravity_compensator,
     )
     socket_path = Path(args.socket)
     _prepare_socket(socket_path)

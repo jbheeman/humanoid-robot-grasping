@@ -171,6 +171,9 @@ def test_arm_command_contains_all_joints_and_latches_left_arm() -> None:
     assert command.kp == (80.0,) * 4 + (40.0,) * 3 + (80.0,) * 4 + (40.0,) * 3
     assert command.kd == (3.0,) * 4 + (1.5,) * 3 + (3.0,) * 4 + (1.5,) * 3
     assert 0.0 < command.q[7] - starting[7] < 0.04
+    assert command.dq[:7] == (0.0,) * 7
+    assert command.dq[7:] == pytest.approx(controller.right_velocity)
+    assert command.dq[7] > 0.0
     assert command.weight == 1.0
 
 
@@ -212,6 +215,52 @@ def test_gravity_feedforward_is_validated_and_slew_limited() -> None:
             source_timestamp=clock.wall,
         )
     assert rejected.value.code == "torque_feedforward_limit"
+
+
+def test_robot_local_gravity_uses_measured_state_on_every_250_hz_tick() -> None:
+    class MeasuredGravity:
+        def __init__(self) -> None:
+            self.inputs: list[tuple[float, ...]] = []
+
+        def torque(self, q: tuple[float, ...]) -> tuple[float, ...]:
+            self.inputs.append(tuple(q))
+            return (-1.0, 0.0, 0.0, -3.5 - q[3], 0.0, 0.0, 0.0)
+
+    clock = FakeClock()
+    hardware = FakeHardware(robot_state(clock))
+    gravity = MeasuredGravity()
+    controller = ArmBridgeController(
+        hardware,
+        ArmBridgeConfig(
+            allow_movement=True,
+            calibration_id="cal-1",
+            max_tau_ff_slew_nm_s=1_000.0,
+            max_following_error_rad=1.0,
+        ),
+        monotonic=lambda: clock.monotonic,
+        wall_time=lambda: clock.wall,
+        gravity_compensator=gravity,
+    )
+    arm(controller, hardware, clock)
+    initial_updates = controller.metrics.gravity_updates
+    period = 1.0 / controller.config.control_hz
+
+    for elbow in (0.2, 0.4, 0.6):
+        measured = (0.0,) * 7 + (0.0, 0.0, 0.0, elbow, 0.0, 0.0, 0.0)
+        clock.advance(period)
+        hardware.state = robot_state(clock, q=measured)
+        controller.tick()
+
+    assert gravity.inputs[-3:] == [
+        (0.0, 0.0, 0.0, 0.2, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.4, 0.0, 0.0, 0.0),
+        (0.0, 0.0, 0.0, 0.6, 0.0, 0.0, 0.0),
+    ]
+    assert controller.metrics.gravity_updates == initial_updates + 3
+    assert hardware.commands[-1].tau[10] == pytest.approx(-4.1)
+    health = controller.health_report()
+    assert health["gravity_feedforward_source"] == "measured_state_urdf"
+    assert health["gravity_update_hz"] == 250.0
 
 
 def test_ruckig_limits_velocity_acceleration_and_jerk_during_replanning() -> None:

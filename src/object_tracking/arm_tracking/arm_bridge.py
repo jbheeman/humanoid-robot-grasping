@@ -119,6 +119,12 @@ class ArmHardware(Protocol):
     def close(self) -> None: ...
 
 
+class GravityCompensator(Protocol):
+    """Robot-local gravity evaluator used from the measured-state loop."""
+
+    def torque(self, right_arm_q_rad: Sequence[float]) -> tuple[float, ...]: ...
+
+
 @dataclass(frozen=True)
 class ArmBridgeConfig:
     control_mode: ArmControlMode = ArmControlMode.TRACKING
@@ -140,7 +146,7 @@ class ArmBridgeConfig:
     max_velocity_rad_s: float = 0.50
     max_acceleration_rad_s2: float = 2.0
     max_jerk_rad_s3: float = 20.0
-    max_tau_ff_slew_nm_s: float = 20.0
+    max_tau_ff_slew_nm_s: float = 200.0
     max_following_error_rad: float = 0.35
     max_left_drift_rad: float = 0.01
     kp: float = 80.0
@@ -202,6 +208,9 @@ class LoopMetrics:
     maximum_command_step_rad: float = 0.0
     maximum_following_error_rad: float = 0.0
     maximum_gravity_ff_nm: float = 0.0
+    gravity_updates: int = 0
+    last_gravity_calculation_s: float | None = None
+    max_gravity_calculation_s: float = 0.0
     deferred_arming_targets: int = 0
 
     def as_dict(self) -> dict[str, int | float | None]:
@@ -216,6 +225,15 @@ class LoopMetrics:
             "maximum_command_step_rad": round(self.maximum_command_step_rad, 7),
             "maximum_following_error_rad": round(self.maximum_following_error_rad, 7),
             "maximum_gravity_ff_nm": round(self.maximum_gravity_ff_nm, 7),
+            "gravity_updates": self.gravity_updates,
+            "last_gravity_calculation_us": (
+                None
+                if self.last_gravity_calculation_s is None
+                else round(self.last_gravity_calculation_s * 1_000_000.0, 3)
+            ),
+            "max_gravity_calculation_us": round(
+                self.max_gravity_calculation_s * 1_000_000.0, 3
+            ),
             "deferred_arming_targets": self.deferred_arming_targets,
         }
 
@@ -230,11 +248,13 @@ class ArmBridgeController:
         *,
         monotonic: Callable[[], float] = time.monotonic,
         wall_time: Callable[[], float] = time.time,
+        gravity_compensator: GravityCompensator | None = None,
     ) -> None:
         self.hardware = hardware
         self.config = config
         self._monotonic = monotonic
         self._wall_time = wall_time
+        self.gravity_compensator = gravity_compensator
         self._lock = threading.RLock()
         self._stop_event = threading.Event()
         self._thread: threading.Thread | None = None
@@ -486,7 +506,8 @@ class ArmBridgeController:
                 self.metrics.deferred_arming_targets += 1
                 return self.state_report(now)
             self.desired_right = target
-            self.desired_right_tau_ff = tau_ff
+            if self.gravity_compensator is None:
+                self.desired_right_tau_ff = tau_ff
             return self.state_report(now)
 
     def set_commissioning_target(
@@ -641,6 +662,27 @@ class ArmBridgeController:
                 release_s = self._deadline_trigger_s(self.config.weight_ramp_s)
                 self.weight = self._release_start_weight * max(0.0, 1.0 - elapsed / release_s)
 
+            if (
+                self.gravity_compensator is not None
+                and robot is not None
+                and self.state in (ArmState.ARMING, ArmState.ARMED, ArmState.HOLDING)
+            ):
+                started = time.perf_counter()
+                try:
+                    self.desired_right_tau_ff = self._validate_tau_ff(
+                        self.gravity_compensator.torque(robot.arm_q[7:])
+                    )
+                except (ArmBridgeError, RuntimeError, ValueError) as exc:
+                    self._enter_fault(f"gravity_compensation:{exc}", now)
+                else:
+                    elapsed = time.perf_counter() - started
+                    self.metrics.gravity_updates += 1
+                    self.metrics.last_gravity_calculation_s = elapsed
+                    self.metrics.max_gravity_calculation_s = max(
+                        self.metrics.max_gravity_calculation_s,
+                        elapsed,
+                    )
+            self._interpolate_gravity(dt)
             self._publish(now, robot)
 
             if self.state is ArmState.HOLDING and self.weight <= 0.0:
@@ -667,6 +709,14 @@ class ArmBridgeController:
                 "max_acceleration_rad_s2": self.config.max_acceleration_rad_s2,
                 "max_jerk_rad_s3": self.config.max_jerk_rad_s3,
                 "gravity_feedforward": True,
+                "gravity_feedforward_source": (
+                    "perception_target"
+                    if self.gravity_compensator is None
+                    else "measured_state_urdf"
+                ),
+                "gravity_update_hz": (
+                    None if self.gravity_compensator is None else self.config.control_hz
+                ),
                 "gravity_ff_limits_nm": list(self.config.right_tau_ff_limits_nm),
                 "max_tau_ff_slew_nm_s": self.config.max_tau_ff_slew_nm_s,
                 "target_ttl_ms": round(self.config.target_ttl_s * 1000.0),
@@ -940,6 +990,11 @@ class ArmBridgeController:
             self.metrics.maximum_command_step_rad,
             max(abs(actual - prior) for actual, prior in zip(position, previous)),
         )
+        out.pass_to_input(inp)
+
+    def _interpolate_gravity(self, dt: float) -> None:
+        if dt <= 0.0:
+            return
         maximum_tau_step = self.config.max_tau_ff_slew_nm_s * dt
         for index, desired in enumerate(self.desired_right_tau_ff):
             delta = desired - self.commanded_right_tau_ff[index]
@@ -951,7 +1006,6 @@ class ArmBridgeController:
             self.metrics.maximum_gravity_ff_nm,
             max(abs(value) for value in self.commanded_right_tau_ff),
         )
-        out.pass_to_input(inp)
 
     def _advance_arming(self, now: float, robot: RobotState) -> None:
         """Settle at measured pose before allowing the weight ramp to begin."""
@@ -1021,7 +1075,9 @@ class ArmBridgeController:
         )
         command = ArmCommand(
             q=q,
-            dq=(0.0,) * 14,
+            # Preserve the velocity generated by Ruckig. Sending zero here
+            # makes the motor KD term oppose every intended movement.
+            dq=(0.0,) * 7 + tuple(self.right_velocity),
             kp=kp,
             kd=kd,
             tau=(0.0,) * 7 + tuple(self.commanded_right_tau_ff),
