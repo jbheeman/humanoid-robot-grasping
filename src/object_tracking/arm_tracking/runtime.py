@@ -14,6 +14,7 @@ from .calibration import Calibration, load_calibration
 from .arm_commissioning import load_home_profile
 from .depth import DepthFrame, estimate_adaptive_roi_depth
 from .geometry import (
+    detect_automatic_support_region,
     deproject_depth_samples,
     deproject_pixel,
     extract_support_plane,
@@ -78,6 +79,9 @@ class RuntimeConfig:
     calibration_path: Path
     tabletop_path: Path | None = None
     allow_nominal_support_plane: bool = False
+    automatic_support_plane: bool = True
+    automatic_support_hz: float = 5.0
+    automatic_support_stable_samples: int = 3
     arm_home_path: Path | None = None
     robot_id: str | None = None
     execute: bool = False
@@ -90,6 +94,10 @@ class RuntimeConfig:
     def __post_init__(self) -> None:
         if not 10.0 <= self.target_hz <= 30.0:
             raise ValueError("target_hz must be between 10 and 30 Hz")
+        if not 1.0 <= self.automatic_support_hz <= 10.0:
+            raise ValueError("automatic_support_hz must be between 1 and 10 Hz")
+        if not 1 <= self.automatic_support_stable_samples <= 12:
+            raise ValueError("automatic_support_stable_samples must be between 1 and 12")
 
 
 def register_depth_in_rgb(
@@ -291,18 +299,16 @@ class ArmTrackingRuntime:
                 )
             self.intercept_controller = LiveInterceptController(self.intercept_profile)
         self.tabletop_corners_px: tuple[tuple[float, float], ...] | None = None
+        self.tabletop_corner_frame_size: tuple[int, int] | None = None
         self.tabletop_size_m: tuple[float, float] | None = None
         self.tabletop_footprint_error: str | None = None
         if config.tabletop_path is not None:
             try:
                 value = json.loads(config.tabletop_path.read_text(encoding="utf-8"))
                 frame = value["camera_frame"]
-                expected_size = (
-                    self.calibration.rgb_profile.width,
-                    self.calibration.rgb_profile.height,
-                )
-                if (int(frame["width"]), int(frame["height"])) != expected_size:
-                    raise ValueError("tabletop corners use a different RGB profile")
+                frame_size = (int(frame["width"]), int(frame["height"]))
+                if frame_size[0] <= 0 or frame_size[1] <= 0:
+                    raise ValueError("tabletop corner RGB profile is invalid")
                 corners = value["corners_px"]
                 expected_names = ("near_left", "near_right", "far_right", "far_left")
                 if tuple(str(item["name"]) for item in corners) != expected_names:
@@ -311,6 +317,7 @@ class ArmTrackingRuntime:
                 if len(parsed) != 4 or not np.all(np.isfinite(parsed)):
                     raise ValueError("tabletop footprint must contain four finite corners")
                 self.tabletop_corners_px = parsed
+                self.tabletop_corner_frame_size = frame_size
                 tabletop = value["tabletop"]
                 depth_m = float(tabletop["depth_m"])
                 width_m = float(tabletop["width_m"])
@@ -355,6 +362,10 @@ class ArmTrackingRuntime:
         self.last_support_plane: Any | None = None
         self.last_support_plane_error: str | None = None
         self.last_support_plane_at = 0.0
+        self._automatic_support_last_attempt_at = 0.0
+        self._automatic_support_candidate: SupportRegion | None = None
+        self._automatic_support_stable_samples = 0
+        self._automatic_support_diagnostics: dict[str, object] | None = None
         self.last_arm_poll_at = 0.0
         self.last_arm_state: dict[str, Any] = {"state": "unreachable"}
         self._pending_predictions: deque[tuple[float, str, np.ndarray]] = deque()
@@ -375,6 +386,9 @@ class ArmTrackingRuntime:
         self.ik_error: str | None = None
         self._start_escape_path: tuple[tuple[float, ...], ...] | None = None
         self._start_escape_target_index = 1
+        self._approach_path: tuple[tuple[float, ...], ...] | None = None
+        self._approach_target_index = 1
+        self._approach_target_xyz: tuple[float, float, float] | None = None
         try:
             self.ik = G1RightArmIK(default_urdf_path(repo_root))
         except IKUnavailable as exc:
@@ -557,6 +571,9 @@ class ArmTrackingRuntime:
                 if self.last_support_plane_at
                 else None,
                 "error": self.last_support_plane_error,
+                "source": None if plane is None else plane.source,
+                "automatic": self._automatic_support_diagnostics,
+                "stable_samples": self._automatic_support_stable_samples,
             }
             if plane is None:
                 self._reject(base_status, "support_plane_unavailable", colormap)
@@ -641,6 +658,9 @@ class ArmTrackingRuntime:
                 if self.last_support_plane_at
                 else None,
                 "error": self.last_support_plane_error,
+                "source": None if plane is None else plane.source,
+                "automatic": self._automatic_support_diagnostics,
+                "stable_samples": self._automatic_support_stable_samples,
             }
             if plane is None:
                 self._reject(base_status, "support_plane_unavailable", colormap)
@@ -743,9 +763,6 @@ class ArmTrackingRuntime:
                     )
                 )
                 base_status["intercept_ready_pose_error_rad"] = round(ready_error, 6)
-                if ready_error > self.intercept_profile.ready_pose_tolerance_rad:
-                    self._reject(base_status, "intercept_ready_pose_required", colormap)
-                    return
             palm_position = self.ik.forward_kinematics(measured_q)[:3, 3]
             intercept_planning_started = time.monotonic()
             intercept_decision = self.intercept_controller.update(
@@ -851,50 +868,44 @@ class ArmTrackingRuntime:
             else right_arm_ik_seed(arm_state, self.home_q)
         )
         collision_labels = self.ik.collision_labels(last_q)
-        if intercept_decision is not None and collision_labels:
-            self._reject(base_status, "intercept_current_pose_collision", colormap)
-            return
-        escape_needed = self._start_escape_path is not None or bool(collision_labels)
         ik_started = time.monotonic()
-        # The hip-rest escape is an independently planned and fully
-        # link/table-validated path. A noisy bunny endpoint must not interrupt
-        # it; endpoint workspace/clearance gates become relevant only when
-        # task-directed Cartesian IK is about to begin.
-        if not escape_needed:
-            if not self.calibration.workspace.contains(target.position):
-                self._reject(base_status, "workspace_violation", colormap)
-                return
-            if not has_support_clearance(target.position, plane):
-                self._reject(base_status, "support_plane_clearance", colormap)
-                return
+        if not self.calibration.workspace.contains(target.position):
+            self._reject(base_status, "workspace_violation", colormap)
+            return
+        if not has_support_clearance(target.position, plane, minimum_clearance_m=0.05):
+            self._reject(base_status, "support_plane_clearance", colormap)
+            return
         ik_step_type = (
             "intercept_local_translation"
             if intercept_decision is not None
             else "analytic_local_translation"
         )
-        # Once a validated hip-rest escape starts, latch it until measured
-        # state reaches the collision-free endpoint. The contact sits at the
-        # mesh boundary and can flicker clear for one encoder sample; dropping
-        # the path on that sample would incorrectly attempt task IK from the
-        # factory rest pose.
-        if escape_needed:
-            ik_step_type = "guided_table_clearance"
-            if self._start_escape_path is None:
-                # Tracking only needs to leave the shallow factory hand/hip
-                # contact before normal task IK begins. Do not add the older
-                # generic 25 cm "lift" here: it is slower, can stall near the
-                # hip, and is unrelated to the intercepted Cartesian target.
-                # This narrower planner still densely validates the complete
-                # exit-only path, support clearance, joint limits, a strict
-                # no-reentry latch, and a collision-free endpoint.
-                escape = self.ik.plan_start_collision_escape(
+        current_transform = self.ik.forward_kinematics(last_q)
+        start_topology = plane.classify_point(
+            current_transform[:3, 3],
+            side_margin_m=0.10,
+            top_clearance_m=0.10,
+        )
+        base_status["ik_start_topology"] = start_topology
+        approach_needed = (
+            self._approach_path is not None
+            or bool(collision_labels)
+            or start_topology != "above_clearance"
+        )
+        if approach_needed:
+            ik_step_type = "adaptive_table_approach"
+            if self._approach_path is None:
+                transform = current_transform.copy()
+                transform[:3, 3] = target.position
+                approach = self.ik.plan_adaptive_table_approach(
+                    transform,
                     last_q,
                     support_plane=plane,
                 )
-                if not escape.ok or escape.q_path is None:
+                if not approach.ok or approach.q_path is None:
                     base_status.update(
                         {
-                            "ik_status": escape.reason,
+                            "ik_status": approach.reason,
                             "ik_step_type": ik_step_type,
                             "ik_collision_labels": list(collision_labels),
                             "ik_global_backend": self.ik.global_backend,
@@ -904,39 +915,41 @@ class ArmTrackingRuntime:
                     )
                     self._reject(
                         base_status,
-                        f"ik_{escape.reason or 'start_collision_escape_failed'}",
+                        f"ik_{approach.reason or 'adaptive_approach_failed'}",
                         colormap,
                     )
                     return
-                self._start_escape_path = escape.q_path
-                self._start_escape_target_index = 1
+                self._approach_path = approach.q_path
+                self._approach_target_index = 1
+                self._approach_target_xyz = tuple(float(value) for value in target.position)
             waypoint, waypoint_index, selection_error = select_start_escape_waypoint(
                 last_q,
-                self._start_escape_path,
-                self._start_escape_target_index,
+                self._approach_path,
+                self._approach_target_index,
             )
-            self._start_escape_target_index = waypoint_index
+            self._approach_target_index = waypoint_index
             if selection_error is not None:
-                self._start_escape_path = None
+                self._approach_path = None
+                self._approach_target_xyz = None
                 self._reject(base_status, f"ik_{selection_error}", colormap)
                 return
             if waypoint is None:
-                self._start_escape_path = None
+                self._approach_path = None
+                self._approach_target_index = 1
+                self._approach_target_xyz = None
                 collision_labels = self.ik.collision_labels(last_q)
                 if collision_labels:
                     self._reject(
                         base_status,
-                        "ik_escape_complete_but_collision_remains",
+                        "ik_approach_complete_but_collision_remains",
                         colormap,
                     )
                     return
-                if not self.calibration.workspace.contains(target.position):
-                    self._reject(base_status, "workspace_violation", colormap)
-                    return
-                if not has_support_clearance(target.position, plane):
-                    self._reject(base_status, "support_plane_clearance", colormap)
-                    return
-                ik_step_type = "analytic_local_translation"
+                ik_step_type = (
+                    "intercept_local_translation"
+                    if intercept_decision is not None
+                    else "analytic_local_translation"
+                )
                 transform = self.ik.forward_kinematics(last_q)
                 transform[:3, 3] = target.position
                 ik = self.ik.solve_local_translation(
@@ -945,18 +958,11 @@ class ArmTrackingRuntime:
                     support_plane=plane,
                 )
             else:
-                # The complete cached path was densely collision/table
-                # validated when planned. Expose one waypoint repeatedly until
-                # measured state reaches it; the selector rejects motion
-                # outside the validated joint-wise corridor and the bridge
-                # independently rejects >0.05-rad targets.
                 ik = IKResult(True, waypoint, 0.0, 0.0)
         else:
-            self._start_escape_path = None
-            self._start_escape_target_index = 1
             # Realtime tracking is an incremental Cartesian servo. Preserve
             # measured wrist orientation and expose one fully validated edge.
-            transform = self.ik.forward_kinematics(last_q)
+            transform = current_transform
             transform[:3, 3] = target.position
             ik = self.ik.solve_local_translation(
                 transform,
@@ -970,15 +976,16 @@ class ArmTrackingRuntime:
                 "next_edge_collision_checked": bool(ik.ok),
                 "ik_collision_labels": list(collision_labels),
                 "ik_escape_waypoint": (
-                    self._start_escape_target_index
-                    if ik_step_type == "guided_table_clearance"
+                    self._approach_target_index
+                    if ik_step_type == "adaptive_table_approach"
                     else None
                 ),
                 "ik_escape_waypoint_count": (
-                    len(self._start_escape_path)
-                    if self._start_escape_path is not None
+                    len(self._approach_path)
+                    if self._approach_path is not None
                     else None
                 ),
+                "ik_approach_target_xyz_m": self._approach_target_xyz,
                 "ik_global_backend": self.ik.global_backend,
                 "ik_local_backend": self.ik.local_backend,
                 "ik_position_error_m": ik.position_error_m,
@@ -1259,15 +1266,69 @@ class ArmTrackingRuntime:
         *,
         freeze: bool = False,
     ) -> SupportRegion | None:
+        now = time.monotonic()
         if (
             freeze
             and self.last_support_plane is not None
-            and time.monotonic() - self.last_support_plane_at
+            and now - self.last_support_plane_at
             <= _SUPPORT_PLANE_ARMED_TTL_S
         ):
             return self.last_support_plane
+        errors: list[str] = []
+        if (
+            self.config.automatic_support_plane
+            and now - self._automatic_support_last_attempt_at
+            >= 1.0 / self.config.automatic_support_hz
+        ):
+            self._automatic_support_last_attempt_at = now
+            try:
+                candidate, diagnostics = detect_automatic_support_region(
+                    aligned,
+                    self.calibration.rgb_intrinsics,
+                    depth_scale=depth_scale,
+                    optical_to_base=self.calibration.optical_to_torso,
+                    base_minimum=(
+                        float(self.calibration.workspace.minimum[0] - 0.12),
+                        float(self.calibration.workspace.minimum[1] - 0.12),
+                        self._expected_table_height_m() - self._table_height_tolerance_m(),
+                    ),
+                    base_maximum=(
+                        float(self.calibration.workspace.maximum[0] + 0.12),
+                        float(self.calibration.workspace.maximum[1] + 0.12),
+                        self._expected_table_height_m() + self._table_height_tolerance_m(),
+                    ),
+                    expected_size_m=self.tabletop_size_m,
+                )
+                self._automatic_support_diagnostics = diagnostics.to_dict()
+                if self._support_candidates_agree(
+                    self._automatic_support_candidate,
+                    candidate,
+                ):
+                    self._automatic_support_stable_samples += 1
+                else:
+                    self._automatic_support_candidate = candidate
+                    self._automatic_support_stable_samples = 1
+                if (
+                    self._automatic_support_stable_samples
+                    >= self.config.automatic_support_stable_samples
+                ):
+                    self.last_support_plane = candidate
+                    self.last_support_plane_at = now
+                    self.last_support_plane_error = None
+                    return candidate
+                errors.append(
+                    "automatic tabletop awaiting temporal consensus "
+                    f"{self._automatic_support_stable_samples}/"
+                    f"{self.config.automatic_support_stable_samples}"
+                )
+            except ValueError as exc:
+                self._automatic_support_candidate = None
+                self._automatic_support_stable_samples = 0
+                self._automatic_support_diagnostics = None
+                errors.append(f"automatic: {type(exc).__name__}: {exc}")
         try:
-            if self.tabletop_corners_px is None:
+            corners_px = self._scaled_tabletop_corners()
+            if corners_px is None:
                 raise ValueError(
                     "no calibrated tabletop footprint"
                     + (
@@ -1281,7 +1342,7 @@ class ArmTrackingRuntime:
                 self.calibration.rgb_intrinsics,
                 depth_scale=depth_scale,
                 optical_to_base=self.calibration.optical_to_torso,
-                pixel_roi=self.tabletop_corners_px,
+                pixel_roi=corners_px,
                 # The polygon encloses the tabletop in RGB pixels, but its far
                 # edge can still include background/floor depth through gaps.
                 # Restrict RANSAC candidates to the calibrated tabletop-height
@@ -1302,7 +1363,7 @@ class ArmTrackingRuntime:
             rotation = self.calibration.optical_to_torso.rotation
             intrinsics = self.calibration.rgb_intrinsics
             corners_xyz: list[np.ndarray] = []
-            for u, v in self.tabletop_corners_px:
+            for u, v in corners_px:
                 optical_ray = np.asarray(
                     (
                         (u - intrinsics.ppx) / intrinsics.fx,
@@ -1338,14 +1399,15 @@ class ArmTrackingRuntime:
                     f"expected={expected_size.round(3).tolist()}m"
                 )
             self.last_support_plane = support
-            self.last_support_plane_at = time.monotonic()
+            self.last_support_plane_at = now
             self.last_support_plane_error = None
             return support
         except ValueError as exc:
-            self.last_support_plane_error = f"{type(exc).__name__}: {exc}"
+            errors.append(f"clicked fallback: {type(exc).__name__}: {exc}")
+            self.last_support_plane_error = "; ".join(errors)
             if (
                 self.last_support_plane is not None
-                and time.monotonic() - self.last_support_plane_at
+                and now - self.last_support_plane_at
                 <= _SUPPORT_PLANE_GRACE_S
             ):
                 return self.last_support_plane
@@ -1364,9 +1426,36 @@ class ArmTrackingRuntime:
                     source="calibrated_nominal_free_space_plane",
                 )
                 self.last_support_plane = support
-                self.last_support_plane_at = time.monotonic()
+                self.last_support_plane_at = now
                 return support
+        return None
+
+    def _scaled_tabletop_corners(self) -> tuple[tuple[float, float], ...] | None:
+        if self.tabletop_corners_px is None or self.tabletop_corner_frame_size is None:
             return None
+        source_width, source_height = self.tabletop_corner_frame_size
+        scale_x = self.calibration.rgb_profile.width / source_width
+        scale_y = self.calibration.rgb_profile.height / source_height
+        return tuple(
+            (float(x) * scale_x, float(y) * scale_y)
+            for x, y in self.tabletop_corners_px
+        )
+
+    @staticmethod
+    def _support_candidates_agree(
+        previous: SupportRegion | None,
+        candidate: SupportRegion,
+    ) -> bool:
+        if previous is None:
+            return False
+        normal_agreement = float(np.dot(previous.plane.normal, candidate.plane.normal))
+        if normal_agreement < float(np.cos(np.deg2rad(3.0))):
+            return False
+        if abs(previous.plane.offset - candidate.plane.offset) > 0.02:
+            return False
+        previous_center = 0.5 * (previous.minimum_uv + previous.maximum_uv)
+        candidate_center = 0.5 * (candidate.minimum_uv + candidate.maximum_uv)
+        return bool(np.linalg.norm(previous_center - candidate_center) <= 0.05)
 
     def _expected_table_height_m(self) -> float:
         poses = (*self.calibration.solve_poses, *self.calibration.validation_poses)
@@ -1424,6 +1513,9 @@ class ArmTrackingRuntime:
                 "available": False,
                 "age_ms": None,
                 "error": self.last_support_plane_error,
+                "source": None,
+                "automatic": self._automatic_support_diagnostics,
+                "stable_samples": self._automatic_support_stable_samples,
             },
             "measured_object_xyz_m": None,
             "predicted_object_xyz_m": None,

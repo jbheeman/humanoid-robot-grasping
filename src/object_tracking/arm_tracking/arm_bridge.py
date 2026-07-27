@@ -123,6 +123,10 @@ class ArmBridgeConfig:
     deadman_s: float = 0.500
     state_ttl_s: float = 0.250
     stable_standing_s: float = 2.0
+    startup_settle_s: float = 0.150
+    startup_settle_timeout_s: float = 2.0
+    startup_max_velocity_rad_s: float = 0.08
+    startup_max_pose_error_rad: float = 0.02
     weight_ramp_s: float = 0.250
     joint_limit_margin_rad: float = 0.05
     max_target_delta_rad: float = 0.05
@@ -145,6 +149,9 @@ class ArmBridgeConfig:
             "deadman_s": self.deadman_s,
             "state_ttl_s": self.state_ttl_s,
             "stable_standing_s": self.stable_standing_s,
+            "startup_settle_timeout_s": self.startup_settle_timeout_s,
+            "startup_max_velocity_rad_s": self.startup_max_velocity_rad_s,
+            "startup_max_pose_error_rad": self.startup_max_pose_error_rad,
             "weight_ramp_s": self.weight_ramp_s,
             "max_target_delta_rad": self.max_target_delta_rad,
             "max_velocity_rad_s": self.max_velocity_rad_s,
@@ -156,6 +163,10 @@ class ArmBridgeConfig:
         for name, value in positive.items():
             if not math.isfinite(value) or value <= 0.0:
                 raise ValueError(f"{name} must be finite and > 0")
+        if not math.isfinite(self.startup_settle_s) or self.startup_settle_s < 0.0:
+            raise ValueError("startup_settle_s must be finite and >= 0")
+        if self.startup_settle_timeout_s < self.startup_settle_s:
+            raise ValueError("startup_settle_timeout_s must cover startup_settle_s")
         if self.control_hz < 50.0 or self.control_hz > 250.0:
             raise ValueError("control_hz must be within the verified 50-250 Hz range")
         if len(self.right_joint_limits) != 7:
@@ -173,6 +184,9 @@ class LoopMetrics:
     max_lateness_s: float = 0.0
     last_period_s: float | None = None
     max_period_s: float = 0.0
+    maximum_command_step_rad: float = 0.0
+    maximum_following_error_rad: float = 0.0
+    deferred_arming_targets: int = 0
 
     def as_dict(self) -> dict[str, int | float | None]:
         return {
@@ -183,6 +197,9 @@ class LoopMetrics:
             if self.last_period_s is None
             else round(self.last_period_s * 1000.0, 3),
             "max_period_ms": round(self.max_period_s * 1000.0, 3),
+            "maximum_command_step_rad": round(self.maximum_command_step_rad, 7),
+            "maximum_following_error_rad": round(self.maximum_following_error_rad, 7),
+            "deferred_arming_targets": self.deferred_arming_targets,
         }
 
 
@@ -227,6 +244,9 @@ class ArmBridgeController:
         self._release_start_weight = 0.0
         self._last_tick_at: float | None = None
         self._last_publish_at: float | None = None
+        self._settle_started_at: float | None = None
+        self._settle_stable_since: float | None = None
+        self._arming_phase: str | None = None
         self.metrics = LoopMetrics()
 
     @property
@@ -302,6 +322,9 @@ class ArmBridgeController:
             self.hold_reason = None
             self.state = ArmState.ARMING
             self._transition_at = now
+            self._settle_started_at = now
+            self._settle_stable_since = now
+            self._arming_phase = "settling"
             return self.state_report(now)
 
     def enable_commissioning(
@@ -355,6 +378,9 @@ class ArmBridgeController:
             self.hold_reason = None
             self.state = ArmState.ARMING
             self._transition_at = now
+            self._settle_started_at = now
+            self._settle_stable_since = now
+            self._arming_phase = "settling"
             return self.state_report(now)
 
     def set_target(
@@ -427,10 +453,17 @@ class ArmBridgeController:
                     code="discontinuous_target",
                 )
             self._require_safe_robot_state(now, require_stable=False)
-            self.desired_right = target
             self.last_sequence = sequence
             self.last_target_at = now
             self.last_target_source_timestamp = source
+            if self.state is ArmState.ARMING:
+                # A perception target may keep the tracking session fresh while
+                # the bridge settles, but it must not be queued for release at
+                # the end of the weight ramp. The first post-ARMED frame starts
+                # a Ruckig trajectory from the verified measured pose.
+                self.metrics.deferred_arming_targets += 1
+                return self.state_report(now)
+            self.desired_right = target
             return self.state_report(now)
 
     def set_commissioning_target(
@@ -534,12 +567,8 @@ class ArmBridgeController:
             ):
                 self._enter_fault("motor_state_fault", now)
 
-            if self.state is ArmState.ARMING:
-                ratio = min(1.0, (now - self._transition_at) / self.config.weight_ramp_s)
-                self.weight = ratio
-                if ratio >= 1.0:
-                    self.state = ArmState.ARMED
-                    self._transition_at = now
+            if self.state is ArmState.ARMING and robot is not None:
+                self._advance_arming(now, robot)
 
             if self.state is ArmState.ARMED:
                 if not robot or not robot.standing:
@@ -554,6 +583,10 @@ class ArmBridgeController:
                     errors = [
                         abs(measured_right[i] - self.commanded_right[i]) for i in range(7)
                     ]
+                    self.metrics.maximum_following_error_rad = max(
+                        self.metrics.maximum_following_error_rad,
+                        max(errors),
+                    )
                     worst_joint = max(range(7), key=errors.__getitem__)
                     if errors[worst_joint] > self.config.max_following_error_rad:
                         self.fault_details = {
@@ -611,6 +644,7 @@ class ArmBridgeController:
                 "target_ttl_ms": round(self.config.target_ttl_s * 1000.0),
                 "deadman_ms": round(self.config.deadman_s * 1000.0),
                 "weight_ramp_ms": round(self.config.weight_ramp_s * 1000.0),
+                "startup_settle_ms": round(self.config.startup_settle_s * 1000.0),
                 "uptime_s": round(self._monotonic() - self.started_at, 3),
                 "loop": self.metrics.as_dict(),
                 "fault_reason": self.fault_reason,
@@ -674,6 +708,7 @@ class ArmBridgeController:
                 "measured_arm_q": None if robot is None else list(robot.arm_q),
                 "measured_arm_dq": None if robot is None else list(robot.arm_dq),
                 "weight": round(self.weight, 6),
+                "arming_phase": self._arming_phase,
                 "hold_reason": self.hold_reason,
                 "fault_reason": self.fault_reason,
                 "fault_details": self.fault_details,
@@ -811,6 +846,15 @@ class ArmBridgeController:
         inp.max_velocity = [self.config.max_velocity_rad_s] * 7
         inp.max_acceleration = [self.config.max_acceleration_rad_s2] * 7
         inp.max_jerk = [self.config.max_jerk_rad_s3] * 7
+        if not self._ruckig.validate_input(
+            inp,
+            check_current_state_within_limits=False,
+            check_target_state_within_limits=True,
+        ):
+            raise ArmBridgeError(
+                "Ruckig input violates the configured trajectory limits",
+                code="trajectory_validation",
+            )
         result = self._ruckig.update(inp, out)
         if result not in (Result.Working, Result.Finished):
             raise ArmBridgeError(
@@ -825,10 +869,56 @@ class ArmBridgeController:
                 "Ruckig returned a non-finite arm state",
                 code="trajectory_generation",
             )
+        previous = tuple(self.commanded_right)
         self.commanded_right[:] = position
         self.right_velocity[:] = velocity
         self.right_acceleration[:] = acceleration
+        self.metrics.maximum_command_step_rad = max(
+            self.metrics.maximum_command_step_rad,
+            max(abs(actual - prior) for actual, prior in zip(position, previous)),
+        )
         out.pass_to_input(inp)
+
+    def _advance_arming(self, now: float, robot: RobotState) -> None:
+        """Settle at measured pose before allowing the weight ramp to begin."""
+
+        if self.commanded_right is None:
+            self._enter_fault("arming_command_unavailable", now)
+            return
+        if self._arming_phase == "settling":
+            measured = robot.arm_q[7:]
+            pose_error = max(
+                abs(actual - expected)
+                for actual, expected in zip(measured, self.commanded_right)
+            )
+            velocity = max(abs(value) for value in robot.arm_dq[7:])
+            stable = (
+                pose_error <= self.config.startup_max_pose_error_rad
+                and velocity <= self.config.startup_max_velocity_rad_s
+            )
+            if stable:
+                if self._settle_stable_since is None:
+                    self._settle_stable_since = now
+                if now - self._settle_stable_since >= self.config.startup_settle_s:
+                    self._arming_phase = "weight_ramp"
+                    self._transition_at = now
+            else:
+                self._settle_stable_since = None
+            started = self._settle_started_at if self._settle_started_at is not None else now
+            if now - started > self.config.startup_settle_timeout_s:
+                self.fault_details = {
+                    "pose_error_rad": pose_error,
+                    "velocity_rad_s": velocity,
+                }
+                self._enter_fault("startup_settle_timeout", now)
+            self.weight = 0.0
+            return
+        ratio = min(1.0, max(0.0, now - self._transition_at) / self.config.weight_ramp_s)
+        self.weight = ratio
+        if ratio >= 1.0:
+            self.state = ArmState.ARMED
+            self._transition_at = now
+            self._arming_phase = None
 
     def _reset_ruckig(self) -> None:
         """Start a new online trajectory without retaining a prior session's clock."""
@@ -891,6 +981,9 @@ class ArmBridgeController:
         self.left_latch = None
         self.commanded_right = None
         self.desired_right = None
+        self._settle_started_at = None
+        self._settle_stable_since = None
+        self._arming_phase = None
         self.right_velocity = [0.0] * 7
         self.right_acceleration = [0.0] * 7
         self.weight = 0.0
