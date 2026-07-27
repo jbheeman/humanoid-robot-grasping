@@ -86,7 +86,11 @@ class RuntimeConfig:
     robot_id: str | None = None
     execute: bool = False
     target_hz: float = 20.0
-    max_pair_skew_s: float = 0.100
+    # The RGB inference result and TCP depth frame use independent arrival
+    # clocks. On the live GB10 the measured healthy p95 can exceed 100 ms
+    # while both sources remain fresh; keep this below the separate 250 ms
+    # end-to-end safety gate rather than rejecting every such pair.
+    max_pair_skew_s: float = 0.150
     prediction_horizon_s: float = 0.150
     trajectory_model_path: Path | None = None
     intercept_config_path: Path | None = None
