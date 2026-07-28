@@ -35,15 +35,45 @@ parser.add_argument("--deadman-s", type=float, default=0.75)
 parser.add_argument("--tail-s", type=float, default=2.0)
 parser.add_argument(
     "--command-source",
-    choices=("recorded", "planned_approach"),
+    choices=("recorded", "planned_approach", "closed_loop_ipc"),
     default="recorded",
-    help="replay physical joint targets or regenerate production IK from recorded Cartesian targets",
+    help="replay targets, run local IK, or stream measured state to the Linux planner",
 )
 parser.add_argument(
     "--planned-command-hz",
     type=float,
     default=30.0,
     help="measured-state IK/waypoint update rate for --command-source planned_approach",
+)
+parser.add_argument(
+    "--planner-launcher",
+    choices=("local", "wsl"),
+    default="wsl" if os.name == "nt" else "local",
+)
+parser.add_argument(
+    "--planner-project-root",
+    default=None,
+    help="planner-side POSIX project root required by --command-source closed_loop_ipc",
+)
+parser.add_argument("--planner-intercept-config", default=None)
+parser.add_argument("--planner-wsl-distro", default=None)
+parser.add_argument(
+    "--planner-state-hz",
+    type=float,
+    default=30.0,
+    help="newest-only measured-state update rate for the external planner",
+)
+parser.add_argument(
+    "--planner-command-ttl-s",
+    type=float,
+    default=0.10,
+    help="maximum simulated age of a planner response before it is ignored",
+)
+parser.add_argument(
+    "--planner-max-realtime-factor",
+    type=float,
+    default=1.0,
+    help="pace closed-loop simulation so wall-time planning remains meaningful",
 )
 parser.add_argument(
     "--bunny-motion",
@@ -112,6 +142,31 @@ if (
     or args.planned_command_hz > args.physics_hz
 ):
     parser.error("--planned-command-hz must be finite, positive, and no faster than physics")
+if args.command_source == "closed_loop_ipc" and (
+    not args.planner_project_root or not args.planner_intercept_config
+):
+    parser.error(
+        "--planner-project-root and --planner-intercept-config are required "
+        "by --command-source closed_loop_ipc"
+    )
+if (
+    not math.isfinite(args.planner_state_hz)
+    or args.planner_state_hz <= 0.0
+    or args.planner_state_hz > args.physics_hz
+):
+    parser.error("--planner-state-hz must be finite, positive, and no faster than physics")
+if (
+    not math.isfinite(args.planner_command_ttl_s)
+    or args.planner_command_ttl_s <= 0.0
+    or args.planner_command_ttl_s > args.deadman_s
+):
+    parser.error("--planner-command-ttl-s must be positive and no longer than deadman")
+if (
+    not math.isfinite(args.planner_max_realtime_factor)
+    or args.planner_max_realtime_factor <= 0.0
+    or args.planner_max_realtime_factor > 1.0
+):
+    parser.error("--planner-max-realtime-factor must be in (0, 1]")
 
 # The official Unitree asset configuration reads PROJECT_ROOT at import time.
 unitree_root = args.unitree_sim_root.resolve()
@@ -162,6 +217,7 @@ from object_tracking.arm_tracking.joints import (  # noqa: E402
     BODY_JOINT_NAMES,
     LEFT_ARM_JOINT_NAMES,
     RIGHT_ARM_JOINT_NAMES,
+    joint_contract_id,
 )
 from object_tracking.arm_tracking.geometry import SupportRegion  # noqa: E402
 from object_tracking.arm_tracking.ik_solver import (  # noqa: E402
@@ -172,6 +228,11 @@ from object_tracking.arm_tracking.runtime import (  # noqa: E402
     compress_validated_joint_path,
     select_start_escape_waypoint,
 )
+from object_tracking.arm_tracking.sim_closed_loop import (  # noqa: E402
+    ObjectObservation,
+    SimState,
+)
+from object_tracking.arm_tracking.sim_ipc import LatestPlannerProcess  # noqa: E402
 from robots.unitree import G129_CFG_WITH_DEX1_BASE_FIX  # noqa: E402
 
 
@@ -469,6 +530,7 @@ def main() -> int:
     planned_adaptive_reason: str | None = None
     planned_planning_ms: float | None = None
     planned_target_xyz: tuple[float, float, float] | None = None
+    closed_loop_support: SupportRegion | None = None
     if args.command_source == "planned_approach":
         support_value = replay.get("support_plane")
         if not isinstance(support_value, dict):
@@ -537,6 +599,11 @@ def main() -> int:
         if dense_error is not None:
             raise RuntimeError(f"production table approach dense validation failed: {dense_error}")
         planned_planning_ms = (time.perf_counter() - planning_started) * 1000.0
+    elif args.command_source == "closed_loop_ipc":
+        support_value = replay.get("support_plane")
+        if not isinstance(support_value, dict):
+            raise RuntimeError("closed-loop planning requires a bounded support plane")
+        closed_loop_support = SupportRegion.from_dict(support_value)
 
     def restore_body_state() -> None:
         joint_position = tensor(robot.data.default_joint_pos).clone()
@@ -713,8 +780,66 @@ def main() -> int:
     planned_commands = 0
     planned_edge_validations = 0
     planned_ik_failures: dict[str, int] = {}
+    planner_client: LatestPlannerProcess | None = None
+    planner_state_sequence = 0
+    planner_last_applied_sequence = -1
+    planner_next_state_at_s = 0.0
+    planner_target_commands = 0
+    planner_expired_commands = 0
+    planner_response_statuses: dict[str, int] = {}
+    current_bunny_local = tuple(float(value) for value in object_frames[0]["object_xyz_m"])
+    current_bunny_velocity = tuple(
+        float(value)
+        for value in (
+            object_frames[0].get("object_velocity_m_s")
+            if isinstance(object_frames[0].get("object_velocity_m_s"), list)
+            else (0.0, 0.0, 0.0)
+        )
+    )
+    pending_object_observation: ObjectObservation | None = None
+    if args.command_source == "closed_loop_ipc":
+        planner_root = str(args.planner_project_root)
+        planner_command = [
+            "uv",
+            "run",
+            "python",
+            "scripts/sim/g1-closed-loop-planner.py",
+            "--project-root",
+            planner_root,
+            "--intercept-config",
+            str(args.planner_intercept_config),
+            "--max-velocity",
+            str(args.max_velocity),
+            "--max-acceleration",
+            str(args.max_acceleration),
+            "--max-jerk",
+            str(args.max_jerk),
+        ]
+        if args.planner_launcher == "wsl":
+            planner_command = [
+                "wsl.exe",
+                *(
+                    []
+                    if args.planner_wsl_distro is None
+                    else ["--distribution", args.planner_wsl_distro]
+                ),
+                "--cd",
+                planner_root,
+                "--",
+                *planner_command,
+            ]
+            planner_cwd = None
+        else:
+            planner_cwd = planner_root
+        planner_client = LatestPlannerProcess(planner_command, cwd=planner_cwd)
+        planner_client.start()
     while simulation_app.is_running() and clock.monotonic - playback_start <= final_time:
         elapsed = clock.monotonic - playback_start
+        if args.command_source == "closed_loop_ipc":
+            minimum_wall_s = elapsed / args.planner_max_realtime_factor
+            ahead_s = minimum_wall_s - (time.perf_counter() - started_wall)
+            if ahead_s > 0.0:
+                time.sleep(ahead_s)
         if elapsed >= next_progress_at:
             print(
                 json.dumps(
@@ -735,6 +860,25 @@ def main() -> int:
             frame = frames[frame_index]
             if frame.get("status") == "target_sent" and isinstance(frame.get("target_xyz_m"), list):
                 planned_target_xyz = tuple(float(value) for value in frame["target_xyz_m"])
+            if isinstance(frame.get("object_xyz_m"), list):
+                current_bunny_local = tuple(float(value) for value in frame["object_xyz_m"])
+            if isinstance(frame.get("object_velocity_m_s"), list):
+                current_bunny_velocity = tuple(
+                    float(value) for value in frame["object_velocity_m_s"]
+                )
+            if isinstance(frame.get("object_xyz_m"), list):
+                pending_object_observation = ObjectObservation(
+                    track_id=int(frame.get("track_id") or 1),
+                    class_name=str(frame.get("class_name") or "bunny"),
+                    confidence=float(frame.get("confidence") or 1.0),
+                    position_m=current_bunny_local,
+                    velocity_m_s=current_bunny_velocity,
+                    observation_time_s=float(frame["time_s"]),
+                    consecutive_observations=int(
+                        frame.get("estimator_consecutive_observations") or frame_index + 1
+                    ),
+                    residual_m=float(frame.get("estimator_residual_m") or 0.0),
+                )
             if args.bunny_motion == "recorded" and isinstance(frame.get("object_xyz_m"), list):
                 bunny_local_position = torch.as_tensor(
                     frame["object_xyz_m"],
@@ -773,6 +917,79 @@ def main() -> int:
                     code = str(getattr(exc, "code", type(exc).__name__))
                     target_rejections[code] = target_rejections.get(code, 0) + 1
             frame_index += 1
+        if (
+            planner_client is not None
+            and closed_loop_support is not None
+            and elapsed >= planner_next_state_at_s
+        ):
+            planner_next_state_at_s = elapsed + 1.0 / args.planner_state_hz
+            measured_body_q = tuple(
+                float(value)
+                for value in tensor(robot.data.joint_pos)[0, body_ids].detach().cpu().tolist()
+            )
+            measured_body_dq = tuple(
+                float(value)
+                for value in tensor(robot.data.joint_vel)[0, body_ids].detach().cpu().tolist()
+            )
+            planner_state_sequence += 1
+            latest = planner_client.submit(
+                SimState(
+                    episode_id=f"isaac-{args.replay.stem}",
+                    sequence=planner_state_sequence,
+                    simulation_time_s=elapsed,
+                    calibration_id=calibration_id,
+                    joint_contract_id=joint_contract_id(),
+                    body_q_rad=measured_body_q,
+                    body_dq_rad_s=measured_body_dq,
+                    support_region=closed_loop_support,
+                    object_observation=pending_object_observation,
+                )
+            )
+            pending_object_observation = None
+            if (
+                latest is not None
+                and latest.episode_id == f"isaac-{args.replay.stem}"
+                and latest.state_sequence > planner_last_applied_sequence
+                and elapsed - latest.simulation_time_s <= args.planner_command_ttl_s
+            ):
+                planner_last_applied_sequence = latest.state_sequence
+                planner_response_statuses[latest.status] = (
+                    planner_response_statuses.get(latest.status, 0) + 1
+                )
+                if latest.status == "target":
+                    sequence += 1
+                    try:
+                        controller.set_target(
+                            session_id="isaac-replay",
+                            sequence=sequence,
+                            calibration_id=calibration_id,
+                            right_arm_q=latest.right_arm_q_rad,
+                            right_arm_tau_ff=latest.right_arm_tau_ff_nm,
+                            pipeline_age_ms=int(
+                                round(
+                                    max(
+                                        0.0,
+                                        elapsed
+                                        - (
+                                            elapsed
+                                            if latest.source_observation_time_s is None
+                                            else latest.source_observation_time_s
+                                        ),
+                                    )
+                                    * 1000.0
+                                )
+                            ),
+                        )
+                        planner_target_commands += 1
+                    except ValueError as exc:
+                        code = str(getattr(exc, "code", type(exc).__name__))
+                        target_rejections[code] = target_rejections.get(code, 0) + 1
+            elif (
+                latest is not None
+                and latest.state_sequence > planner_last_applied_sequence
+            ):
+                planner_last_applied_sequence = latest.state_sequence
+                planner_expired_commands += 1
         if args.command_source == "planned_approach" and elapsed >= planned_next_command_at_s:
             assert planned_solver is not None
             assert planned_support is not None
@@ -863,6 +1080,9 @@ def main() -> int:
             )
             tracking_errors.append(float(torch.max(torch.abs(measured - commanded))))
 
+    planner_metrics = None if planner_client is None else planner_client.metrics()
+    if planner_client is not None:
+        planner_client.close()
     final_bunny = tensor(bunny.data.root_pos_w)[0]
     wall_elapsed = time.perf_counter() - started_wall
     ordered_errors = sorted(tracking_errors)
@@ -914,6 +1134,26 @@ def main() -> int:
                     else round(planned_approach_complete_at_s, 4)
                 ),
                 "local_ik_failures": planned_ik_failures,
+            }
+        ),
+        "closed_loop_ipc": (
+            None
+            if planner_metrics is None
+            else {
+                "planner_launcher": args.planner_launcher,
+                "planner_project_root": args.planner_project_root,
+                "state_hz": args.planner_state_hz,
+                "command_ttl_s": args.planner_command_ttl_s,
+                "maximum_realtime_factor": args.planner_max_realtime_factor,
+                "states_submitted": planner_metrics.states_submitted,
+                "pending_states_replaced": planner_metrics.pending_states_replaced,
+                "commands_received": planner_metrics.commands_received,
+                "stale_commands": planner_metrics.stale_commands,
+                "process_starts": planner_metrics.process_starts,
+                "last_error": planner_metrics.last_error,
+                "target_commands": planner_target_commands,
+                "expired_commands": planner_expired_commands,
+                "response_statuses": planner_response_statuses,
             }
         ),
         "controller_state_steps": states,

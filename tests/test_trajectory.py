@@ -2,7 +2,10 @@ from __future__ import annotations
 
 import pytest
 
-from object_tracking.arm_tracking.trajectory import minimum_ruckig_duration_s
+from object_tracking.arm_tracking.trajectory import (
+    minimum_ruckig_duration_s,
+    minimum_ruckig_path_duration_s,
+)
 
 
 LIMITS = {
@@ -42,6 +45,20 @@ def test_measured_velocity_changes_reachable_duration() -> None:
     )
 
     assert already_moving < stationary
+
+
+def test_path_duration_includes_all_remaining_waypoints() -> None:
+    direct = duration((0.30,) + (0.0,) * 6)
+    path = minimum_ruckig_path_duration_s(
+        current_position=(0.0,) * 7,
+        target_positions=(
+            (0.15,) + (0.0,) * 6,
+            (0.30,) + (0.0,) * 6,
+        ),
+        **LIMITS,
+    )
+
+    assert path > direct
 
 
 @pytest.mark.parametrize(

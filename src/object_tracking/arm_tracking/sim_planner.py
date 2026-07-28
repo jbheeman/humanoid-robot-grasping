@@ -1,0 +1,315 @@
+"""Production-class closed-loop interception planner for simulator state."""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+import time
+from typing import Any
+
+import numpy as np
+
+from .ik_solver import G1RightArmIK, IKResult
+from .interception import (
+    InterceptObservation,
+    InterceptState,
+    LiveInterceptConfig,
+    LiveInterceptController,
+)
+from .joints import joint_contract_id
+from .runtime import compress_validated_joint_path, select_start_escape_waypoint
+from .sim_closed_loop import SequenceGate, SimCommand, SimState
+from .trajectory import minimum_ruckig_path_duration_s
+
+
+@dataclass(frozen=True)
+class SimPlannerConfig:
+    maximum_velocity_rad_s: float = 1.0
+    maximum_acceleration_rad_s2: float = 4.0
+    maximum_jerk_rad_s3: float = 30.0
+    top_clearance_m: float = 0.11
+    path_compression_span_rad: float = 0.40
+
+
+class ClosedLoopInterceptionPlanner:
+    """Plan from each newest measured state using production IK and geometry."""
+
+    def __init__(
+        self,
+        profile: LiveInterceptConfig,
+        solver: G1RightArmIK,
+        config: SimPlannerConfig | None = None,
+    ) -> None:
+        self.profile = profile
+        self.solver = solver
+        self.config = config or SimPlannerConfig()
+        self.intercept = LiveInterceptController(profile)
+        self.sequence_gate = SequenceGate()
+        self._path: tuple[tuple[float, ...], ...] | None = None
+        self._path_index = 1
+        self._last_advance_q: tuple[float, ...] | None = None
+        self._last_observation_time_s: float | None = None
+
+    def plan(self, state: SimState) -> SimCommand:
+        started = time.perf_counter()
+        try:
+            accepted = self.sequence_gate.accept(state)
+        except ValueError as exc:
+            return self._response(state, "rejected", str(exc), started)
+        if not accepted:
+            return self._response(state, "rejected", "stale_or_out_of_order_state", started)
+        if state.calibration_id != self.profile.calibration_id:
+            return self._response(state, "rejected", "calibration_mismatch", started)
+        if state.joint_contract_id != joint_contract_id():
+            return self._response(state, "rejected", "joint_contract_mismatch", started)
+
+        measured_q = state.right_arm_q_rad
+        measured_dq = state.right_arm_dq_rad_s
+        palm_position = self.solver.forward_kinematics(measured_q)[:3, 3]
+        observation = state.object_observation
+        if observation is None:
+            decision = self.intercept.current_without_observation(
+                now_s=state.simulation_time_s
+            )
+        else:
+            self._last_observation_time_s = observation.observation_time_s
+            decision = self.intercept.update(
+                InterceptObservation(
+                    track_id=observation.track_id,
+                    class_name=observation.class_name,
+                    confidence=observation.confidence,
+                    position_m=observation.position_m,
+                    velocity_m_s=observation.velocity_m_s,
+                    timestamp_s=observation.observation_time_s,
+                    consecutive_observations=observation.consecutive_observations,
+                    residual_m=observation.residual_m,
+                ),
+                now_s=state.simulation_time_s,
+                palm_position_m=palm_position,
+            )
+        if decision.state in (InterceptState.HOLD, InterceptState.EXPIRED):
+            return self._response(
+                state,
+                "hold",
+                decision.reason,
+                started,
+                decision=decision,
+            )
+        if decision.target_palm_position_m is None or not decision.may_publish:
+            return self._response(
+                state,
+                "preview",
+                decision.reason,
+                started,
+                decision=decision,
+            )
+
+        target_position = np.asarray(decision.target_palm_position_m, dtype=float)
+        target_position = state.support_region.project_to_clearance(
+            target_position,
+            minimum_clearance_m=0.05,
+        )
+        next_q, route_reason, remaining_targets = self._next_joint_target(
+            measured_q,
+            target_position,
+            state,
+        )
+        if next_q is None:
+            self.intercept.invalidate(route_reason, now_s=state.simulation_time_s)
+            return self._response(
+                state,
+                "hold",
+                route_reason,
+                started,
+                decision=decision,
+            )
+
+        duration = minimum_ruckig_path_duration_s(
+            current_position=measured_q,
+            current_velocity=measured_dq,
+            target_positions=remaining_targets,
+            maximum_velocity=self.config.maximum_velocity_rad_s,
+            maximum_acceleration=self.config.maximum_acceleration_rad_s2,
+            maximum_jerk=self.config.maximum_jerk_rad_s3,
+        )
+        crossing_time = decision.crossing_time_from_now_s
+        if (
+            crossing_time is not None
+            and duration + self.profile.minimum_deadline_slack_s > crossing_time
+        ):
+            return self._response(
+                state,
+                "rejected",
+                "ruckig_deadline_unreachable",
+                started,
+                decision=decision,
+                duration_s=duration,
+            )
+        try:
+            torque = self.solver.gravity_compensation_torque(next_q)
+        except (RuntimeError, ValueError):
+            return self._response(
+                state,
+                "hold",
+                "gravity_compensation_failed",
+                started,
+                decision=decision,
+                duration_s=duration,
+            )
+        return self._response(
+            state,
+            "target",
+            route_reason,
+            started,
+            decision=decision,
+            duration_s=duration,
+            q_rad=next_q,
+            tau_nm=torque,
+        )
+
+    def _next_joint_target(
+        self,
+        measured_q: tuple[float, ...],
+        target_position: np.ndarray,
+        state: SimState,
+    ) -> tuple[
+        tuple[float, ...] | None,
+        str,
+        tuple[tuple[float, ...], ...],
+    ]:
+        current_transform = self.solver.forward_kinematics(measured_q)
+        start_topology = state.support_region.classify_point(
+            current_transform[:3, 3],
+            side_margin_m=0.10,
+            top_clearance_m=0.10,
+        )
+        needs_approach = (
+            self._path is not None
+            or bool(self.solver.collision_labels(measured_q))
+            or start_topology != "above_clearance"
+        )
+        if needs_approach:
+            if self._path is None:
+                target_transform = current_transform.copy()
+                target_transform[:3, 3] = target_position
+                approach = self.solver.plan_adaptive_table_approach(
+                    target_transform,
+                    measured_q,
+                    support_plane=state.support_region,
+                    top_clearance_m=self.config.top_clearance_m,
+                    final_validation_edge_step_rad=None,
+                )
+                route = "adaptive_table_approach"
+                if not approach.ok or approach.q_path is None:
+                    approach = self.solver.plan_guided_clearance(
+                        measured_q,
+                        support_plane=state.support_region,
+                        lift_m=0.12,
+                        forward_m=0.04,
+                    )
+                    route = "guided_table_clearance_fallback"
+                if not approach.ok or approach.q_path is None:
+                    return None, f"ik_{approach.reason or 'approach_failed'}", ()
+                self._path = compress_validated_joint_path(
+                    approach.q_path,
+                    lambda begin, end: (
+                        self.solver.validate_joint_path(
+                            (begin, end),
+                            support_plane=state.support_region,
+                            edge_step_rad=0.020,
+                            semantic_edge_step_rad=0.010,
+                            require_escape_cleared=False,
+                        )
+                        is None
+                    ),
+                    maximum_span_rad=self.config.path_compression_span_rad,
+                    maximum_skip_knots=16,
+                )
+                if self._path is None:
+                    return None, "ik_approach_path_compression", ()
+                self._path_index = 1
+                self._last_advance_q = measured_q
+            previous_index = self._path_index
+            waypoint, self._path_index, error = select_start_escape_waypoint(
+                measured_q,
+                self._path,
+                self._path_index,
+                last_advance_q_rad=self._last_advance_q,
+            )
+            if self._path_index > previous_index:
+                self._last_advance_q = measured_q
+            if error is not None:
+                self._reset_path()
+                return None, f"ik_{error}", ()
+            if waypoint is not None:
+                edge_error = self.solver.validate_joint_path(
+                    (measured_q, waypoint),
+                    support_plane=state.support_region,
+                    edge_step_rad=0.020,
+                    semantic_edge_step_rad=0.010,
+                    require_escape_cleared=False,
+                )
+                if edge_error is not None:
+                    self._reset_path()
+                    return None, f"ik_measured_edge:{edge_error}", ()
+                return (
+                    waypoint,
+                    route if "route" in locals() else "table_approach",
+                    self._path[self._path_index :],
+                )
+            self._reset_path()
+
+        target_transform = self.solver.forward_kinematics(measured_q)
+        target_transform[:3, 3] = target_position
+        local: IKResult = self.solver.solve_local_translation(
+            target_transform,
+            measured_q,
+            support_plane=state.support_region,
+        )
+        if not local.ok or local.q_rad is None:
+            return None, f"ik_{local.reason or 'local_translation_failed'}", ()
+        return local.q_rad, "intercept_local_translation", (local.q_rad,)
+
+    def _reset_path(self) -> None:
+        self._path = None
+        self._path_index = 1
+        self._last_advance_q = None
+
+    def _response(
+        self,
+        state: SimState,
+        status: str,
+        reason: str,
+        started: float,
+        *,
+        decision: Any | None = None,
+        duration_s: float | None = None,
+        q_rad: tuple[float, ...] | None = None,
+        tau_nm: tuple[float, ...] | None = None,
+    ) -> SimCommand:
+        return SimCommand(
+            episode_id=state.episode_id,
+            state_sequence=state.sequence,
+            simulation_time_s=state.simulation_time_s,
+            source_observation_time_s=(
+                self._last_observation_time_s
+            ),
+            status=status,
+            reason=reason,
+            right_arm_q_rad=q_rad,
+            right_arm_tau_ff_nm=tau_nm,
+            target_palm_position_m=(
+                None if decision is None else decision.target_palm_position_m
+            ),
+            predicted_crossing_m=(
+                None if decision is None else decision.predicted_crossing_m
+            ),
+            crossing_time_from_now_s=(
+                None if decision is None else decision.crossing_time_from_now_s
+            ),
+            remaining_ruckig_duration_s=duration_s,
+            arrival_slack_s=(
+                None if decision is None else decision.arrival_slack_s
+            ),
+            planning_latency_ms=(time.perf_counter() - started) * 1000.0,
+            ik_step_type=reason if q_rad is not None else None,
+        )
