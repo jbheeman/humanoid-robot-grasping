@@ -94,7 +94,10 @@ class ClosedLoopInterceptionPlanner:
                 started,
                 decision=decision,
             )
-        if decision.target_palm_position_m is None or not decision.may_publish:
+        publish_allowed = decision.may_publish or (
+            self.profile.preview_staging_enabled and decision.may_stage
+        )
+        if decision.target_palm_position_m is None or not publish_allowed:
             return self._response(
                 state,
                 "preview",
@@ -158,7 +161,11 @@ class ClosedLoopInterceptionPlanner:
         return self._response(
             state,
             "target",
-            route_reason,
+            (
+                route_reason
+                if decision.may_publish
+                else f"preview_stage:{route_reason}"
+            ),
             started,
             decision=decision,
             duration_s=duration,

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import numpy as np
 
 from object_tracking.arm_tracking.geometry import Plane, SupportRegion
@@ -121,3 +122,15 @@ def test_preview_does_not_emit_motion_before_production_commit_gate() -> None:
     assert command.reason == "waiting_for_commit_window"
     assert command.right_arm_q_rad is None
     assert command.crossing_time_from_now_s == 2.0
+
+
+def test_enabled_preview_staging_matches_production_publish_option() -> None:
+    planner = ClosedLoopInterceptionPlanner(
+        replace(profile(), preview_staging_enabled=True),
+        FakeSolver(),  # type: ignore[arg-type]
+    )
+
+    command = planner.plan(state(1, 1.0, bunny_y=0.6))
+
+    assert command.status == "target"
+    assert command.reason == "preview_stage:intercept_local_translation"

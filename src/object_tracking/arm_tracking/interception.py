@@ -59,6 +59,7 @@ class LiveInterceptConfig:
     minimum_deadline_slack_s: float
     perception_ttl_s: float
     planner: InterceptConfig
+    preview_staging_enabled: bool = False
     validated_for_execution: bool = False
     schema_version: int = _SCHEMA_VERSION
 
@@ -125,6 +126,8 @@ class LiveInterceptConfig:
             raise ValueError("post_crossing_hold_s cannot exceed perception_ttl_s")
         if self.commit_horizon_s > self.planner.maximum_crossing_horizon_s:
             raise ValueError("commit_horizon_s exceeds the planner crossing horizon")
+        if not isinstance(self.preview_staging_enabled, bool):
+            raise ValueError("preview_staging_enabled must be a boolean")
 
     def track_matches(self, class_name: str, confidence: float) -> bool:
         normalized = class_name.strip().lower()
@@ -196,6 +199,10 @@ def load_live_intercept_config(path: str | Path) -> LiveInterceptConfig:
         validated_for_execution=_boolean(
             value.get("validated_for_execution", False),
             "validated_for_execution",
+        ),
+        preview_staging_enabled=_boolean(
+            value.get("preview_staging_enabled", False),
+            "preview_staging_enabled",
         ),
         planner=InterceptConfig(
             compute_delay_s=float(planner_value.get("compute_delay_s", 0.0)),
@@ -281,6 +288,13 @@ class InterceptDecision:
     @property
     def may_publish(self) -> bool:
         return self.state is InterceptState.COMMITTED
+
+    @property
+    def may_stage(self) -> bool:
+        return (
+            self.state is InterceptState.PREVIEW
+            and self.target_palm_position_m is not None
+        )
 
 
 class LiveInterceptController:

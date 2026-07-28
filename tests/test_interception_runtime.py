@@ -76,6 +76,7 @@ def test_preview_then_commit_latches_cartesian_target() -> None:
     )
     assert preview.state is InterceptState.PREVIEW
     assert not preview.may_publish
+    assert preview.may_stage
 
     committed = controller.update(
         observation(timestamp_s=10.1, position_y=0.04),
@@ -84,6 +85,7 @@ def test_preview_then_commit_latches_cartesian_target() -> None:
     )
     assert committed.state is InterceptState.COMMITTED
     assert committed.may_publish
+    assert not committed.may_stage
     target = committed.target_palm_position_m
 
     reconfirmed = controller.update(

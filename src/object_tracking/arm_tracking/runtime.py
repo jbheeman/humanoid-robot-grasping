@@ -1009,7 +1009,10 @@ class ArmTrackingRuntime:
                 np.asarray(intercept_decision.target_palm_position_m, dtype=float),
                 np.asarray((0.0, 0.0, 0.0, 1.0), dtype=float),
             )
-            intercept_publish_allowed = intercept_decision.may_publish
+            intercept_publish_allowed = intercept_decision.may_publish or (
+                self.intercept_profile.preview_staging_enabled
+                and intercept_decision.may_stage
+            )
         else:
             # Stop at the bunny's near surface rather than applying the generic
             # 20 cm manipulation stand-off.  The measured plush radius (~5.5 cm)

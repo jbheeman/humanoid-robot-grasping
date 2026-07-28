@@ -28,6 +28,10 @@ post_crossing_hold_s: 0.10
 revalidation_tolerance_m: 0.025
 minimum_deadline_slack_s: 0.08
 perception_ttl_s: 0.25
+# Optional candidate behavior: permit collision-checked motion toward a valid
+# preview crossing before the final commit window. Keep false until simulation
+# and operator validation prove the staging route for the active table setup.
+preview_staging_enabled: false
 validated_for_execution: false
 
 # Replace timing and motion values with conservative physical measurements

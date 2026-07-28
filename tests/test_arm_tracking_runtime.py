@@ -143,7 +143,12 @@ def _calibration() -> Calibration:
     return calibration.with_computed_hash()
 
 
-def _write_intercept_profile(path: Path, calibration_id: str) -> None:
+def _write_intercept_profile(
+    path: Path,
+    calibration_id: str,
+    *,
+    preview_staging_enabled: bool = False,
+) -> None:
     path.write_text(
         yaml.safe_dump(
             {
@@ -165,6 +170,7 @@ def _write_intercept_profile(path: Path, calibration_id: str) -> None:
                 "revalidation_tolerance_m": 0.02,
                 "minimum_deadline_slack_s": 0.05,
                 "perception_ttl_s": 0.25,
+                "preview_staging_enabled": preview_staging_enabled,
                 "validated_for_execution": True,
                 "planner": {
                     "compute_delay_s": 0.01,
@@ -988,17 +994,25 @@ def test_continuous_mode_target_loss_order_is_unchanged_without_intercept_profil
     assert statuses[-1]["reason"] == "target_lost"
 
 
-@pytest.mark.parametrize("execute", [False, True])
+@pytest.mark.parametrize(
+    ("execute", "preview_staging_enabled"),
+    ((False, False), (True, False), (True, True)),
+)
 def test_intercept_preview_and_commit_publish_gate(
     tmp_path: Path,
     monkeypatch: Any,
     execute: bool,
+    preview_staging_enabled: bool,
 ) -> None:
     calibration = _calibration()
     calibration_path = tmp_path / "calibration.yaml"
     intercept_path = tmp_path / "intercept.yaml"
     save_calibration_atomic(calibration, calibration_path)
-    _write_intercept_profile(intercept_path, calibration.calibration_id)
+    _write_intercept_profile(
+        intercept_path,
+        calibration.calibration_id,
+        preview_staging_enabled=preview_staging_enabled,
+    )
 
     clock = [100.0]
     object_y = [0.06]
@@ -1077,10 +1091,13 @@ def test_intercept_preview_and_commit_publish_gate(
             registered_to_rgb=True,
         )
         runtime._process_latest()
-        if index < 4:
+        if index < 4 and not (execute and preview_staging_enabled):
             assert transport.published == []
 
-    assert len(transport.published) == int(execute)
+    if execute and preview_staging_enabled:
+        assert len(transport.published) >= 2
+    else:
+        assert len(transport.published) == int(execute)
     if execute:
         assert transport.published[0]["session_id"] == "intercept-test"
         assert statuses[-1]["status"] == "target_sent"
