@@ -24,13 +24,17 @@ validation.
 
 ## Sprint 1 — Host and replay parity
 
-1. Restore SSH on `aarav@128.114.152.136`; the host currently answers ping but
-   refuses TCP ports 22, 2200, and 2222.
+1. Use the replacement Isaac host at `theaa@10.0.0.65` over SSH port `6023`.
+   The endpoint currently reports `Host is down`, so local implementation and
+   tests continue until it is reachable.
 2. Run `scripts/sim/probe-isaac-host.sh`.
-3. Install or select Isaac Lab 5.1-compatible tooling and pin Unitree's
-   `unitree_sim_isaaclab` commit.
-4. Export the touch run with `scripts/sim/export-g1-replay.py`.
-5. Replay the complete 29-DOF measured initial state and right-arm targets at a 250 Hz
+3. Work under `~/Documents/coding/isaacsim/`. Locate or mount the external
+   validation volume at `/data1/aarav`; do not silently redirect large assets
+   or result sets when that mount is absent.
+4. Select the installed native Windows Isaac Sim 6.0.1 / Isaac Lab v3.0.0-beta
+   environment and pin Unitree's `unitree_sim_isaaclab` commit.
+5. Export the touch run with `scripts/sim/export-g1-replay.py`.
+6. Replay the complete 29-DOF measured initial state and right-arm targets at a 250 Hz
    physics/control step using the production Ruckig bridge.
 
 Acceptance:
@@ -118,7 +122,9 @@ uv run python scripts/sim/export-g1-replay.py \
   runs/sim/touch-run.json \
   --episode 0
 
-# On the Isaac workstation, after SSH is restored.
+# On the replacement Isaac workstation, after SSH is reachable.
+ssh -p 6023 theaa@10.0.0.65
+cd ~/Documents/coding/isaacsim/humanoid-robot-grasping
 bash scripts/sim/probe-isaac-host.sh
 bash scripts/sim/bootstrap-isaac-host.sh
 ```
