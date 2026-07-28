@@ -182,9 +182,7 @@ def adaptive_table_route(
                 exit_uv[1] = inflated_min[1] - 0.01
             elif edge == "v_max":
                 exit_uv[1] = inflated_max[1] + 0.01
-            exit_candidates.append(
-                (float(np.linalg.norm(exit_uv - start_uv)), edge, exit_uv)
-            )
+            exit_candidates.append((float(np.linalg.norm(exit_uv - start_uv)), edge, exit_uv))
         if not exit_candidates:
             raise ValueError("no certified table edge is available for a below-table exit")
         _, exit_edge, exit_uv = min(exit_candidates, key=lambda item: item[0])
@@ -203,13 +201,9 @@ def adaptive_table_route(
     for begin, end in zip(compact, compact[1:]):
         steps = max(1, int(np.ceil(np.linalg.norm(end - begin) / maximum_segment_m)))
         dense.extend(
-            (1.0 - alpha) * begin + alpha * end
-            for alpha in np.linspace(0.0, 1.0, steps + 1)[1:]
+            (1.0 - alpha) * begin + alpha * end for alpha in np.linspace(0.0, 1.0, steps + 1)[1:]
         )
-    length = sum(
-        float(np.linalg.norm(end - begin))
-        for begin, end in zip(dense, dense[1:])
-    )
+    length = sum(float(np.linalg.norm(end - begin)) for begin, end in zip(dense, dense[1:]))
     return CartesianTableRoute(
         points_xyz_m=tuple(tuple(float(value) for value in point) for point in dense),
         topology=topology,
@@ -484,9 +478,7 @@ class G1RightArmIK:
                 "right_wrist_",
                 "right_hand_",
             )
-            for geometry_index, geometry_object in enumerate(
-                self.collision_model.geometryObjects
-            ):
+            for geometry_index, geometry_object in enumerate(self.collision_model.geometryObjects):
                 if not geometry_object.name.startswith(arm_prefixes):
                     continue
                 shape = geometry_object.geometry
@@ -840,9 +832,7 @@ class G1RightArmIK:
                 for distance in distances.values()
             ):
                 return "hand_hip_penetration_limit"
-        if require_cleared_end and (
-            not escaped or self._right_hand_hip_clearance(end) < 0.01
-        ):
+        if require_cleared_end and (not escaped or self._right_hand_hip_clearance(end) < 0.01):
             return "start_collision_not_cleared"
         return None
 
@@ -928,10 +918,13 @@ class G1RightArmIK:
         start_tuple = tuple(float(value) for value in start_q)
 
         def edge_is_exit_only(candidate: np.ndarray) -> bool:
-            if self._hand_hip_edge_is_exit_only(
-                start_q,
-                candidate,
-            ) is not None:
+            if (
+                self._hand_hip_edge_is_exit_only(
+                    start_q,
+                    candidate,
+                )
+                is not None
+            ):
                 return False
             if time.monotonic() >= deadline:
                 return False
@@ -960,22 +953,14 @@ class G1RightArmIK:
                 # validated straight edge as bounded streaming waypoints.
                 steps = max(
                     1,
-                    int(
-                        np.ceil(
-                            np.max(np.abs(candidate - start_q))
-                            / _MAX_STREAM_JOINT_STEP_RAD
-                        )
-                    ),
+                    int(np.ceil(np.max(np.abs(candidate - start_q)) / _MAX_STREAM_JOINT_STEP_RAD)),
                 )
                 return tuple(
                     start_tuple
                     if index == 0
                     else tuple(
                         float(value)
-                        for value in (
-                            (1.0 - index / steps) * start_q
-                            + (index / steps) * candidate
-                        )
+                        for value in ((1.0 - index / steps) * start_q + (index / steps) * candidate)
                     )
                     for index in range(steps + 1)
                 ), None
@@ -991,8 +976,7 @@ class G1RightArmIK:
         if q.shape != (7,) or not np.all(np.isfinite(q)):
             return ("invalid_joint_pose",)
         return tuple(
-            self._collision_pair_label(index)
-            for index in sorted(self._collision_pairs(q))
+            self._collision_pair_label(index) for index in sorted(self._collision_pairs(q))
         )
 
     def plan_start_collision_escape(
@@ -1111,13 +1095,9 @@ class G1RightArmIK:
                     direction = -1.0
                 perturbed[index] += direction * epsilon
                 candidate_position = self.forward_kinematics(perturbed)[:3, 3]
-                jacobian[:, index] = (
-                    candidate_position - position
-                ) / (direction * epsilon)
+                jacobian[:, index] = (candidate_position - position) / (direction * epsilon)
         else:
-            raise ValueError(
-                "jacobian_backend must be 'analytic' or 'finite_difference'"
-            )
+            raise ValueError("jacobian_backend must be 'analytic' or 'finite_difference'")
         if jacobian.shape != (3, 7) or not np.all(np.isfinite(jacobian)):
             raise RuntimeError("translation Jacobian is invalid")
         return jacobian
@@ -1207,11 +1187,7 @@ class G1RightArmIK:
             target[:3, 3] += delta_xyz
             previous_error = float("inf")
             for _ in range(max_steps_per_phase):
-                error = float(
-                    np.linalg.norm(
-                        target[:3, 3] - self.forward_kinematics(q)[:3, 3]
-                    )
-                )
+                error = float(np.linalg.norm(target[:3, 3] - self.forward_kinematics(q)[:3, 3]))
                 if error <= position_tolerance_m:
                     break
                 result = self.solve_local_translation(
@@ -1243,9 +1219,7 @@ class G1RightArmIK:
                     )
                 candidate = np.asarray(result.q_rad, dtype=float)
                 candidate_error = float(
-                    np.linalg.norm(
-                        target[:3, 3] - self.forward_kinematics(candidate)[:3, 3]
-                    )
+                    np.linalg.norm(target[:3, 3] - self.forward_kinematics(candidate)[:3, 3])
                 )
                 if candidate_error >= min(error, previous_error) - 1e-5:
                     return IKPathResult(
@@ -1279,6 +1253,7 @@ class G1RightArmIK:
         top_clearance_m: float = 0.10,
         maximum_cartesian_segment_m: float = 0.025,
         maximum_steps_per_sample: int = 12,
+        final_validation_edge_step_rad: float | None = 0.010,
     ) -> IKPathResult:
         """Plan a measured-start, table-topology-aware right-arm approach."""
 
@@ -1290,6 +1265,13 @@ class G1RightArmIK:
             or not np.all(np.isfinite(target))
             or not np.all(np.isfinite(start_q))
             or maximum_steps_per_sample <= 0
+            or (
+                final_validation_edge_step_rad is not None
+                and (
+                    not math.isfinite(final_validation_edge_step_rad)
+                    or not 0.0 < final_validation_edge_step_rad <= 0.020
+                )
+            )
         ):
             return IKPathResult(False, None, float("inf"), 0.0, "invalid_adaptive_approach")
         escape_path, escape_error = self._guided_start_escape(
@@ -1331,11 +1313,7 @@ class G1RightArmIK:
             waypoint[:3, 3] = np.asarray(point, dtype=float)
             previous_error = float("inf")
             for _ in range(maximum_steps_per_sample):
-                error = float(
-                    np.linalg.norm(
-                        waypoint[:3, 3] - self.forward_kinematics(q)[:3, 3]
-                    )
-                )
+                error = float(np.linalg.norm(waypoint[:3, 3] - self.forward_kinematics(q)[:3, 3]))
                 if error <= self.position_tolerance_m:
                     break
                 result = self.solve_local_translation(
@@ -1354,10 +1332,7 @@ class G1RightArmIK:
                     )
                 candidate = np.asarray(result.q_rad, dtype=float)
                 candidate_error = float(
-                    np.linalg.norm(
-                        waypoint[:3, 3]
-                        - self.forward_kinematics(candidate)[:3, 3]
-                    )
+                    np.linalg.norm(waypoint[:3, 3] - self.forward_kinematics(candidate)[:3, 3])
                 )
                 if candidate_error >= min(error, previous_error) - 1e-5:
                     return IKPathResult(
@@ -1378,23 +1353,24 @@ class G1RightArmIK:
                     0.0,
                     "adaptive_ik:step_limit",
                 )
-        validation_error = self.validate_joint_path(
-            path,
-            support_plane=support_plane,
-            # Every local IK edge was already checked at 0.010 rad. This
-            # independent final pass is denser and deliberately correctness-
-            # bounded rather than wall-clock-bounded: CPU contention must not
-            # turn a safe deterministic route into a flaky timeout.
-            edge_step_rad=0.005,
-        )
-        if validation_error is not None:
-            return IKPathResult(
-                False,
-                None,
-                float("inf"),
-                0.0,
-                f"adaptive_path_invalid:{validation_error}",
+        if final_validation_edge_step_rad is not None:
+            validation_error = self.validate_joint_path(
+                path,
+                support_plane=support_plane,
+                # Every local IK edge is already swept at 0.010 rad. Repeat
+                # the assembled route when the caller will consume it
+                # directly; runtime path compression can replace this pass
+                # with its own mandatory edge validation.
+                edge_step_rad=final_validation_edge_step_rad,
             )
+            if validation_error is not None:
+                return IKPathResult(
+                    False,
+                    None,
+                    float("inf"),
+                    0.0,
+                    f"adaptive_path_invalid:{validation_error}",
+                )
         return IKPathResult(True, tuple(path), 0.0, 0.0, None)
 
     def _ik_seed_variants(self, start_q: np.ndarray) -> tuple[np.ndarray, ...]:
@@ -1923,8 +1899,7 @@ class G1RightArmIK:
             if escaping:
                 escaping = bool(self._collision_pairs(end))
         if require_escape_cleared and (
-            escaping
-            or (started_escaping and self._right_hand_hip_clearance(path[-1]) < 0.01)
+            escaping or (started_escaping and self._right_hand_hip_clearance(path[-1]) < 0.01)
         ):
             return "start_collision_not_cleared"
         return None

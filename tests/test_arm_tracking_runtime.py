@@ -199,9 +199,7 @@ class FakeInterceptIK:
         del right_arm_q
         return ()
 
-    def gravity_compensation_torque(
-        self, right_arm_q: Sequence[float]
-    ) -> tuple[float, ...]:
+    def gravity_compensation_torque(self, right_arm_q: Sequence[float]) -> tuple[float, ...]:
         del right_arm_q
         return (-1.0, -0.5, 0.0, -0.25, 0.0, -0.1, 0.0)
 
@@ -422,7 +420,7 @@ def test_dense_approach_path_is_compressed_into_long_validated_segments() -> Non
     )
 
     assert compressed == (path[0], path[5], path[10])
-    assert len(checked) > len(compressed)
+    assert checked == [(path[0], path[5]), (path[5], path[10])]
 
 
 def test_approach_path_compression_rejects_an_invalid_adjacent_edge() -> None:
@@ -550,6 +548,45 @@ def test_start_escape_waypoint_handles_observed_thirty_milliradian_residual() ->
 
     assert waypoint == path[2]
     assert index == 2
+    assert error is None
+
+
+def test_start_escape_waypoint_looks_through_wide_compressed_edge() -> None:
+    path = (
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.20, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.40, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    )
+    measured = (0.10, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    waypoint, index, error = select_start_escape_waypoint(
+        measured,
+        path,
+        1,
+        last_advance_q_rad=path[0],
+    )
+
+    assert waypoint == path[2]
+    assert index == 2
+    assert error is None
+
+
+def test_start_escape_waypoint_requires_measured_arrival_at_final_knot() -> None:
+    path = (
+        (0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+        (0.20, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0),
+    )
+    measured = (0.10, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+
+    waypoint, index, error = select_start_escape_waypoint(
+        measured,
+        path,
+        1,
+        last_advance_q_rad=path[0],
+    )
+
+    assert waypoint == path[1]
+    assert index == 1
     assert error is None
 
 
@@ -879,9 +916,7 @@ def test_runtime_can_use_explicit_nominal_plane_without_table(tmp_path: Path) ->
 
     assert support is not None
     assert support.source == "calibrated_nominal_free_space_plane"
-    assert support.plane.signed_distance(
-        (0.0, 0.0, runtime._expected_table_height_m())
-    ) == 0.0
+    assert support.plane.signed_distance((0.0, 0.0, runtime._expected_table_height_m())) == 0.0
 
 
 def test_runtime_freezes_validated_plane_during_armed_motion(tmp_path: Path) -> None:
@@ -979,6 +1014,7 @@ def test_intercept_preview_and_commit_publish_gate(
             "measured_pose_rad": [0.0] * 29,
         },
     }
+
     def snapshot() -> dict[str, Any]:
         return {
             "rgb_receipt_time_s": clock[0],
@@ -996,6 +1032,7 @@ def test_intercept_preview_and_commit_publish_gate(
                 }
             ],
         }
+
     runtime = ArmTrackingRuntime(
         RuntimeConfig(
             calibration_path=calibration_path,

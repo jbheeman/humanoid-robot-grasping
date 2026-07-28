@@ -191,9 +191,7 @@ def clamp_point_height_to_support(
         if isinstance(support_plane, SupportRegion)
         else support_plane.normal
     )
-    corrected = point + (clamped_height - height) * np.asarray(
-        normal, dtype=float
-    )
+    corrected = point + (clamped_height - height) * np.asarray(normal, dtype=float)
     return corrected, clamped_height
 
 
@@ -254,8 +252,7 @@ def tabletop_footprint_dimensions_plausible(
         return False
     ratio = measured / expected
     return bool(
-        np.all(ratio >= _TABLETOP_SIZE_RATIO_MIN)
-        and np.all(ratio <= _TABLETOP_SIZE_RATIO_MAX)
+        np.all(ratio >= _TABLETOP_SIZE_RATIO_MIN) and np.all(ratio <= _TABLETOP_SIZE_RATIO_MAX)
     )
 
 
@@ -352,9 +349,9 @@ def select_start_escape_waypoint(
     target_index: int,
     *,
     reached_tolerance_rad: float = 0.018,
-    tracking_tolerance_rad: float = 0.050,
+    tracking_tolerance_rad: float = 0.130,
     last_advance_q_rad: Sequence[float] | None = None,
-    residual_lookahead_rad: float = 0.040,
+    residual_lookahead_rad: float = 0.100,
     minimum_progress_rad: float = 0.004,
 ) -> tuple[tuple[float, ...] | None, int, str | None]:
     """Select one bounded escape waypoint using measured, not commanded, pose."""
@@ -375,7 +372,7 @@ def select_start_escape_waypoint(
         and float(np.max(np.abs(measured - knots[index]))) <= reached_tolerance_rad
     ):
         index += 1
-    elif last_advance_q_rad is not None:
+    elif last_advance_q_rad is not None and index < len(knots) - 1:
         last_advance = np.asarray(last_advance_q_rad, dtype=float)
         if (
             last_advance.shape != (7,)
@@ -387,9 +384,10 @@ def select_start_escape_waypoint(
         residual = float(np.max(np.abs(measured - knots[index])))
         progress = float(np.max(np.abs(measured - last_advance)))
         if residual <= residual_lookahead_rad and progress >= minimum_progress_rad:
-            # Loaded joints can settle a few hundredths short of a knot. Allow
-            # one validated lookahead only after observing new measured motion;
-            # the caller resets the anchor, preventing stationary index races.
+            # Begin the next collision-checked edge before Ruckig brakes to a
+            # stop at this intermediate knot. The caller independently checks
+            # the direct measured-to-next edge, and resets the motion anchor,
+            # so this cannot skip an unsafe corner or race on a stationary arm.
             index += 1
     if index >= len(knots):
         return None, index, None
@@ -430,7 +428,11 @@ def compress_validated_joint_path(
     while source_index < len(knots) - 1:
         best_index: int | None = None
         last_candidate = min(len(knots) - 1, source_index + maximum_skip_knots)
-        for candidate_index in range(source_index + 1, last_candidate + 1):
+        # We need the farthest valid candidate, so test from far to near and
+        # stop at the first success. The previous ascending scan rechecked
+        # every shorter edge even after finding a valid long one, dominating
+        # startup latency with repeated mesh collision queries.
+        for candidate_index in range(last_candidate, source_index, -1):
             span = max(
                 abs(actual - start)
                 for actual, start in zip(knots[candidate_index], knots[source_index])
@@ -439,6 +441,7 @@ def compress_validated_joint_path(
                 continue
             if edge_is_valid(knots[source_index], knots[candidate_index]):
                 best_index = candidate_index
+                break
         if best_index is None:
             return None
         compressed.append(knots[best_index])
@@ -728,12 +731,13 @@ class ArmTrackingRuntime:
         }
         frame_calibration_id = frame.calibration_id
         frame_geometry = f"{frame.z16.shape[1]}x{frame.z16.shape[0]}"
-        factory_geometry_match = (
-            frame_calibration_id.startswith("factory-")
-            and frame_calibration_id.endswith(f"-{frame_geometry}")
-        )
+        factory_geometry_match = frame_calibration_id.startswith(
+            "factory-"
+        ) and frame_calibration_id.endswith(f"-{frame_geometry}")
         if (self.config.execute and frame.calibration_id != self.calibration.calibration_id) or (
-            not self.config.execute and frame_calibration_id not in recognized_ids and not factory_geometry_match
+            not self.config.execute
+            and frame_calibration_id not in recognized_ids
+            and not factory_geometry_match
         ):
             self._reject(base_status, "calibration_mismatch", colormap)
             return
@@ -1121,6 +1125,10 @@ class ArmTrackingRuntime:
                     last_q,
                     support_plane=plane,
                     top_clearance_m=0.11,
+                    # The compression gate below validates every retained
+                    # edge against the same collision/support model. Avoid a
+                    # duplicate full-path sweep before that mandatory pass.
+                    final_validation_edge_step_rad=None,
                 )
                 if not approach.ok or approach.q_path is None:
                     # The new topology route is deliberately conservative.
@@ -1155,14 +1163,22 @@ class ArmTrackingRuntime:
                 raw_approach_path = approach.q_path
                 compressed_path = compress_validated_joint_path(
                     raw_approach_path,
-                    lambda begin, end: self.ik.validate_joint_path(
-                        (begin, end),
-                        support_plane=plane,
-                        edge_step_rad=0.020,
-                        semantic_edge_step_rad=0.010,
-                        require_escape_cleared=False,
-                    )
-                    is None,
+                    lambda begin, end: (
+                        self.ik.validate_joint_path(
+                            (begin, end),
+                            support_plane=plane,
+                            edge_step_rad=0.020,
+                            semantic_edge_step_rad=0.010,
+                            require_escape_cleared=False,
+                        )
+                        is None
+                    ),
+                    # Longer edges let Ruckig preserve velocity through the
+                    # gross table-clearance motion. Every candidate shortcut
+                    # still passes the complete production collision/support
+                    # validator before it can enter the executable route.
+                    maximum_span_rad=0.40,
+                    maximum_skip_knots=16,
                 )
                 if compressed_path is None:
                     self._reject(base_status, "ik_approach_path_compression", colormap)
@@ -1188,10 +1204,7 @@ class ArmTrackingRuntime:
                 else round(
                     float(
                         np.max(
-                            np.abs(
-                                np.asarray(last_q)
-                                - np.asarray(self._approach_last_advance_q)
-                            )
+                            np.abs(np.asarray(last_q) - np.asarray(self._approach_last_advance_q))
                         )
                     ),
                     6,
@@ -1283,9 +1296,7 @@ class ArmTrackingRuntime:
                     else None
                 ),
                 "ik_escape_waypoint_count": (
-                    len(self._approach_path)
-                    if self._approach_path is not None
-                    else None
+                    len(self._approach_path) if self._approach_path is not None else None
                 ),
                 "ik_escape_raw_waypoint_count": self._approach_raw_waypoint_count,
                 "ik_approach_target_xyz_m": self._approach_target_xyz,
@@ -1370,9 +1381,7 @@ class ArmTrackingRuntime:
             # Stream bounded targets during the controller's weight ramp.  If
             # we wait for ARMED, the target deadman expires during ARMING and
             # the bridge releases immediately after a small twitch.
-            if arm_state.get("state") not in ("ARMING", "ARMED") or not arm_state.get(
-                "session_id"
-            ):
+            if arm_state.get("state") not in ("ARMING", "ARMED") or not arm_state.get("session_id"):
                 self._reject(base_status, "arm_not_explicitly_enabled", colormap)
                 return
             pipeline_age_ms = max(
@@ -1512,9 +1521,7 @@ class ArmTrackingRuntime:
             round(float(value), 6) for value in gravity_tau_ff
         ]
         if self.config.execute:
-            if arm_state.get("state") not in ("ARMING", "ARMED") or not arm_state.get(
-                "session_id"
-            ):
+            if arm_state.get("state") not in ("ARMING", "ARMED") or not arm_state.get("session_id"):
                 self._reject(base_status, "arm_not_explicitly_enabled", colormap)
                 return
             confirmation_age_s = decision.last_confirmation_age_s
@@ -1605,8 +1612,7 @@ class ArmTrackingRuntime:
         if (
             freeze
             and self.last_support_plane is not None
-            and now - self.last_support_plane_at
-            <= _SUPPORT_PLANE_ARMED_TTL_S
+            and now - self.last_support_plane_at <= _SUPPORT_PLANE_ARMED_TTL_S
         ):
             return self.last_support_plane
         errors: list[str] = []
@@ -1735,8 +1741,7 @@ class ArmTrackingRuntime:
             self.last_support_plane_error = "; ".join(errors)
             if (
                 self.last_support_plane is not None
-                and now - self.last_support_plane_at
-                <= _SUPPORT_PLANE_GRACE_S
+                and now - self.last_support_plane_at <= _SUPPORT_PLANE_GRACE_S
             ):
                 return self.last_support_plane
             if self.config.allow_nominal_support_plane:
@@ -1764,10 +1769,7 @@ class ArmTrackingRuntime:
         source_width, source_height = self.tabletop_corner_frame_size
         scale_x = self.calibration.rgb_profile.width / source_width
         scale_y = self.calibration.rgb_profile.height / source_height
-        return tuple(
-            (float(x) * scale_x, float(y) * scale_y)
-            for x, y in self.tabletop_corners_px
-        )
+        return tuple((float(x) * scale_x, float(y) * scale_y) for x, y in self.tabletop_corners_px)
 
     @staticmethod
     def _support_candidates_agree(
@@ -1842,20 +1844,14 @@ class ArmTrackingRuntime:
                 "intrinsics": self.calibration.rgb_intrinsics.to_dict(),
                 "optical_to_torso": self.calibration.optical_to_torso.to_dict(),
             },
-            "support_plane": (
-                None if cached_support is None else cached_support.to_dict()
-            ),
+            "support_plane": (None if cached_support is None else cached_support.to_dict()),
             "support_plane_status": {
                 "available": cached_support is not None,
                 "age_ms": (
-                    None
-                    if cached_support_age_ms is None
-                    else round(cached_support_age_ms, 1)
+                    None if cached_support_age_ms is None else round(cached_support_age_ms, 1)
                 ),
                 "error": self.last_support_plane_error,
-                "source": (
-                    None if cached_support is None else cached_support.source
-                ),
+                "source": (None if cached_support is None else cached_support.source),
                 "cached": cached_support is not None,
                 "automatic": self._automatic_support_diagnostics,
                 "stable_samples": self._automatic_support_stable_samples,
