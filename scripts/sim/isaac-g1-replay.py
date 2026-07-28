@@ -32,6 +32,24 @@ parser.add_argument("--max-jerk", type=float, default=30.0)
 parser.add_argument("--deadman-s", type=float, default=0.75)
 parser.add_argument("--tail-s", type=float, default=2.0)
 parser.add_argument(
+    "--command-source",
+    choices=("recorded", "planned_approach"),
+    default="recorded",
+    help="replay physical joint targets or regenerate production IK from recorded Cartesian targets",
+)
+parser.add_argument(
+    "--planned-command-hz",
+    type=float,
+    default=30.0,
+    help="measured-state IK/waypoint update rate for --command-source planned_approach",
+)
+parser.add_argument(
+    "--bunny-motion",
+    choices=("static", "recorded"),
+    default="static",
+    help="keep the proxy fixed or kinematically replay recorded object positions",
+)
+parser.add_argument(
     "--max-replay-s",
     type=float,
     default=None,
@@ -86,6 +104,12 @@ if args.max_replay_s is not None and (
     parser.error("--max-replay-s must be finite and positive")
 if not math.isfinite(args.progress_interval_s) or args.progress_interval_s <= 0.0:
     parser.error("--progress-interval-s must be finite and positive")
+if (
+    not math.isfinite(args.planned_command_hz)
+    or args.planned_command_hz <= 0.0
+    or args.planned_command_hz > args.physics_hz
+):
+    parser.error("--planned-command-hz must be finite, positive, and no faster than physics")
 
 # The official Unitree asset configuration reads PROJECT_ROOT at import time.
 unitree_root = args.unitree_sim_root.resolve()
@@ -118,6 +142,15 @@ from object_tracking.arm_tracking.joints import (  # noqa: E402
     BODY_JOINT_NAMES,
     LEFT_ARM_JOINT_NAMES,
     RIGHT_ARM_JOINT_NAMES,
+)
+from object_tracking.arm_tracking.geometry import SupportRegion  # noqa: E402
+from object_tracking.arm_tracking.ik_solver import (  # noqa: E402
+    G1RightArmIK,
+    default_urdf_path,
+)
+from object_tracking.arm_tracking.runtime import (  # noqa: E402
+    compress_validated_joint_path,
+    select_start_escape_waypoint,
 )
 from robots.unitree import G129_CFG_WITH_DEX1_BASE_FIX  # noqa: E402
 
@@ -206,6 +239,24 @@ def set_effort_target(
     except (AttributeError, TypeError):
         if hasattr(robot, "set_joint_effort_target_index"):
             robot.set_joint_effort_target_index(target=target, joint_ids=joint_ids)
+
+
+def write_root_pose(
+    rigid_object: RigidObject,
+    position: torch.Tensor,
+    quaternion: torch.Tensor,
+) -> None:
+    pose = torch.cat((position.reshape(3), quaternion.reshape(4))).reshape(1, 7)
+    rigid_object.write_root_pose_to_sim(pose)
+
+
+def write_root_linear_velocity(
+    rigid_object: RigidObject,
+    velocity: torch.Tensor,
+) -> None:
+    angular_velocity = torch.zeros(3, dtype=velocity.dtype, device=velocity.device)
+    spatial_velocity = torch.cat((velocity.reshape(3), angular_velocity)).reshape(1, 6)
+    rigid_object.write_root_velocity_to_sim(spatial_velocity)
 
 
 class IsaacClock:
@@ -375,6 +426,82 @@ def main() -> int:
     if initial_body is None:
         raise RuntimeError("replay contains no complete measured 29-DOF initial state")
 
+    planned_solver: G1RightArmIK | None = None
+    planned_support: SupportRegion | None = None
+    planned_path: tuple[tuple[float, ...], ...] | None = None
+    planned_route: str | None = None
+    planned_adaptive_reason: str | None = None
+    planned_planning_ms: float | None = None
+    planned_target_xyz: tuple[float, float, float] | None = None
+    if args.command_source == "planned_approach":
+        support_value = replay.get("support_plane")
+        if not isinstance(support_value, dict):
+            raise RuntimeError("planned approach requires a bounded support plane")
+        planned_support = SupportRegion.from_dict(support_value)
+        target_frame = next(
+            (
+                frame
+                for frame in frames
+                if frame.get("status") == "target_sent"
+                and isinstance(frame.get("target_xyz_m"), list)
+            ),
+            None,
+        )
+        if target_frame is None:
+            raise RuntimeError("planned approach requires a recorded Cartesian target")
+        planned_target_xyz = tuple(float(value) for value in target_frame["target_xyz_m"])
+        planned_solver = G1RightArmIK(default_urdf_path(project_root))
+        initial_right = tuple(float(value) for value in initial_body[22:29])
+        target_transform = planned_solver.forward_kinematics(initial_right)
+        target_transform[:3, 3] = planned_target_xyz
+        planning_started = time.perf_counter()
+        planned = planned_solver.plan_adaptive_table_approach(
+            target_transform,
+            initial_right,
+            support_plane=planned_support,
+            top_clearance_m=0.11,
+            final_validation_edge_step_rad=None,
+        )
+        planned_adaptive_reason = planned.reason
+        planned_route = "adaptive"
+        if not planned.ok or planned.q_path is None:
+            planned = planned_solver.plan_guided_clearance(
+                initial_right,
+                support_plane=planned_support,
+                lift_m=0.12,
+                forward_m=0.04,
+            )
+            planned_route = "guided_fallback"
+        if not planned.ok or planned.q_path is None:
+            raise RuntimeError(f"production table approach failed: {planned.reason}")
+        planned_path = compress_validated_joint_path(
+            planned.q_path,
+            lambda begin, end: (
+                planned_solver.validate_joint_path(
+                    (begin, end),
+                    support_plane=planned_support,
+                    edge_step_rad=0.020,
+                    semantic_edge_step_rad=0.010,
+                    require_escape_cleared=False,
+                )
+                is None
+            ),
+            maximum_span_rad=0.40,
+            maximum_skip_knots=16,
+        )
+        if planned_path is None:
+            raise RuntimeError("production table approach compression failed")
+        dense_error = planned_solver.validate_joint_path(
+            planned_path,
+            support_plane=planned_support,
+            edge_step_rad=0.005,
+            semantic_edge_step_rad=0.005,
+            require_escape_cleared=False,
+        )
+        if dense_error is not None:
+            raise RuntimeError(f"production table approach dense validation failed: {dense_error}")
+        planned_planning_ms = (time.perf_counter() - planning_started) * 1000.0
+
     def restore_body_state() -> None:
         joint_position = tensor(robot.data.default_joint_pos).clone()
         joint_velocity = tensor(robot.data.default_joint_vel).clone()
@@ -461,7 +588,9 @@ def main() -> int:
         prim_path="/World/BunnyProxy",
         spawn=sim_utils.SphereCfg(
             radius=0.055,
-            rigid_props=sim_utils.RigidBodyPropertiesCfg(),
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=args.bunny_motion == "recorded"
+            ),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.12),
             collision_props=sim_utils.CollisionPropertiesCfg(),
             visual_material=sim_utils.PreviewSurfaceCfg(
@@ -522,9 +651,7 @@ def main() -> int:
     sequence = 0
     full_replay_time = float(frames[-1]["time_s"]) + args.tail_s
     final_time = (
-        full_replay_time
-        if args.max_replay_s is None
-        else min(full_replay_time, args.max_replay_s)
+        full_replay_time if args.max_replay_s is None else min(full_replay_time, args.max_replay_s)
     )
     minimum_hand_distance = float("inf")
     proximity_steps = 0
@@ -534,6 +661,16 @@ def main() -> int:
     started_wall = time.perf_counter()
     next_progress_at = 0.0
     initial_bunny = tensor(bunny.data.root_pos_w)[0].clone()
+    bunny_orientation = tensor(bunny.data.root_quat_w)[0].clone()
+    planned_target_index = 1
+    planned_last_advance_q = None if planned_path is None else planned_path[0]
+    planned_approach_complete_at_s: float | None = None
+    planned_next_command_at_s = 0.0
+    planned_commands = 0
+    planned_edge_validations = 0
+    planned_ik_failures: dict[str, int] = {}
+    previous_bunny_local_position: torch.Tensor | None = None
+    previous_bunny_frame_time_s: float | None = None
     while simulation_app.is_running() and clock.monotonic - playback_start <= final_time:
         elapsed = clock.monotonic - playback_start
         if elapsed >= next_progress_at:
@@ -554,8 +691,49 @@ def main() -> int:
             next_progress_at += args.progress_interval_s
         while frame_index < len(frames) and float(frames[frame_index]["time_s"]) <= elapsed:
             frame = frames[frame_index]
-            if frame.get("status") == "target_sent" and isinstance(
-                frame.get("right_arm_q_rad"), list
+            if frame.get("status") == "target_sent" and isinstance(frame.get("target_xyz_m"), list):
+                planned_target_xyz = tuple(float(value) for value in frame["target_xyz_m"])
+            if args.bunny_motion == "recorded" and isinstance(frame.get("object_xyz_m"), list):
+                bunny_local_position = torch.as_tensor(
+                    frame["object_xyz_m"],
+                    dtype=torch.float32,
+                    device=torso_position.device,
+                )
+                write_root_pose(
+                    bunny,
+                    local_to_world(
+                        torso_position,
+                        torso_quaternion,
+                        bunny_local_position,
+                    ),
+                    bunny_orientation,
+                )
+                bunny_local_velocity: torch.Tensor | None = None
+                if isinstance(frame.get("object_velocity_m_s"), list):
+                    bunny_local_velocity = torch.as_tensor(
+                        frame["object_velocity_m_s"],
+                        dtype=torch.float32,
+                        device=torso_position.device,
+                    )
+                elif previous_bunny_local_position is not None:
+                    frame_time_s = float(frame["time_s"])
+                    assert previous_bunny_frame_time_s is not None
+                    frame_dt = frame_time_s - previous_bunny_frame_time_s
+                    if frame_dt > 1e-6:
+                        bunny_local_velocity = (
+                            bunny_local_position - previous_bunny_local_position
+                        ) / frame_dt
+                if bunny_local_velocity is not None:
+                    write_root_linear_velocity(
+                        bunny,
+                        quat_apply(torso_quaternion, bunny_local_velocity),
+                    )
+                previous_bunny_local_position = bunny_local_position
+                previous_bunny_frame_time_s = float(frame["time_s"])
+            if (
+                args.command_source == "recorded"
+                and frame.get("status") == "target_sent"
+                and isinstance(frame.get("right_arm_q_rad"), list)
             ):
                 sequence += 1
                 try:
@@ -575,6 +753,70 @@ def main() -> int:
                     code = str(getattr(exc, "code", type(exc).__name__))
                     target_rejections[code] = target_rejections.get(code, 0) + 1
             frame_index += 1
+        if args.command_source == "planned_approach" and elapsed >= planned_next_command_at_s:
+            assert planned_solver is not None
+            assert planned_support is not None
+            assert planned_path is not None
+            planned_next_command_at_s = elapsed + 1.0 / args.planned_command_hz
+            measured = tuple(
+                float(value)
+                for value in tensor(robot.data.joint_pos)[0, right_ids].detach().cpu().tolist()
+            )
+            desired_q: tuple[float, ...] | None = None
+            if planned_approach_complete_at_s is None:
+                previous_index = planned_target_index
+                desired_q, planned_target_index, selection_error = select_start_escape_waypoint(
+                    measured,
+                    planned_path,
+                    planned_target_index,
+                    last_advance_q_rad=planned_last_advance_q,
+                )
+                if selection_error is not None:
+                    raise RuntimeError(f"planned approach tracking failed: {selection_error}")
+                if planned_target_index > previous_index:
+                    planned_last_advance_q = measured
+                if desired_q is None:
+                    planned_approach_complete_at_s = elapsed
+                else:
+                    planned_edge_validations += 1
+                    edge_error = planned_solver.validate_joint_path(
+                        (measured, desired_q),
+                        support_plane=planned_support,
+                        edge_step_rad=0.020,
+                        semantic_edge_step_rad=0.010,
+                        require_escape_cleared=False,
+                    )
+                    if edge_error is not None:
+                        raise RuntimeError(f"planned measured approach edge failed: {edge_error}")
+            if planned_approach_complete_at_s is not None and planned_target_xyz is not None:
+                transform = planned_solver.forward_kinematics(measured)
+                transform[:3, 3] = planned_target_xyz
+                local = planned_solver.solve_local_translation(
+                    transform,
+                    measured,
+                    support_plane=planned_support,
+                )
+                if local.ok and local.q_rad is not None:
+                    desired_q = local.q_rad
+                else:
+                    reason = str(local.reason or "unknown")
+                    planned_ik_failures[reason] = planned_ik_failures.get(reason, 0) + 1
+                    desired_q = None
+            if desired_q is not None:
+                sequence += 1
+                try:
+                    controller.set_target(
+                        session_id="isaac-replay",
+                        sequence=sequence,
+                        calibration_id=calibration_id,
+                        right_arm_q=desired_q,
+                        right_arm_tau_ff=planned_solver.gravity_compensation_torque(desired_q),
+                        pipeline_age_ms=0,
+                    )
+                    planned_commands += 1
+                except ValueError as exc:
+                    code = str(getattr(exc, "code", type(exc).__name__))
+                    target_rejections[code] = target_rejections.get(code, 0) + 1
         controller.tick(clock.monotonic)
         report = controller.state_report(clock.monotonic)
         state = str(report["state"])
@@ -629,8 +871,31 @@ def main() -> int:
             "right": dict(zip(RIGHT_ARM_JOINT_NAMES, right_ids)),
         },
         "calibrated_frame": args.calibrated_frame,
+        "command_source": args.command_source,
+        "bunny_motion": args.bunny_motion,
         "freshness_mode": args.freshness_mode,
         "actuator_profile": args.actuator_profile,
+        "planned_approach": (
+            None
+            if args.command_source != "planned_approach"
+            else {
+                "route": planned_route,
+                "adaptive_reason": planned_adaptive_reason,
+                "planning_ms": (
+                    None if planned_planning_ms is None else round(planned_planning_ms, 3)
+                ),
+                "waypoints": None if planned_path is None else len(planned_path),
+                "command_hz": args.planned_command_hz,
+                "commands": planned_commands,
+                "measured_edge_validations": planned_edge_validations,
+                "approach_complete_at_s": (
+                    None
+                    if planned_approach_complete_at_s is None
+                    else round(planned_approach_complete_at_s, 4)
+                ),
+                "local_ik_failures": planned_ik_failures,
+            }
+        ),
         "controller_state_steps": states,
         "target_rejections": target_rejections,
         "controller_final": controller.state_report(clock.monotonic),
@@ -638,7 +903,9 @@ def main() -> int:
         "proximity_threshold_m": 0.09,
         "proximity_duration_s": round(proximity_steps * dt, 4),
         "physx_contact_measurement_available": False,
-        "bunny_displacement_m": round(float(torch.linalg.vector_norm(final_bunny - initial_bunny)), 5),
+        "bunny_displacement_m": round(
+            float(torch.linalg.vector_norm(final_bunny - initial_bunny)), 5
+        ),
         "joint_tracking_error_rad_p95": None if p95_error is None else round(p95_error, 6),
         "simulated_duration_s": round(final_time, 4),
         "wall_duration_s": round(wall_elapsed, 4),

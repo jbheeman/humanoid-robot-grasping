@@ -34,6 +34,7 @@ def _row(
                 "predicted_bounded_arm_command_rad": [0.1] * 7,
                 "gravity_feedforward_tau_nm": [0.2] * 7,
                 "object_xyz_m": [0.45, object_y, 0.1],
+                "object_velocity_m_s": [0.0, -0.2, 0.0],
                 "target_xyz_m": [0.39, target_y, 0.13],
                 "pipeline_age_ms": 180.0,
                 "visualization": {
@@ -82,6 +83,7 @@ def test_replay_preserves_loss_tail_transform_and_right_side_contract(tmp_path: 
     assert report["estimated_target_publish_hz"] == pytest.approx(20.0)
     assert report["right_side_margin_m"]["minimum"] == pytest.approx(0.06)
     assert report["right_side_margin_m"]["fraction_on_right"] == 1.0
+    assert episode.frames[1].object_velocity_m_s == pytest.approx((0.0, -0.2, 0.0))
     assert report["rejection_reasons"] == {"target_lost": 2}
     assert report["support_plane_source"].startswith("automatic_rgbd_")
 

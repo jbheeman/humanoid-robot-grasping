@@ -27,6 +27,8 @@ run_case() {
   local jerk="$4"
   local deadman="$5"
   local actuator_profile="$6"
+  local command_source="$7"
+  local bunny_motion="$8"
   local command=()
   if [[ -n "$ISAAC_PYTHON" ]]; then
     command=("$ISAAC_PYTHON")
@@ -45,13 +47,17 @@ run_case() {
     --max-jerk "$jerk" \
     --deadman-s "$deadman" \
     --actuator-profile "$actuator_profile" \
+    --command-source "$command_source" \
+    --bunny-motion "$bunny_motion" \
     2>&1 | tee "$OUTPUT_DIRECTORY/$name.log"
 }
 
-run_case baseline_official 1.0 4.0 30.0 0.75 unitree_official
-run_case baseline_sdk_numeric 1.0 4.0 30.0 0.75 sdk_numeric
-run_case faster_sdk_numeric 1.5 6.0 40.0 0.75 sdk_numeric
-run_case extended_deadman_experiment 1.5 6.0 40.0 2.0 sdk_numeric
+run_case baseline_official 1.0 4.0 30.0 0.75 unitree_official recorded static
+run_case baseline_sdk_numeric 1.0 4.0 30.0 0.75 sdk_numeric recorded static
+run_case faster_sdk_numeric 1.5 6.0 40.0 0.75 sdk_numeric recorded static
+run_case extended_deadman_experiment 1.5 6.0 40.0 2.0 sdk_numeric recorded static
+run_case planned_candidate 1.0 4.0 30.0 0.75 unitree_official planned_approach recorded
+run_case planned_candidate_fast 1.5 6.0 40.0 0.75 unitree_official planned_approach recorded
 
 python3 - "$OUTPUT_DIRECTORY" <<'PY'
 import json
@@ -82,6 +88,18 @@ for path in sorted(directory.glob("*.json")):
     }
     if unexpected_rejections:
         failures.append(f"{name}: unexpected target rejections {unexpected_rejections}")
+    distance = value.get("minimum_hand_to_bunny_m")
+    proximity = value.get("proximity_duration_s")
+    if distance is None or distance > 0.09:
+        failures.append(f"{name}: minimum hand distance {distance!r} misses 0.09 m envelope")
+    if proximity is None or proximity < 0.04:
+        failures.append(f"{name}: proximity duration {proximity!r} is below 0.04 s")
+    if value.get("command_source") == "planned_approach":
+        planned = value.get("planned_approach") or {}
+        if planned.get("approach_complete_at_s") is None:
+            failures.append(f"{name}: production approach did not complete")
+        if planned.get("local_ik_failures"):
+            failures.append(f"{name}: local IK failures {planned['local_ik_failures']}")
     cases.append(
         {
             "case": path.stem,
@@ -93,13 +111,16 @@ for path in sorted(directory.glob("*.json")):
             "realtime_factor": value.get("realtime_factor"),
             "target_rejections": value.get("target_rejections"),
             "actuator_profile": value.get("actuator_profile"),
+            "command_source": value.get("command_source"),
+            "bunny_motion": value.get("bunny_motion"),
+            "planned_approach": value.get("planned_approach"),
         }
     )
-if len(cases) != 4:
-    failures.append(f"expected 4 replay cases, found {len(cases)}")
+if len(cases) != 6:
+    failures.append(f"expected 6 replay cases, found {len(cases)}")
 summary = {
     "schema_version": 1,
-    "scope": "downstream_joint_replay_only",
+    "scope": "recorded_joint_replay_and_production_planned_approach",
     "passed": not failures,
     "failures": failures,
     "cases": cases,

@@ -46,6 +46,7 @@ class ReplayFrame:
     measured_right_arm_q_rad: tuple[float, ...] | None
     measured_right_arm_dq_rad_s: tuple[float, ...] | None
     object_xyz_m: tuple[float, ...] | None
+    object_velocity_m_s: tuple[float, ...] | None
     target_xyz_m: tuple[float, ...] | None
     pipeline_age_ms: float | None
     ik_step_type: str | None
@@ -63,6 +64,7 @@ class ReplayFrame:
             "measured_right_arm_q_rad": self.measured_right_arm_q_rad,
             "measured_right_arm_dq_rad_s": self.measured_right_arm_dq_rad_s,
             "object_xyz_m": self.object_xyz_m,
+            "object_velocity_m_s": self.object_velocity_m_s,
             "target_xyz_m": self.target_xyz_m,
             "pipeline_age_ms": self.pipeline_age_ms,
             "ik_step_type": self.ik_step_type,
@@ -131,9 +133,7 @@ def episode_windows(
     """Find command episodes without depending on robot-console log parsing."""
 
     target_times = [
-        float(record["_elapsed_s"])
-        for record in records
-        if record.get("status") == "target_sent"
+        float(record["_elapsed_s"]) for record in records if record.get("status") == "target_sent"
     ]
     if not target_times:
         return ()
@@ -183,11 +183,7 @@ def build_replay_episode(
     start_s, end_s = window
     if not (math.isfinite(start_s) and math.isfinite(end_s) and start_s < end_s):
         raise ValueError("episode window must contain increasing finite times")
-    selected = [
-        record
-        for record in records
-        if start_s <= float(record["_elapsed_s"]) <= end_s
-    ]
+    selected = [record for record in records if start_s <= float(record["_elapsed_s"]) <= end_s]
     if not selected:
         raise ValueError("episode window contains no telemetry")
     frames: list[ReplayFrame] = []
@@ -210,23 +206,16 @@ def build_replay_episode(
                     if isinstance(sequence, int) and not isinstance(sequence, bool)
                     else None
                 ),
-                right_arm_q_rad=_finite_vector(
-                    record.get("predicted_bounded_arm_command_rad"), 7
-                ),
-                right_arm_tau_ff_nm=_finite_vector(
-                    record.get("gravity_feedforward_tau_nm"), 7
-                ),
+                right_arm_q_rad=_finite_vector(record.get("predicted_bounded_arm_command_rad"), 7),
+                right_arm_tau_ff_nm=_finite_vector(record.get("gravity_feedforward_tau_nm"), 7),
                 measured_body_q_rad=measured_body,
                 measured_body_dq_rad_s=measured_body_velocity,
-                measured_right_arm_q_rad=(
-                    None if measured_body is None else measured_body[22:29]
-                ),
+                measured_right_arm_q_rad=(None if measured_body is None else measured_body[22:29]),
                 measured_right_arm_dq_rad_s=(
-                    None
-                    if measured_body_velocity is None
-                    else measured_body_velocity[22:29]
+                    None if measured_body_velocity is None else measured_body_velocity[22:29]
                 ),
                 object_xyz_m=_finite_vector(record.get("object_xyz_m"), 3),
+                object_velocity_m_s=_finite_vector(record.get("object_velocity_m_s"), 3),
                 target_xyz_m=_finite_vector(record.get("target_xyz_m"), 3),
                 pipeline_age_ms=(
                     float(record["pipeline_age_ms"])
@@ -235,18 +224,12 @@ def build_replay_episode(
                     else None
                 ),
                 ik_step_type=(
-                    None
-                    if record.get("ik_step_type") is None
-                    else str(record["ik_step_type"])
+                    None if record.get("ik_step_type") is None else str(record["ik_step_type"])
                 ),
             )
         )
     calibration_id = next(
-        (
-            str(record["calibration_id"])
-            for record in selected
-            if record.get("calibration_id")
-        ),
+        (str(record["calibration_id"]) for record in selected if record.get("calibration_id")),
         None,
     )
     return ReplayEpisode(
@@ -265,9 +248,7 @@ def summarize_episode(episode: ReplayEpisode) -> dict[str, Any]:
         for frame in episode.frames
         if frame.status == "target_sent" and frame.right_arm_q_rad is not None
     ]
-    latencies = [
-        frame.pipeline_age_ms for frame in sent if frame.pipeline_age_ms is not None
-    ]
+    latencies = [frame.pipeline_age_ms for frame in sent if frame.pipeline_age_ms is not None]
     publish_rates = []
     for previous, current in zip(sent, sent[1:]):
         if (
@@ -329,8 +310,7 @@ def summarize_episode(episode: ReplayEpisode) -> dict[str, Any]:
         },
         "rejection_reasons": reasons,
         "ik_step_duration_s": {
-            name: round(max(times) - min(times), 3)
-            for name, times in ik_step_times.items()
+            name: round(max(times) - min(times), 3) for name, times in ik_step_times.items()
         },
         "support_plane_source": (
             None
