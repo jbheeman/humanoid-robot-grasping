@@ -10,10 +10,12 @@ REPLAY_JSON="$(realpath "$1")"
 OUTPUT_DIRECTORY="$(realpath -m "$2")"
 PROJECT_ROOT="$(git rev-parse --show-toplevel)"
 UNITREE_ROOT="${UNITREE_SIM_ROOT:-${ISAAC_VALIDATION_ROOT:-$PWD/.isaac-validation}/unitree_sim_isaaclab}"
-ISAACLAB_RUNNER="${ISAACLAB_ROOT:?set ISAACLAB_ROOT to the Isaac Lab installation}/isaaclab.sh"
-
-if [[ ! -x "$ISAACLAB_RUNNER" ]]; then
-  printf 'Isaac Lab runner is missing: %s\n' "$ISAACLAB_RUNNER" >&2
+ISAAC_PYTHON="${ISAAC_PYTHON:-}"
+ISAACLAB_RUNNER="${ISAACLAB_ROOT:+$ISAACLAB_ROOT/isaaclab.sh}"
+if [[ -z "$ISAAC_PYTHON" && ! -x "$ISAACLAB_RUNNER" ]]; then
+  printf '%s\n' \
+    "Set ISAAC_PYTHON to the Isaac-enabled Python executable, or" \
+    "set ISAACLAB_ROOT to an Isaac Lab installation containing isaaclab.sh." >&2
   exit 3
 fi
 mkdir -p "$OUTPUT_DIRECTORY"
@@ -25,7 +27,13 @@ run_case() {
   local jerk="$4"
   local deadman="$5"
   local actuator_profile="$6"
-  "$ISAACLAB_RUNNER" -p "$PROJECT_ROOT/scripts/sim/isaac-g1-replay.py" \
+  local command=()
+  if [[ -n "$ISAAC_PYTHON" ]]; then
+    command=("$ISAAC_PYTHON")
+  else
+    command=("$ISAACLAB_RUNNER" -p)
+  fi
+  "${command[@]}" "$PROJECT_ROOT/scripts/sim/isaac-g1-replay.py" \
     "$REPLAY_JSON" \
     --output "$OUTPUT_DIRECTORY/$name.json" \
     --project-root "$PROJECT_ROOT" \
@@ -36,7 +44,8 @@ run_case() {
     --max-acceleration "$acceleration" \
     --max-jerk "$jerk" \
     --deadman-s "$deadman" \
-    --actuator-profile "$actuator_profile"
+    --actuator-profile "$actuator_profile" \
+    2>&1 | tee "$OUTPUT_DIRECTORY/$name.log"
 }
 
 run_case baseline_official 1.0 4.0 30.0 0.75 unitree_official

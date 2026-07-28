@@ -32,6 +32,18 @@ parser.add_argument("--max-jerk", type=float, default=30.0)
 parser.add_argument("--deadman-s", type=float, default=0.75)
 parser.add_argument("--tail-s", type=float, default=2.0)
 parser.add_argument(
+    "--max-replay-s",
+    type=float,
+    default=None,
+    help="optional smoke-test cap; full validation leaves this unset",
+)
+parser.add_argument(
+    "--progress-interval-s",
+    type=float,
+    default=10.0,
+    help="simulated seconds between progress records",
+)
+parser.add_argument(
     "--actuator-profile",
     choices=("unitree_official", "sdk_numeric"),
     default="unitree_official",
@@ -53,12 +65,27 @@ args = parser.parse_args()
 # Make the single-G1 validation process genuinely single-GPU before Kit starts;
 # a late Kit setting still allows its IOMMU P2P probe to run on dual-GPU hosts.
 args.multi_gpu = False
+# The dual-3090 validation host has IOMMU enabled. Isaac's optional CUDA P2P
+# diagnostic can stall before the stage opens even though one-GPU PhysX works.
+# Disable only those startup diagnostics; physics and collision checking remain
+# on the requested CUDA device.
+required_kit_args = (
+    "--/validate/iommu/enabled=false --/validate/p2p/enabled=false "
+    "--/renderer/multiGpu/enabled=false --/renderer/multiGpu/autoEnable=false"
+)
+args.kit_args = f"{required_kit_args} {args.kit_args or ''}".strip()
 
 if args.physics_hz < 100.0 or args.physics_hz > 250.0:
     parser.error("--physics-hz must be between 100 and 250")
 for name in ("max_velocity", "max_acceleration", "max_jerk", "deadman_s", "tail_s"):
     if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0.0:
         parser.error(f"--{name.replace('_', '-')} must be finite and positive")
+if args.max_replay_s is not None and (
+    not math.isfinite(args.max_replay_s) or args.max_replay_s <= 0.0
+):
+    parser.error("--max-replay-s must be finite and positive")
+if not math.isfinite(args.progress_interval_s) or args.progress_interval_s <= 0.0:
+    parser.error("--progress-interval-s must be finite and positive")
 
 # The official Unitree asset configuration reads PROJECT_ROOT at import time.
 unitree_root = args.unitree_sim_root.resolve()
@@ -493,16 +520,38 @@ def main() -> int:
     playback_start = clock.monotonic
     frame_index = 0
     sequence = 0
-    final_time = float(frames[-1]["time_s"]) + args.tail_s
+    full_replay_time = float(frames[-1]["time_s"]) + args.tail_s
+    final_time = (
+        full_replay_time
+        if args.max_replay_s is None
+        else min(full_replay_time, args.max_replay_s)
+    )
     minimum_hand_distance = float("inf")
     proximity_steps = 0
     tracking_errors: list[float] = []
     states: dict[str, int] = {}
     target_rejections: dict[str, int] = {}
     started_wall = time.perf_counter()
+    next_progress_at = 0.0
     initial_bunny = tensor(bunny.data.root_pos_w)[0].clone()
     while simulation_app.is_running() and clock.monotonic - playback_start <= final_time:
         elapsed = clock.monotonic - playback_start
+        if elapsed >= next_progress_at:
+            print(
+                json.dumps(
+                    {
+                        "event": "isaac_replay_progress",
+                        "elapsed_s": round(elapsed, 3),
+                        "final_time_s": round(final_time, 3),
+                        "controller_state": controller.state.value,
+                        "frame_index": frame_index,
+                        "target_sequence": sequence,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            next_progress_at += args.progress_interval_s
         while frame_index < len(frames) and float(frames[frame_index]["time_s"]) <= elapsed:
             frame = frames[frame_index]
             if frame.get("status") == "target_sent" and isinstance(
