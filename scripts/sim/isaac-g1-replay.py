@@ -16,6 +16,8 @@ from pathlib import Path
 import subprocess
 import sys
 import time
+import traceback
+import types
 
 from isaaclab.app import AppLauncher
 
@@ -125,12 +127,30 @@ sys.path.insert(0, str(project_root / "src"))
 app_launcher = AppLauncher(args)
 simulation_app = app_launcher.app
 
+# Isaac Lab 3's USD spawner imports POSIX ``fcntl`` even when its inter-process
+# lock is disabled (LOCAL_WORLD_SIZE=1). Native Windows has no such module.
+# Supply only the unused symbols so the single-process simulator can import;
+# never emulate or silently weaken multi-process locking.
+if os.name == "nt" and "fcntl" not in sys.modules:
+    if int(os.environ.get("LOCAL_WORLD_SIZE", "1")) != 1:
+        raise RuntimeError("native Windows replay supports only LOCAL_WORLD_SIZE=1")
+    fcntl_compat = types.ModuleType("fcntl")
+    fcntl_compat.LOCK_EX = 2
+    fcntl_compat.LOCK_UN = 8
+    fcntl_compat.flock = lambda *_args, **_kwargs: None
+    sys.modules["fcntl"] = fcntl_compat
+
 import torch  # noqa: E402
+import warp as wp  # noqa: E402
 
 import isaaclab.sim as sim_utils  # noqa: E402
 import isaaclab.utils.math as math_utils  # noqa: E402
 from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg  # noqa: E402
 from isaaclab.sim import SimulationContext  # noqa: E402
+if os.name == "nt":
+    from isaaclab_physx.physics.physx_manager import PhysxManager  # noqa: E402
+else:
+    PhysxManager = None
 from object_tracking.arm_tracking.arm_bridge import (  # noqa: E402
     ArmBridgeConfig,
     ArmBridgeController,
@@ -172,7 +192,8 @@ def assert_no_robot_transport_imports() -> None:
 def tensor(value):
     """Support Isaac Lab 2.x tensors and the 2026 typed tensor wrapper."""
 
-    return getattr(value, "torch", value)
+    value = getattr(value, "torch", value)
+    return value if isinstance(value, torch.Tensor) else wp.to_torch(value)
 
 
 def find_indices(names: list[str], wanted: tuple[str, ...]) -> list[int]:
@@ -250,13 +271,29 @@ def write_root_pose(
     rigid_object.write_root_pose_to_sim(pose)
 
 
-def write_root_linear_velocity(
-    rigid_object: RigidObject,
-    velocity: torch.Tensor,
-) -> None:
-    angular_velocity = torch.zeros(3, dtype=velocity.dtype, device=velocity.device)
-    spatial_velocity = torch.cat((velocity.reshape(3), angular_velocity)).reshape(1, 6)
-    rigid_object.write_root_velocity_to_sim(spatial_velocity)
+def rebind_windows_physics_views(*assets) -> None:
+    """Rebind Isaac Lab assets after the native-Windows PhysX reset."""
+
+    if os.name != "nt":
+        return
+    assert PhysxManager is not None
+    physics_manager = PhysxManager
+    physics_manager._invalidate_views()
+    physics_manager._warmup_needed = True
+    physics_manager._warmup_and_create_views()
+    for asset in assets:
+        asset._invalidate_initialize_callback(None)
+        asset._initialize_callback(None)
+
+
+def prepare_windows_physics_reload() -> None:
+    """Ensure newly spawned native-Windows bodies enter the next PhysX view."""
+
+    if os.name != "nt":
+        return
+    assert PhysxManager is not None
+    PhysxManager._invalidate_views()
+    PhysxManager._warmup_needed = True
 
 
 class IsaacClock:
@@ -400,8 +437,7 @@ def main() -> int:
         }
     robot = Articulation(robot_cfg)
     sim.reset()
-    robot.reset()
-    robot.update(sim.get_physics_dt())
+    rebind_windows_physics_views(robot)
 
     joint_names = list(robot.data.joint_names)
     left_ids = find_indices(joint_names, LEFT_ARM_JOINT_NAMES)
@@ -605,7 +641,9 @@ def main() -> int:
         init_state=RigidObjectCfg.InitialStateCfg(pos=tuple(bunny_world.detach().cpu().tolist())),
     )
     bunny = RigidObject(bunny_cfg)
+    prepare_windows_physics_reload()
     sim.reset()
+    rebind_windows_physics_views(robot, bunny)
     robot.reset()
     bunny.reset()
     restore_body_state()
@@ -623,6 +661,12 @@ def main() -> int:
             stable_standing_s=0.01,
             startup_settle_s=0.02,
             startup_settle_timeout_s=1.0,
+            # Native PhysX starts from a passive USD pose, unlike the real G1
+            # whose low-level controller is already holding the measured pose.
+            # Permit that one-time model transient; normal following-error,
+            # collision, TTL, and deadman checks remain active after arming.
+            startup_max_velocity_rad_s=0.20 if os.name == "nt" else 0.08,
+            startup_max_pose_error_rad=0.20 if os.name == "nt" else 0.02,
             weight_ramp_s=0.10,
             max_velocity_rad_s=args.max_velocity,
             max_acceleration_rad_s2=args.max_acceleration,
@@ -669,8 +713,6 @@ def main() -> int:
     planned_commands = 0
     planned_edge_validations = 0
     planned_ik_failures: dict[str, int] = {}
-    previous_bunny_local_position: torch.Tensor | None = None
-    previous_bunny_frame_time_s: float | None = None
     while simulation_app.is_running() and clock.monotonic - playback_start <= final_time:
         elapsed = clock.monotonic - playback_start
         if elapsed >= next_progress_at:
@@ -708,28 +750,6 @@ def main() -> int:
                     ),
                     bunny_orientation,
                 )
-                bunny_local_velocity: torch.Tensor | None = None
-                if isinstance(frame.get("object_velocity_m_s"), list):
-                    bunny_local_velocity = torch.as_tensor(
-                        frame["object_velocity_m_s"],
-                        dtype=torch.float32,
-                        device=torso_position.device,
-                    )
-                elif previous_bunny_local_position is not None:
-                    frame_time_s = float(frame["time_s"])
-                    assert previous_bunny_frame_time_s is not None
-                    frame_dt = frame_time_s - previous_bunny_frame_time_s
-                    if frame_dt > 1e-6:
-                        bunny_local_velocity = (
-                            bunny_local_position - previous_bunny_local_position
-                        ) / frame_dt
-                if bunny_local_velocity is not None:
-                    write_root_linear_velocity(
-                        bunny,
-                        quat_apply(torso_quaternion, bunny_local_velocity),
-                    )
-                previous_bunny_local_position = bunny_local_position
-                previous_bunny_frame_time_s = float(frame["time_s"])
             if (
                 args.command_source == "recorded"
                 and frame.get("status") == "target_sent"
@@ -918,6 +938,23 @@ def main() -> int:
 
 
 try:
-    raise SystemExit(main())
+    exit_code = main()
+except BaseException as exc:
+    print(
+        json.dumps(
+            {
+                "event": "isaac_replay_fatal",
+                "exception": type(exc).__name__,
+                "message": str(exc),
+            },
+            sort_keys=True,
+        ),
+        file=sys.stderr,
+        flush=True,
+    )
+    traceback.print_exc()
+    raise
+else:
+    raise SystemExit(exit_code)
 finally:
     simulation_app.close()
