@@ -38,6 +38,20 @@ def passing_result() -> dict[str, object]:
     }
 
 
+def provenance() -> dict[str, object]:
+    return {
+        "schema_version": 1,
+        "project_commit": "project-commit",
+        "project_tracked_dirty": False,
+        "unitree_sim_commit": "unitree-commit",
+        "manifest_sha256": "manifest-hash",
+        "intercept_config_sha256": "config-hash",
+        "runner_sha256": "runner-hash",
+        "planner_sha256": "planner-hash",
+        "planner_urdf_sha256": "urdf-hash",
+    }
+
+
 def test_intercept_matrix_generator_is_complete_and_reproducible(tmp_path: Path) -> None:
     root = Path(__file__).resolve().parents[1]
     command = [
@@ -86,6 +100,44 @@ def test_intercept_matrix_generator_is_complete_and_reproducible(tmp_path: Path)
     )
 
 
+def test_single_result_preflight_fails_fast_on_provenance_or_contact(
+    tmp_path: Path,
+) -> None:
+    root = Path(__file__).resolve().parents[1]
+    scenario = tmp_path / "scenario.json"
+    scenario.write_text('{"schema_version":1}\\n')
+    provenance_path = tmp_path / "provenance.json"
+    provenance_path.write_text(json.dumps(provenance()))
+    result_path = tmp_path / "result.json"
+    value = passing_result()
+    value["replay_sha256"] = hashlib.sha256(scenario.read_bytes()).hexdigest()
+    result_path.write_text(json.dumps(value))
+    command = [
+        sys.executable,
+        str(root / "scripts/sim/audit-single-intercept-result.py"),
+        str(result_path),
+        str(provenance_path),
+        str(scenario),
+    ]
+
+    passed = subprocess.run(command, cwd=root, capture_output=True, text=True)
+    assert passed.returncode == 0, passed.stdout + passed.stderr
+
+    value["project_commit"] = "wrong-commit"
+    result_path.write_text(json.dumps(value))
+    mismatch = subprocess.run(command, cwd=root, capture_output=True, text=True)
+    assert mismatch.returncode == 1
+    assert "project_commit mismatch" in mismatch.stdout
+
+    value = passing_result()
+    value["replay_sha256"] = hashlib.sha256(scenario.read_bytes()).hexdigest()
+    value["contact"] = {"maximum_force_n": 0.0, "duration_s": 0.0}
+    result_path.write_text(json.dumps(value))
+    no_contact = subprocess.run(command, cwd=root, capture_output=True, text=True)
+    assert no_contact.returncode == 1
+    assert "no >1 N hand/plush contact" in no_contact.stdout
+
+
 def test_matrix_summary_requires_every_canonical_streak_and_95_percent_heldout(
     tmp_path: Path,
 ) -> None:
@@ -117,21 +169,11 @@ def test_matrix_summary_requires_every_canonical_streak_and_95_percent_heldout(
             }
         )
     )
-    (tmp_path / "provenance.json").write_text(
-        json.dumps(
-            {
-                "schema_version": 1,
-                "project_commit": "project-commit",
-                "project_tracked_dirty": False,
-                "unitree_sim_commit": "unitree-commit",
-                "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
-                "intercept_config_sha256": "config-hash",
-                "runner_sha256": "runner-hash",
-                "planner_sha256": "planner-hash",
-                "planner_urdf_sha256": "urdf-hash",
-            }
-        )
-    )
+    matrix_provenance = provenance()
+    matrix_provenance["manifest_sha256"] = hashlib.sha256(
+        manifest_path.read_bytes()
+    ).hexdigest()
+    (tmp_path / "provenance.json").write_text(json.dumps(matrix_provenance))
     for case in cases:
         for repetition in range(case["repetitions"]):
             (results / f"{case['name']}__r{repetition:02d}.json").write_text(
