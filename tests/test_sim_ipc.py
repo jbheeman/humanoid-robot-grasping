@@ -6,6 +6,7 @@ import sys
 import time
 
 import numpy as np
+import pytest
 
 from object_tracking.arm_tracking.geometry import Plane, SupportRegion
 from object_tracking.arm_tracking.joints import joint_contract_id
@@ -17,6 +18,7 @@ from object_tracking.arm_tracking.sim_closed_loop import (
     encode_message,
 )
 from object_tracking.arm_tracking.sim_ipc import LatestPlannerProcess
+from object_tracking.arm_tracking.trajectory import minimum_ruckig_duration_s
 
 
 def state(sequence: int) -> SimState:
@@ -166,3 +168,182 @@ runpy.run_path(script, run_name="__main__")
     assert response.status == "preview"
     assert response.reason == "current_detection_missing"
     assert b"sim_planner_ready" in completed.stderr
+
+
+@pytest.mark.parametrize("bunny_x_m", (0.33, 0.36, 0.40))
+def test_actual_worker_plans_captured_lab_preview_intercept(bunny_x_m: float) -> None:
+    root = Path(__file__).resolve().parents[1]
+    worker = root / "scripts/sim/g1-closed-loop-planner.py"
+    start_q = (
+        0.2891673744,
+        -0.1298251152,
+        0.0039188415,
+        0.9780925512,
+        -0.1113813892,
+        -0.0022170816,
+        -0.0082091941,
+    )
+    body_q = [0.0] * 29
+    body_q[22:29] = start_q
+    origin = np.asarray((0.2622941631, 0.0478690107, 0.0129425348))
+    axis_u = np.asarray((0.9993987830, -0.0065124773, 0.0340537822))
+    axis_v = np.asarray((-0.0064480827, -0.9999772100, -0.0020004504))
+    normal = -np.cross(axis_u, axis_v)
+    support = SupportRegion(
+        plane=Plane(normal, -float(normal @ origin)),
+        origin=origin,
+        axis_u=axis_u,
+        axis_v=axis_v,
+        minimum_uv=(0.0, -0.3545687169),
+        maximum_uv=(0.34, 0.3254312831),
+        certified_edges=("u_min",),
+        edge_sources=(("u_min", "calibrated_pixel_near_edge"),),
+        lateral_margin_m=0.07,
+        source="captured_lab",
+    )
+    message = SimState(
+        episode_id=f"captured-lab-{bunny_x_m:.2f}",
+        sequence=1,
+        simulation_time_s=0.0,
+        calibration_id="lab-sim",
+        joint_contract_id=joint_contract_id(),
+        body_q_rad=tuple(body_q),
+        body_dq_rad_s=(0.0,) * 29,
+        support_region=support,
+        object_observation=ObjectObservation(
+            track_id=1,
+            class_name="bunny",
+            confidence=0.9,
+            position_m=(bunny_x_m, 0.30, 0.15),
+            velocity_m_s=(0.0, -0.05, 0.0),
+            observation_time_s=0.0,
+            consecutive_observations=2,
+            residual_m=0.0,
+        ),
+    )
+
+    completed = subprocess.run(
+        [
+            sys.executable,
+            "-u",
+            str(worker),
+            "--project-root",
+            str(root),
+            "--intercept-config",
+            str(root / "tests/fixtures/lab-intercept-sim.yaml"),
+        ],
+        cwd=root,
+        input=encode_message(message),
+        capture_output=True,
+        timeout=90.0,
+    )
+
+    assert completed.returncode == 0, completed.stderr.decode()
+    response = decode_message(completed.stdout.splitlines()[0])
+    assert isinstance(response, SimCommand)
+    assert response.status == "target"
+    assert response.reason.startswith("preview_stage:adaptive_table_approach")
+    assert response.right_arm_q_rad is not None
+    assert response.remaining_ruckig_duration_s is not None
+    assert response.crossing_time_from_now_s is not None
+    assert response.remaining_ruckig_duration_s < response.crossing_time_from_now_s
+
+
+def test_actual_worker_closes_loop_through_captured_approach() -> None:
+    root = Path(__file__).resolve().parents[1]
+    start_q = (
+        0.2891673744,
+        -0.1298251152,
+        0.0039188415,
+        0.9780925512,
+        -0.1113813892,
+        -0.0022170816,
+        -0.0082091941,
+    )
+    origin = np.asarray((0.2622941631, 0.0478690107, 0.0129425348))
+    axis_u = np.asarray((0.9993987830, -0.0065124773, 0.0340537822))
+    axis_v = np.asarray((-0.0064480827, -0.9999772100, -0.0020004504))
+    normal = -np.cross(axis_u, axis_v)
+    support = SupportRegion(
+        plane=Plane(normal, -float(normal @ origin)),
+        origin=origin,
+        axis_u=axis_u,
+        axis_v=axis_v,
+        minimum_uv=(0.0, -0.3545687169),
+        maximum_uv=(0.34, 0.3254312831),
+        certified_edges=("u_min",),
+        edge_sources=(("u_min", "calibrated_pixel_near_edge"),),
+        lateral_margin_m=0.07,
+        source="captured_lab",
+    )
+    process = subprocess.Popen(
+        [
+            sys.executable,
+            "-u",
+            str(root / "scripts/sim/g1-closed-loop-planner.py"),
+            "--project-root",
+            str(root),
+            "--intercept-config",
+            str(root / "tests/fixtures/lab-intercept-sim.yaml"),
+        ],
+        cwd=root,
+        stdin=subprocess.PIPE,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+    )
+    assert process.stdin is not None and process.stdout is not None
+    q = start_q
+    sim_time = 0.0
+    reasons: list[str] = []
+    try:
+        for sequence in range(1, 16):
+            body_q = [0.0] * 29
+            body_q[22:29] = q
+            state = SimState(
+                episode_id="captured-closed-loop",
+                sequence=sequence,
+                simulation_time_s=sim_time,
+                calibration_id="lab-sim",
+                joint_contract_id=joint_contract_id(),
+                body_q_rad=tuple(body_q),
+                body_dq_rad_s=(0.0,) * 29,
+                support_region=support,
+                object_observation=ObjectObservation(
+                    track_id=1,
+                    class_name="bunny",
+                    confidence=0.9,
+                    position_m=(0.36, 0.30 - 0.05 * sim_time, 0.15),
+                    velocity_m_s=(0.0, -0.05, 0.0),
+                    observation_time_s=sim_time,
+                    consecutive_observations=sequence + 1,
+                    residual_m=0.0,
+                ),
+            )
+            process.stdin.write(encode_message(state))
+            process.stdin.flush()
+            response = decode_message(process.stdout.readline())
+            assert isinstance(response, SimCommand)
+            assert response.status == "target", response.reason
+            assert response.right_arm_q_rad is not None
+            reasons.append(response.reason)
+            edge_duration = minimum_ruckig_duration_s(
+                current_position=q,
+                target_position=response.right_arm_q_rad,
+                maximum_velocity=1.0,
+                maximum_acceleration=4.0,
+                maximum_jerk=30.0,
+            )
+            q = response.right_arm_q_rad
+            sim_time += max(edge_duration, 1.0 / 30.0)
+            if "intercept_local_translation" in response.reason:
+                break
+        else:
+            pytest.fail(f"approach did not complete: {reasons}")
+    finally:
+        process.stdin.close()
+        process.wait(timeout=5.0)
+
+    assert process.returncode == 0
+    assert reasons[0].startswith("preview_stage:adaptive_table_approach")
+    assert "intercept_local_translation" in reasons[-1]
+    assert sim_time < 8.0

@@ -51,6 +51,7 @@ class ClosedLoopInterceptionPlanner:
         self.sequence_gate = SequenceGate()
         self._path: tuple[tuple[float, ...], ...] | None = None
         self._path_index = 1
+        self._validated_path_index: int | None = None
         self._last_observation_time_s: float | None = None
 
     def plan(self, state: SimState) -> SimCommand:
@@ -243,6 +244,7 @@ class ClosedLoopInterceptionPlanner:
                 if self._path is None:
                     return None, "ik_approach_path_compression", ()
                 self._path_index = 1
+                self._validated_path_index = None
             waypoint, self._path_index, error = select_start_escape_waypoint(
                 measured_q,
                 self._path,
@@ -254,18 +256,26 @@ class ClosedLoopInterceptionPlanner:
                 self._reset_path()
                 return None, f"ik_{error}", ()
             if waypoint is not None:
-                if not ruckig_edge_is_valid(
-                    self.solver,
-                    measured_q,
-                    waypoint,
-                    support_plane=state.support_region,
-                    maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
-                    maximum_acceleration_rad_s2=self.config.maximum_acceleration_rad_s2,
-                    maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
-                    current_velocity_rad_s=state.right_arm_dq_rad_s,
-                ):
-                    self._reset_path()
-                    return None, "ik_measured_edge:ruckig_path_invalid", ()
+                # The bridge keeps one online Ruckig trajectory alive while a
+                # waypoint is active. Recalculating an offline zero-acceleration
+                # trajectory from every mid-edge measurement can invent a
+                # different overshoot and reject an edge that is already being
+                # executed safely. Validate once when the waypoint changes;
+                # measured-state corridor checks above remain active per frame.
+                if self._validated_path_index != self._path_index:
+                    if not ruckig_edge_is_valid(
+                        self.solver,
+                        measured_q,
+                        waypoint,
+                        support_plane=state.support_region,
+                        maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
+                        maximum_acceleration_rad_s2=self.config.maximum_acceleration_rad_s2,
+                        maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
+                        current_velocity_rad_s=state.right_arm_dq_rad_s,
+                    ):
+                        self._reset_path()
+                        return None, "ik_measured_edge:ruckig_path_invalid", ()
+                    self._validated_path_index = self._path_index
                 return (
                     waypoint,
                     route if "route" in locals() else "table_approach",
@@ -287,6 +297,7 @@ class ClosedLoopInterceptionPlanner:
     def _reset_path(self) -> None:
         self._path = None
         self._path_index = 1
+        self._validated_path_index = None
 
     def _response(
         self,

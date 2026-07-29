@@ -1,0 +1,32 @@
+schema_version: 1
+calibration_id: lab-sim
+plane_point_m: [0.36, -0.10, 0.15]
+plane_normal: [0.0, 1.0, 0.0]
+crossing_minimum_m: [0.30, -0.12, 0.12]
+crossing_maximum_m: [0.45, -0.08, 0.18]
+wanted_classes: [bunny]
+minimum_confidence: 0.55
+ready_right_arm_q_rad:
+  [-0.5498692, -0.1624246, -0.1197910, 0.3949479, -0.0245653, 0.1995440, 0.0003756]
+ready_pose_tolerance_rad: 0.05
+lane_facing_palm_normal: [0.0, 1.0, 0.0]
+minimum_observations: 2
+maximum_residual_m: 0.03
+commit_horizon_s: 0.50
+post_crossing_hold_s: 0.10
+revalidation_tolerance_m: 0.025
+minimum_deadline_slack_s: 0.05
+perception_ttl_s: 0.25
+preview_staging_enabled: true
+validated_for_execution: false
+planner:
+  compute_delay_s: 0.02
+  command_delay_s: 0.03
+  maximum_palm_speed_m_s: 0.50
+  maximum_palm_acceleration_m_s2: 2.0
+  settle_time_s: 0.05
+  bunny_contact_radius_m: 0.055
+  palm_half_thickness_m: 0.012
+  minimum_object_speed_m_s: 0.025
+  maximum_crossing_horizon_s: 10.0
+  maximum_orientation_error_rad: 0.436332

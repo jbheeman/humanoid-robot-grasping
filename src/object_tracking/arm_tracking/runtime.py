@@ -681,6 +681,7 @@ class ArmTrackingRuntime:
         self._start_escape_target_index = 1
         self._approach_path: tuple[tuple[float, ...], ...] | None = None
         self._approach_target_index = 1
+        self._approach_validated_target_index: int | None = None
         self._approach_target_xyz: tuple[float, float, float] | None = None
         self._approach_last_advance_q: tuple[float, ...] | None = None
         self._approach_raw_waypoint_count: int | None = None
@@ -921,6 +922,7 @@ class ArmTrackingRuntime:
             self.filter.reset()
             self._approach_path = None
             self._approach_target_index = 1
+            self._approach_validated_target_index = None
             self._approach_target_xyz = None
             self._approach_last_advance_q = None
             self._approach_raw_waypoint_count = None
@@ -1230,6 +1232,7 @@ class ArmTrackingRuntime:
                 > 0.03
             ):
                 self._approach_path = None
+                self._approach_validated_target_index = None
                 self._approach_target_xyz = None
                 self._approach_last_advance_q = None
                 self._approach_raw_waypoint_count = None
@@ -1315,6 +1318,7 @@ class ArmTrackingRuntime:
                 self._approach_raw_waypoint_count = len(raw_approach_path)
                 self._approach_path = compressed_path
                 self._approach_target_index = 1
+                self._approach_validated_target_index = None
                 self._approach_target_xyz = tuple(float(value) for value in target.position)
                 self._approach_last_advance_q = tuple(float(value) for value in last_q)
                 self._approach_completed = False
@@ -1351,36 +1355,41 @@ class ArmTrackingRuntime:
                 self._approach_last_advance_q = tuple(float(value) for value in last_q)
             if selection_error is not None:
                 self._approach_path = None
+                self._approach_validated_target_index = None
                 self._approach_target_xyz = None
                 self._approach_last_advance_q = None
                 self._approach_raw_waypoint_count = None
                 self._reject(base_status, f"ik_{selection_error}", colormap)
                 return
             if waypoint is not None:
-                measured_velocity = measured_right_arm_velocity(arm_state) or (0.0,) * 7
-                if not ruckig_edge_is_valid(
-                    self.ik,
-                    last_q,
-                    waypoint,
-                    support_plane=plane,
-                    maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
-                    maximum_acceleration_rad_s2=self.config.maximum_acceleration_rad_s2,
-                    maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
-                    current_velocity_rad_s=measured_velocity,
-                ):
-                    self._approach_path = None
-                    self._approach_target_xyz = None
-                    self._approach_last_advance_q = None
-                    self._approach_raw_waypoint_count = None
-                    self._reject(
-                        base_status,
-                        "ik_measured_edge:ruckig_path_invalid",
-                        colormap,
-                    )
-                    return
+                if self._approach_validated_target_index != self._approach_target_index:
+                    measured_velocity = measured_right_arm_velocity(arm_state) or (0.0,) * 7
+                    if not ruckig_edge_is_valid(
+                        self.ik,
+                        last_q,
+                        waypoint,
+                        support_plane=plane,
+                        maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
+                        maximum_acceleration_rad_s2=self.config.maximum_acceleration_rad_s2,
+                        maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
+                        current_velocity_rad_s=measured_velocity,
+                    ):
+                        self._approach_path = None
+                        self._approach_validated_target_index = None
+                        self._approach_target_xyz = None
+                        self._approach_last_advance_q = None
+                        self._approach_raw_waypoint_count = None
+                        self._reject(
+                            base_status,
+                            "ik_measured_edge:ruckig_path_invalid",
+                            colormap,
+                        )
+                        return
+                    self._approach_validated_target_index = self._approach_target_index
             if waypoint is None:
                 self._approach_path = None
                 self._approach_target_index = 1
+                self._approach_validated_target_index = None
                 self._approach_target_xyz = None
                 self._approach_last_advance_q = None
                 self._approach_raw_waypoint_count = None
@@ -2020,6 +2029,7 @@ class ArmTrackingRuntime:
         self._start_escape_target_index = 1
         self._approach_path = None
         self._approach_target_index = 1
+        self._approach_validated_target_index = None
         self._approach_target_xyz = None
         self._approach_last_advance_q = None
         self._approach_raw_waypoint_count = None
