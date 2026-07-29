@@ -1140,7 +1140,7 @@ def main() -> int:
                 current_bunny_velocity = tuple(
                     float(value) for value in frame["object_velocity_m_s"]
                 )
-            if args.bunny_motion == "ballistic":
+            if args.bunny_motion == "ballistic" and contact_steps > 0:
                 current_bunny_local = tuple(
                     float(value)
                     for value in world_to_local(
@@ -1152,17 +1152,16 @@ def main() -> int:
                     .cpu()
                     .tolist()
                 )
-                if contact_steps > 0:
-                    current_bunny_velocity = tuple(
-                        float(value)
-                        for value in world_vector_to_local(
-                            torso_quaternion,
-                            tensor(bunny.data.root_lin_vel_w)[0],
-                        )
-                        .detach()
-                        .cpu()
-                        .tolist()
+                current_bunny_velocity = tuple(
+                    float(value)
+                    for value in world_vector_to_local(
+                        torso_quaternion,
+                        tensor(bunny.data.root_lin_vel_w)[0],
                     )
+                    .detach()
+                    .cpu()
+                    .tolist()
+                )
             if isinstance(frame.get("object_xyz_m"), list):
                 pending_object_observation = ObjectObservation(
                     track_id=int(frame.get("track_id") or 1),
