@@ -193,7 +193,15 @@ class MujocoArmHardware:
         pass
 
 
-def load_model(mujoco: Any, urdf: Path, timestep_s: float) -> tuple[Any, Any]:
+def load_model(
+    mujoco: Any,
+    urdf: Path,
+    timestep_s: float,
+    *,
+    belt_bunny_xyz_m: tuple[float, float, float] | None = None,
+    bunny_radius_m: float = 0.055,
+    bunny_mass_kg: float = 0.15,
+) -> tuple[Any, Any]:
     xml = urdf.read_text(encoding="utf-8").replace(
         '<compiler meshdir="meshes" discardvisual="false"/>',
         '<compiler discardvisual="false"/>',
@@ -211,6 +219,28 @@ def load_model(mujoco: Any, urdf: Path, timestep_s: float) -> tuple[Any, Any]:
     for joint in tuple(spec.joints):
         if joint.name and joint.name not in RIGHT_ARM_JOINT_NAMES:
             spec.delete(joint)
+    if belt_bunny_xyz_m is not None:
+        bunny = spec.worldbody.add_body()
+        bunny.name = "belt_bunny"
+        bunny.pos = np.asarray(belt_bunny_xyz_m, dtype=float)
+        lane = bunny.add_joint()
+        lane.name = "belt_bunny_lane"
+        lane.type = mujoco.mjtJoint.mjJNT_SLIDE
+        lane.axis = np.asarray((0.0, 1.0, 0.0))
+        lane.damping[0] = 0.001
+        bunny_geom = bunny.add_geom()
+        bunny_geom.name = "belt_bunny_geom"
+        bunny_geom.type = mujoco.mjtGeom.mjGEOM_SPHERE
+        bunny_geom.size[0] = bunny_radius_m
+        bunny_geom.mass = bunny_mass_kg
+
+        table = spec.worldbody.add_body()
+        table.name = "tabletop"
+        table.pos = np.asarray((0.43, 0.06, 0.0025))
+        table_geom = table.add_geom()
+        table_geom.name = "tabletop_geom"
+        table_geom.type = mujoco.mjtGeom.mjGEOM_BOX
+        table_geom.size = np.asarray((0.17, 0.34, 0.01))
     spec.option.timestep = timestep_s
     spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
     model = spec.compile()
@@ -220,10 +250,45 @@ def load_model(mujoco: Any, urdf: Path, timestep_s: float) -> tuple[Any, Any]:
     # separately by the Isaac scene.
     model.geom_contype[:] = 0
     model.geom_conaffinity[:] = 0
+    if belt_bunny_xyz_m is not None:
+        # Enable only the wrist-yaw/Dex hand subtree against the lane bunny
+        # and table. This avoids the adjacent-link URDF contacts that Unitree's
+        # upstream exclusion table normally filters while retaining real
+        # contact impulses at the demo interaction surfaces.
+        hand_body = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_BODY,
+            "right_wrist_yaw_link",
+        )
+        for geometry_index in range(model.ngeom):
+            if model.geom_bodyid[geometry_index] == hand_body:
+                model.geom_contype[geometry_index] = 1
+                model.geom_conaffinity[geometry_index] = 2 | 4
+        bunny_geometry = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_GEOM,
+            "belt_bunny_geom",
+        )
+        table_geometry = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_GEOM,
+            "tabletop_geom",
+        )
+        model.geom_contype[bunny_geometry] = 2
+        model.geom_conaffinity[bunny_geometry] = 1
+        model.geom_contype[table_geometry] = 4
+        model.geom_conaffinity[table_geometry] = 1
     # The arm_sdk derivative term is joint-local. Encoding its -kd*dq half as
     # passive damping lets MuJoCo integrate that stiff term implicitly; the
     # desired-velocity half remains in the applied command above.
     model.dof_damping[:] = 3.0
+    if belt_bunny_xyz_m is not None:
+        bunny_joint = mujoco.mj_name2id(
+            model,
+            mujoco.mjtObj.mjOBJ_JOINT,
+            "belt_bunny_lane",
+        )
+        model.dof_damping[model.jnt_dofadr[bunny_joint]] = 0.001
     data = mujoco.MjData(model)
     return model, data
 

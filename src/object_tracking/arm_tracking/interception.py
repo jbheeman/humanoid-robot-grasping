@@ -467,7 +467,20 @@ class LiveInterceptController:
             else tuple(float(value) for value in plan.predicted_object_center_m)
         )
         crossing_time = None if plan is None else plan.crossing_time_from_now_s
+        if (
+            crossing_time is not None
+            and (not math.isfinite(crossing_time) or crossing_time < 0.0)
+        ):
+            # A reversed or already-passed bunny may retain the signed timing
+            # in the diagnostic InterceptPlan, but executable command
+            # contracts only carry non-negative future durations.
+            crossing_time = None
         arrival_slack = None if plan is None else plan.hold_time_s
+        if (
+            arrival_slack is not None
+            and (not math.isfinite(arrival_slack) or arrival_slack < 0.0)
+        ):
+            arrival_slack = None
         confirmation_age = (
             None
             if self.last_confirmation_s is None

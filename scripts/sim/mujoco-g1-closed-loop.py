@@ -45,10 +45,8 @@ def make_state(
     *,
     sequence: int,
     simulation_time_s: float,
-    speed_m_s: float,
-    bunny_x_m: float,
-    bunny_start_y_m: float,
-    bunny_z_m: float,
+    bunny_position_m: tuple[float, float, float],
+    bunny_velocity_m_s: tuple[float, float, float],
     dropout: bool,
 ) -> SimState:
     observation = None
@@ -57,12 +55,8 @@ def make_state(
             track_id=1,
             class_name="bunny",
             confidence=0.90,
-            position_m=(
-                bunny_x_m,
-                bunny_start_y_m - speed_m_s * simulation_time_s,
-                bunny_z_m,
-            ),
-            velocity_m_s=(0.0, -speed_m_s, 0.0),
+            position_m=bunny_position_m,
+            velocity_m_s=bunny_velocity_m_s,
             observation_time_s=simulation_time_s,
             consecutive_observations=max(1, sequence),
             residual_m=0.0,
@@ -149,7 +143,12 @@ def main() -> int:
     physics_dt = 1.0 / args.physics_hz
     control_dt = 1.0 / 250.0
     physics_stride = int(round(args.physics_hz / 250.0))
-    model, data = harness["load_model"](mujoco, urdf, physics_dt)
+    model, data = harness["load_model"](
+        mujoco,
+        urdf,
+        physics_dt,
+        belt_bunny_xyz_m=(args.bunny_x, args.bunny_start_y, args.bunny_z),
+    )
     initial_q = harness["body_state"]()
     harness["set_joint_positions"](mujoco, model, data, initial_q)
     support = harness["captured_support"]()
@@ -161,6 +160,35 @@ def main() -> int:
         clock,
         initial_q,
     )
+    bunny_joint = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_JOINT,
+        "belt_bunny_lane",
+    )
+    bunny_body = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_BODY,
+        "belt_bunny",
+    )
+    bunny_geometry = mujoco.mj_name2id(
+        model,
+        mujoco.mjtObj.mjOBJ_GEOM,
+        "belt_bunny_geom",
+    )
+    bunny_qpos_address = model.jnt_qposadr[bunny_joint]
+    bunny_dof_address = model.jnt_dofadr[bunny_joint]
+    data.qvel[bunny_dof_address] = -args.bunny_speed
+    mujoco.mj_forward(model, data)
+
+    def bunny_state() -> tuple[
+        tuple[float, float, float],
+        tuple[float, float, float],
+    ]:
+        return (
+            tuple(float(value) for value in data.xpos[bunny_body]),
+            (0.0, float(data.qvel[bunny_dof_address]), 0.0),
+        )
+
     solver = G1RightArmIK(urdf)
     client = LatestPlannerProcess(
         (
@@ -187,16 +215,15 @@ def main() -> int:
     first: SimCommand | None = None
     for _ in range(8):
         sequence += 1
+        bunny_position, bunny_velocity = bunny_state()
         client.submit(
             make_state(
                 hardware,
                 support,
                 sequence=sequence,
                 simulation_time_s=prewarm_time_s,
-                speed_m_s=args.bunny_speed,
-                bunny_x_m=args.bunny_x,
-                bunny_start_y_m=args.bunny_start_y,
-                bunny_z_m=args.bunny_z,
+                bunny_position_m=bunny_position,
+                bunny_velocity_m_s=bunny_velocity,
                 dropout=False,
             )
         )
@@ -269,6 +296,10 @@ def main() -> int:
     palm_clearances: list[float] = []
     right_side_samples: list[bool] = []
     measured_speeds: list[float] = []
+    contact_samples = 0
+    contact_impulse_ns = 0.0
+    maximum_contact_force_n = 0.0
+    first_contact_time_s: float | None = None
     target_arrival_times = [prewarm_time_s]
     applied_state_sequence = first.state_sequence
     submitted_at = prewarm_time_s
@@ -283,6 +314,8 @@ def main() -> int:
     initial_palm = solver.forward_kinematics(
         hardware.latest_state().arm_q[7:]
     )[:3, 3]
+    initial_bunny_lane_q = float(data.qpos[bunny_qpos_address])
+    initial_bunny_velocity_m_s = float(data.qvel[bunny_dof_address])
     wall_started = time.perf_counter()
     deadline = wall_started
     try:
@@ -296,16 +329,15 @@ def main() -> int:
                     <= live_time_s
                     < args.dropout_start + args.dropout_duration
                 )
+                bunny_position, bunny_velocity = bunny_state()
                 client.submit(
                     make_state(
                         hardware,
                         support,
                         sequence=sequence,
                         simulation_time_s=simulation_time_s,
-                        speed_m_s=args.bunny_speed,
-                        bunny_x_m=args.bunny_x,
-                        bunny_start_y_m=args.bunny_start_y,
-                        bunny_z_m=args.bunny_z,
+                        bunny_position_m=bunny_position,
+                        bunny_velocity_m_s=bunny_velocity,
                         dropout=dropout,
                     )
                 )
@@ -343,19 +375,35 @@ def main() -> int:
             hardware.apply_torques()
             for _ in range(physics_stride):
                 mujoco.mj_step(model, data)
+                for contact_index in range(data.ncon):
+                    contact = data.contact[contact_index]
+                    if bunny_geometry not in (contact.geom1, contact.geom2):
+                        continue
+                    other_geometry = (
+                        contact.geom2
+                        if contact.geom1 == bunny_geometry
+                        else contact.geom1
+                    )
+                    if model.geom_contype[other_geometry] != 1:
+                        continue
+                    force = np.zeros(6)
+                    mujoco.mj_contactForce(model, data, contact_index, force)
+                    normal_force_n = abs(float(force[0]))
+                    contact_samples += 1
+                    contact_impulse_ns += normal_force_n * physics_dt
+                    maximum_contact_force_n = max(
+                        maximum_contact_force_n,
+                        normal_force_n,
+                    )
+                    if first_contact_time_s is None:
+                        first_contact_time_s = live_time_s
                 clock.advance(physics_dt)
             simulation_time_s += control_dt
 
             measured = hardware.latest_state()
             measured_q_trace.append(measured.arm_q[7:])
             palm = solver.forward_kinematics(measured.arm_q[7:])[:3, 3]
-            bunny = np.asarray(
-                (
-                    args.bunny_x,
-                    args.bunny_start_y - args.bunny_speed * simulation_time_s,
-                    args.bunny_z,
-                )
-            )
+            bunny = np.asarray(bunny_state()[0])
             palm_distances.append(float(np.linalg.norm(palm - bunny)))
             palm_clearances.append(float(support.plane.signed_distance(palm)))
             right_side_samples.append(bool(palm[1] <= bunny[1] + 0.02))
@@ -414,11 +462,22 @@ def main() -> int:
 
     measured_path_failure = first_invalid_edge(measured_q_trace)
     commanded_path_failure = first_invalid_edge(commanded_q_trace)
+    final_bunny_velocity_m_s = float(data.qvel[bunny_dof_address])
+    expected_bunny_lane_q = (
+        initial_bunny_lane_q
+        + initial_bunny_velocity_m_s * (simulation_time_s - prewarm_time_s)
+    )
+    bunny_lane_deflection_m = float(
+        data.qpos[bunny_qpos_address] - expected_bunny_lane_q
+    )
+    bunny_velocity_change_m_s = float(
+        final_bunny_velocity_m_s - initial_bunny_velocity_m_s
+    )
     metrics = client.metrics()
     report = {
         "schema_version": 1,
         "simulator": f"mujoco-{mujoco.__version__}",
-        "scope": "right_arm_rigid_body_closed_loop_without_contact",
+        "scope": "right_arm_rigid_body_closed_loop_with_belt_bunny_contact",
         "transport_free": True,
         "duration_requested_s": args.duration,
         "duration_completed_s": simulation_time_s - prewarm_time_s,
@@ -483,6 +542,18 @@ def main() -> int:
             "tracking_error_rad_p95": percentile(tracking_errors, 95),
             "maximum_measured_speed_rad_s": max(measured_speeds, default=None),
         },
+        "contact": {
+            "physical_bunny": True,
+            "constraint": "belt_lane_slide_joint",
+            "contact_samples": contact_samples,
+            "contact_impulse_ns": contact_impulse_ns,
+            "maximum_contact_force_n": maximum_contact_force_n,
+            "first_contact_time_s": first_contact_time_s,
+            "initial_bunny_velocity_m_s": initial_bunny_velocity_m_s,
+            "final_bunny_velocity_m_s": final_bunny_velocity_m_s,
+            "bunny_velocity_change_m_s": bunny_velocity_change_m_s,
+            "bunny_lane_deflection_m": bunny_lane_deflection_m,
+        },
     }
     report["passed"] = bool(
         simulation_time_s - prewarm_time_s >= args.duration - control_dt
@@ -499,11 +570,15 @@ def main() -> int:
         and percentile(tracking_errors, 95) is not None
         and percentile(tracking_errors, 95) <= 0.10  # type: ignore[operator]
         and maximum_progress_m >= 0.10
-        and min(palm_distances, default=float("inf")) <= 0.09
         and measured_path_failure is None
         and commanded_path_failure is None
         and retraction_events == 0
         and sum(right_side_samples) / max(1, len(right_side_samples)) >= 0.90
+        and contact_samples > 0
+        and contact_impulse_ns >= 0.002
+        and contact_impulse_ns <= 1.0
+        and maximum_contact_force_n <= 15.0
+        and abs(bunny_velocity_change_m_s) >= 0.005
     )
     serialized = json.dumps(report, indent=2, sort_keys=True) + "\n"
     if args.output is not None:

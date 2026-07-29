@@ -270,6 +270,22 @@ def test_invalid_intercept_evidence_enters_hold(
     assert not decision.may_publish
 
 
+def test_passed_crossing_diagnostic_does_not_emit_negative_command_timing() -> None:
+    controller = LiveInterceptController(config())
+    candidate = replace(observation(), position_m=(0.3, -0.01, 0.1))
+
+    decision = controller.update(
+        candidate,
+        now_s=10.0,
+        palm_position_m=(0.3, -0.06, 0.1),
+    )
+
+    assert decision.reason == "planner_crossing_already_passed"
+    assert decision.plan is not None
+    assert decision.plan.crossing_time_from_now_s < 0.0
+    assert decision.crossing_time_from_now_s is None
+
+
 def test_missing_detection_before_commit_resets_to_acquiring_without_target() -> None:
     controller = LiveInterceptController(config())
     preview = controller.update(
