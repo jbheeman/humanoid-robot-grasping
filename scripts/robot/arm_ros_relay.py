@@ -152,7 +152,7 @@ class ArmRosRelay:
             payload = _wire_object(message)
             request_id = str(payload.get("request_id", ""))
             operation = str(payload.get("operation", "")).strip().lower()
-            if operation not in {"enable", "heartbeat", "stop", "state"}:
+            if operation not in {"enable", "heartbeat", "return", "stop", "state"}:
                 raise ValueError("Unknown arm operation")
             response = self._call(operation, payload)
         except Exception as exc:

@@ -68,6 +68,26 @@ def test_robot_role_uses_lab_gb10_default() -> None:
     assert env["CLIENT_IP"] == "192.168.0.66"
 
 
+def test_bunny_test_requires_operator_enter_before_readiness_and_enable() -> None:
+    script = (
+        __import__("pathlib").Path(__file__).resolve().parents[1]
+        / "scripts"
+        / "robot"
+        / "bunny-test.sh"
+    ).read_text()
+
+    terminal_gate = script.index("if [[ ! -t 0 ]]")
+    enter_gate = script.index('read -r -p "Press Enter')
+    readiness = script.index('python3 - "${CLIENT_IP}" "${READY_TIMEOUT_S}"')
+    profile_selection = script.index(
+        'f"http://{host}:8000/api/v1/arm/follow-profile"'
+    )
+    enable = script.index('f"http://{host}:8000/api/v1/arm/enable"')
+    assert terminal_gate < enter_gate < readiness < profile_selection < enable
+    assert '"follow_profile": follow_profile' in script
+    assert 'DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS:-20}"' in script
+
+
 def test_gb10_intercept_profile_is_forwarded_without_implying_execute() -> None:
     launcher, forwarded, env = _role_launcher(
         ROUTES[("gb10", "start")],
@@ -94,6 +114,16 @@ def test_gb10_default_does_not_enable_interception() -> None:
     )
 
     assert "INTERCEPT_CONFIG" not in env
+
+
+def test_gb10_follow_profile_is_forwarded_to_launcher() -> None:
+    _launcher, forwarded, env = _role_launcher(
+        ROUTES[("gb10", "start")],
+        ["--follow-profile", "aggressive", "--dry-run"],
+    )
+
+    assert forwarded == []
+    assert env["FOLLOW_PROFILE"] == "aggressive"
 
 
 def test_removed_robot_http_flags_have_migration_error() -> None:

@@ -181,6 +181,10 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
         parser.add_argument("--research-root")
         parser.add_argument("--research-label")
         parser.add_argument("--research-notes")
+        parser.add_argument(
+            "--follow-profile",
+            choices=("balanced", "aggressive"),
+        )
         parser.add_argument("--no-research-record", action="store_true")
         parser.add_argument("--dry-run", action="store_true")
         parser.add_argument("--execute", action="store_true")
@@ -208,6 +212,7 @@ def _role_launcher(route: Route, args: Sequence[str]) -> tuple[Path, list[str], 
             "RESEARCH_ROOT": namespace.research_root,
             "RESEARCH_LABEL": namespace.research_label,
             "RESEARCH_NOTES": namespace.research_notes,
+            "FOLLOW_PROFILE": namespace.follow_profile,
             "RESEARCH_RECORD": "0" if namespace.no_research_record else None,
             "EXECUTE": "1" if namespace.execute else ("0" if namespace.dry_run else None),
         }

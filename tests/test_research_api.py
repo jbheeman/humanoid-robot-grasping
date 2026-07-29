@@ -7,6 +7,7 @@ from object_tracking.research_session import ResearchSession
 class FakeRosTransport:
     def __init__(self) -> None:
         self.stops: list[str] = []
+        self.returns: list[str] = []
         self.commissioning_calls: list[tuple[str, dict]] = []
 
     def arm_state(self) -> dict:
@@ -22,9 +23,26 @@ class FakeRosTransport:
     def stop_arm(self, reason: str) -> None:
         self.stops.append(reason)
 
+    def return_arm(self, reason: str) -> dict:
+        self.returns.append(reason)
+        return {"state": "RETURNING", "return_reason": reason}
+
     def commissioning(self, command: str, payload: dict) -> dict:
         self.commissioning_calls.append((command, payload))
         return {"command": command, **payload}
+
+
+class FakeArmRuntime:
+    def __init__(self) -> None:
+        self.profiles: list[str] = []
+        self.reset_count = 0
+
+    def set_follow_profile(self, profile: str) -> dict:
+        self.profiles.append(profile)
+        return {"ok": True, "changed": True, "follow_profile": profile}
+
+    def reset_intercept(self) -> None:
+        self.reset_count += 1
 
 
 def test_research_endpoints_expose_session_summary_and_export(tmp_path) -> None:
@@ -207,6 +225,13 @@ def test_ui_control_routes_forward_only_to_injected_ros_transport() -> None:
         )
         assert enabled.status_code == 200
         assert enabled.json()["state"] == "ARMED"
+        returned = client.post(
+            "/api/v1/arm/return-to-neutral",
+            json={"reason": "ui_return"},
+        )
+        assert returned.status_code == 200
+        assert returned.json()["state"] == "RETURNING"
+        assert transport.returns == ["ui_return"]
         assert client.post("/api/v1/arm/stop", json={"reason": "ui_stop"}).status_code == 200
         assert transport.stops == ["ui_stop"]
 
@@ -231,6 +256,45 @@ def test_ui_control_routes_forward_only_to_injected_ros_transport() -> None:
         )
     finally:
         yolo_stream_server.tracking_transport = previous
+
+
+def test_robot_selected_follow_profile_is_applied_before_enable() -> None:
+    previous_transport = yolo_stream_server.tracking_transport
+    previous_runtime = yolo_stream_server.arm_runtime
+    transport = FakeRosTransport()
+    runtime = FakeArmRuntime()
+    yolo_stream_server.tracking_transport = transport
+    yolo_stream_server.arm_runtime = runtime
+    try:
+        client = TestClient(yolo_stream_server.app)
+        selected = client.post(
+            "/api/v1/arm/follow-profile",
+            json={"follow_profile": "aggressive"},
+        )
+        assert selected.status_code == 200
+        assert selected.json()["follow_profile"] == "aggressive"
+
+        enabled = client.post(
+            "/api/v1/arm/enable",
+            json={
+                "session_id": "operator-1",
+                "calibration_id": "cal-1",
+                "follow_profile": "aggressive",
+            },
+        )
+        assert enabled.status_code == 200
+        assert runtime.profiles == ["aggressive", "aggressive"]
+        assert runtime.reset_count == 1
+        assert (
+            client.post(
+                "/api/v1/arm/follow-profile",
+                json={"follow_profile": "reckless"},
+            ).status_code
+            == 422
+        )
+    finally:
+        yolo_stream_server.tracking_transport = previous_transport
+        yolo_stream_server.arm_runtime = previous_runtime
 
 
 def test_ui_control_routes_fail_closed_without_ros_transport() -> None:

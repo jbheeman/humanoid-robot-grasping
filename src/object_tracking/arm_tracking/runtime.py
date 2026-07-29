@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from collections import deque
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import json
 import math
 from pathlib import Path
@@ -13,7 +13,7 @@ import numpy as np
 
 from .calibration import Calibration, load_calibration
 from .arm_commissioning import load_home_profile
-from .depth import DepthFrame, estimate_adaptive_roi_depth
+from .depth import DepthEstimate, DepthFrame, adaptive_roi_depth_candidates
 from .geometry import (
     detect_automatic_support_region,
     deproject_depth_samples,
@@ -49,18 +49,20 @@ _SUPPORT_PLANE_REFRESH_S = 1.000
 # fixed during one operator demo. Avoid rerunning expensive plane fitting in
 # the realtime path midway through that session.
 _SUPPORT_PLANE_ARMED_TTL_S = 300.000
-# Keep the palm center above the plush's upper body instead of descending to
-# the generic near-surface pregrasp height. Swept-link validation still checks
-# every incremental IK edge against the complete table support region.
-# The G1 hand frame is near the palm, while the collision envelope includes
-# the long fingers and wrist meshes below it.  An 85 mm palm target left those
-# meshes only ~19 mm above the captured tabletop during the near-edge crossing.
-# The full staged route was revalidated down to 110 mm of palm clearance with
-# the complete 55 mm link reserve.  This is close enough for a clear handoff
-# pose without pretending the hand can make tabletop contact.
-_TRACKING_PALM_CLEARANCE_M = 0.110
-_TRACKING_SIDE_OFFSET_M = 0.060
-_TRACKING_OBJECT_CLEARANCE_M = 0.025
+# Demo target uses the hand-measured torso table datum. The detected support
+# plane still supplies the tabletop footprint and the elevated gross route,
+# but must not lift the final palm back onto the bunny's head.
+_TRACKING_FIXED_TORSO_Z_M = 0.000
+_TRACKING_RIGHT_OFFSET_M = 0.055
+_TRACKING_GROSS_APPROACH_CLEARANCE_M = 0.160
+_TRACKING_GROSS_APPROACH_MAX_X_M = 0.380
+_TRACKING_CLEARANCE_COMPARISON_EPSILON_M = 0.0005
+_TRACKING_MIN_PREDICTION_HORIZON_S = 0.150
+_TRACKING_MAX_PREDICTION_HORIZON_S = 0.450
+_TRACKING_MAX_PREDICTED_DISPLACEMENT_M = 0.080
+_TRACKING_MIN_MOTION_SCALE = 0.35
+_TRACKING_ASSOCIATION_TTL_S = 0.450
+_TRACKING_MAX_ASSOCIATION_RESIDUAL_M = 0.060
 _TABLETOP_SIZE_RATIO_MIN = 0.60
 _TABLETOP_SIZE_RATIO_MAX = 1.50
 _SOFT_PERCEPTION_REJECTIONS = frozenset(
@@ -69,8 +71,83 @@ _SOFT_PERCEPTION_REJECTIONS = frozenset(
         "rgb_depth_pair_stale",
         "target_lost",
         "waiting_for_new_rgb_frame",
+        "depth_temporal_outlier",
+        "target_identity_unconfirmed",
+        "target_reacquisition_requires_rearm",
     }
 )
+FOLLOW_PROFILE_LIMITS: dict[str, tuple[float, float, float, float]] = {
+    # maximum IK joint step, velocity, acceleration, jerk
+    "balanced": (0.040, 1.00, 4.00, 30.0),
+    "aggressive": (0.075, 1.25, 5.00, 40.0),
+}
+
+
+def follow_profile_limits(name: str) -> tuple[float, float, float, float]:
+    """Return the synchronized GB10/robot motion limits for a follow profile."""
+
+    try:
+        return FOLLOW_PROFILE_LIMITS[name]
+    except KeyError as exc:
+        raise ValueError(f"unknown follow profile: {name}") from exc
+
+
+def adaptive_prediction_horizon(velocity_mps: Sequence[float]) -> float:
+    """Lead a moving tabletop target farther without unbounded extrapolation."""
+
+    velocity = np.asarray(velocity_mps, dtype=float)
+    if velocity.shape != (3,) or not np.all(np.isfinite(velocity)):
+        raise ValueError("velocity_mps must contain three finite values")
+    speed_mps = float(np.linalg.norm(velocity[:2]))
+    return float(
+        np.clip(
+            _TRACKING_MIN_PREDICTION_HORIZON_S + 1.25 * speed_mps,
+            _TRACKING_MIN_PREDICTION_HORIZON_S,
+            _TRACKING_MAX_PREDICTION_HORIZON_S,
+        )
+    )
+
+
+def tracking_motion_scale(planar_speed_mps: float, cartesian_error_m: float) -> float:
+    """Map target motion and hand error onto bounded robot trajectory limits."""
+
+    values = np.asarray((planar_speed_mps, cartesian_error_m), dtype=float)
+    if not np.all(np.isfinite(values)) or np.any(values < 0.0):
+        raise ValueError("tracking speed and error must be finite and non-negative")
+    speed_scale = _TRACKING_MIN_MOTION_SCALE + (1.0 - _TRACKING_MIN_MOTION_SCALE) * min(
+        float(planar_speed_mps) / 0.20, 1.0
+    )
+    error_scale = _TRACKING_MIN_MOTION_SCALE + (1.0 - _TRACKING_MIN_MOTION_SCALE) * min(
+        float(cartesian_error_m) / 0.15, 1.0
+    )
+    return float(min(1.0, max(speed_scale, error_scale)))
+
+
+def select_temporally_consistent_point(
+    candidate_points_m: Sequence[Sequence[float]],
+    expected_position_m: Sequence[float],
+    *,
+    maximum_residual_m: float = _TRACKING_MAX_ASSOCIATION_RESIDUAL_M,
+) -> tuple[int | None, tuple[float, ...]]:
+    """Select the closest plausible 3D candidate before it reaches the filter."""
+
+    expected = np.asarray(expected_position_m, dtype=float)
+    points = tuple(np.asarray(point, dtype=float) for point in candidate_points_m)
+    if (
+        expected.shape != (3,)
+        or not np.all(np.isfinite(expected))
+        or not math.isfinite(maximum_residual_m)
+        or maximum_residual_m <= 0.0
+        or any(point.shape != (3,) or not np.all(np.isfinite(point)) for point in points)
+    ):
+        raise ValueError("temporal association requires finite 3D points and a positive gate")
+    residuals = tuple(float(np.linalg.norm(point - expected)) for point in points)
+    if not residuals:
+        return None, ()
+    index = int(np.argmin(residuals))
+    if residuals[index] > maximum_residual_m:
+        return None, residuals
+    return index, residuals
 
 
 class TrackingTransport(Protocol):
@@ -98,9 +175,12 @@ class TrackingTransport(Protocol):
         right_arm_q: Sequence[float],
         right_arm_tau_ff: Sequence[float],
         pipeline_age_ms: float,
+        motion_scale: float = 1.0,
     ) -> None: ...
 
     def stop_arm(self, reason: str) -> None: ...
+
+    def return_arm(self, reason: str) -> dict[str, Any]: ...
 
     def commissioning(self, command: str, payload: dict[str, Any]) -> dict[str, Any]: ...
 
@@ -129,16 +209,22 @@ class RuntimeConfig:
     prediction_horizon_s: float = 0.150
     trajectory_model_path: Path | None = None
     intercept_config_path: Path | None = None
+    follow_profile: str = "balanced"
+    maximum_joint_step_rad: float = 0.040
     maximum_velocity_rad_s: float = 1.0
     maximum_acceleration_rad_s2: float = 4.0
     maximum_jerk_rad_s3: float = 30.0
-    minimum_link_support_clearance_m: float = 0.025
+    minimum_link_support_clearance_m: float = 0.005
     approach_compression_span_rad: float = 0.70
     approach_compression_skip_knots: int = 32
 
     def __post_init__(self) -> None:
         if not 10.0 <= self.target_hz <= 30.0:
             raise ValueError("target_hz must be between 10 and 30 Hz")
+        if self.follow_profile not in {"balanced", "aggressive"}:
+            raise ValueError("follow_profile must be balanced or aggressive")
+        if not 0.0 < self.maximum_joint_step_rad <= 0.075:
+            raise ValueError("maximum_joint_step_rad must be within (0, 0.075]")
         if not 1.0 <= self.automatic_support_hz <= 10.0:
             raise ValueError("automatic_support_hz must be between 1 and 10 Hz")
         if not 1 <= self.automatic_support_stable_samples <= 12:
@@ -154,7 +240,7 @@ class RuntimeConfig:
         ):
             raise ValueError("arm trajectory limits must be finite and positive")
         if (
-            self.minimum_link_support_clearance_m < 0.05
+            self.minimum_link_support_clearance_m < 0.005
             or self.minimum_link_support_clearance_m > 0.10
             or not np.isfinite(self.approach_compression_span_rad)
             or self.approach_compression_span_rad <= 0.0
@@ -232,15 +318,18 @@ def enforce_tracking_palm_clearance(
     target: TargetPose,
     support: SupportRegion,
     *,
-    minimum_clearance_m: float = _TRACKING_PALM_CLEARANCE_M,
+    minimum_clearance_m: float = 0.005,
 ) -> TargetPose:
-    """Raise a tracking target into the tabletop interaction corridor."""
+    """Place a tracking target at the requested tabletop interaction height."""
 
+    if minimum_clearance_m < 0.0 or not math.isfinite(minimum_clearance_m):
+        raise ValueError("tracking palm clearance must be finite and non-negative")
+    position = target.position.copy()
+    if support.requires_clearance(position):
+        distance = float(support.signed_distance(position))
+        position += (minimum_clearance_m - distance) * support.plane.normal
     return TargetPose(
-        support.project_to_clearance(
-            target.position,
-            minimum_clearance_m=minimum_clearance_m,
-        ),
+        position,
         target.orientation_xyzw,
     )
 
@@ -248,10 +337,11 @@ def enforce_tracking_palm_clearance(
 def tabletop_tracking_target(
     object_position: Sequence[float], support: SupportRegion
 ) -> TargetPose:
-    """Place the palm beside the bunny, four centimetres above its top.
+    """Place the palm beside the bunny at the configured low-table clearance.
 
-    ``-Y`` is the G1's right side in the torso frame. Project that direction
-    into the calibrated tabletop so the side offset remains valid on a tilt.
+    Keep the palm aligned with the bunny in tabletop X and offset it only to
+    the robot's right (-Y). Project that direction into the calibrated
+    tabletop so the offset remains valid on a tilt.
     """
 
     object_xyz = np.asarray(object_position, dtype=float)
@@ -261,15 +351,35 @@ def tabletop_tracking_target(
     right_norm = float(np.linalg.norm(right_on_table))
     if right_norm <= 1e-9:
         raise ValueError("table normal leaves no right-side tracking direction")
-    side_position = object_xyz + _TRACKING_SIDE_OFFSET_M * right_on_table / right_norm
-    object_height = float(support.signed_distance(object_xyz))
-    clearance = max(
-        _TRACKING_PALM_CLEARANCE_M,
-        object_height + _TRACKING_OBJECT_CLEARANCE_M,
+    side_position = object_xyz + _TRACKING_RIGHT_OFFSET_M * right_on_table / right_norm
+    side_position[2] = _TRACKING_FIXED_TORSO_Z_M
+    return TargetPose(
+        side_position,
+        np.asarray((0.0, 0.0, 0.0, 1.0), dtype=float),
+    )
+
+
+def gross_tabletop_approach_target(target: TargetPose, support: SupportRegion) -> TargetPose:
+    """Stage above the table before the low, incremental tracking descent.
+
+    The G1's gross escape solver starts beside the hip and changes elbow
+    topology. Asking it to terminate directly at a low table-graze pose can
+    reject an otherwise reachable target with ``position_error``. The local
+    tracker subsequently descends from this validated staging posture using
+    small, fully swept IK edges.
+    """
+
+    staging_position = target.position.copy()
+    staging_position[0] = min(
+        staging_position[0],
+        _TRACKING_GROSS_APPROACH_MAX_X_M,
     )
     return TargetPose(
-        support.project_to_clearance(side_position, minimum_clearance_m=clearance),
-        np.asarray((0.0, 0.0, 0.0, 1.0), dtype=float),
+        support.project_to_clearance(
+            staging_position,
+            minimum_clearance_m=_TRACKING_GROSS_APPROACH_CLEARANCE_M,
+        ),
+        target.orientation_xyzw,
     )
 
 
@@ -278,11 +388,14 @@ def project_target_into_workspace(
     workspace: WorkspaceBounds,
     *,
     margin_m: float = 0.005,
-    maximum_correction_m: float = 0.08,
+    maximum_correction_m: float | None = None,
 ) -> tuple[TargetPose | None, float]:
     """Project a nearby pregrasp target onto the calibrated reachable box."""
 
-    if margin_m < 0.0 or maximum_correction_m <= 0.0:
+    if margin_m < 0.0 or (
+        maximum_correction_m is not None
+        and (not math.isfinite(maximum_correction_m) or maximum_correction_m <= 0.0)
+    ):
         raise ValueError("workspace projection bounds must be positive")
     minimum = workspace.minimum + margin_m
     maximum = workspace.maximum - margin_m
@@ -290,7 +403,7 @@ def project_target_into_workspace(
         raise ValueError("workspace margin leaves no reachable volume")
     projected = np.clip(target.position, minimum, maximum)
     correction = float(np.linalg.norm(projected - target.position))
-    if correction > maximum_correction_m:
+    if maximum_correction_m is not None and correction > maximum_correction_m:
         return None, correction
     return TargetPose(projected, target.orientation_xyzw), correction
 
@@ -447,10 +560,7 @@ def select_start_escape_waypoint(
         or not 1 <= target_index < len(knots)
         or (
             measured_velocity is not None
-            and (
-                measured_velocity.shape != (7,)
-                or not np.all(np.isfinite(measured_velocity))
-            )
+            and (measured_velocity.shape != (7,) or not np.all(np.isfinite(measured_velocity)))
         )
         or not np.isfinite(maximum_waypoint_velocity_rad_s)
         or maximum_waypoint_velocity_rad_s <= 0.0
@@ -465,8 +575,7 @@ def select_start_escape_waypoint(
             final_maximum_waypoint_velocity_rad_s is not None
             and (
                 not np.isfinite(final_maximum_waypoint_velocity_rad_s)
-                or final_maximum_waypoint_velocity_rad_s
-                < maximum_waypoint_velocity_rad_s
+                or final_maximum_waypoint_velocity_rad_s <= 0.0
             )
         )
     ):
@@ -479,17 +588,16 @@ def select_start_escape_waypoint(
     )
     active_maximum_velocity = (
         final_maximum_waypoint_velocity_rad_s
-        if final_maximum_waypoint_velocity_rad_s is not None
-        and index == len(knots) - 1
+        if final_maximum_waypoint_velocity_rad_s is not None and index == len(knots) - 1
         else maximum_waypoint_velocity_rad_s
     )
-    velocity_settled = measured_velocity is None or float(
-        np.max(np.abs(measured_velocity))
-    ) <= active_maximum_velocity
+    velocity_settled = (
+        measured_velocity is None
+        or float(np.max(np.abs(measured_velocity))) <= active_maximum_velocity
+    )
     if (
         index < len(knots)
-        and float(np.max(np.abs(measured - knots[index])))
-        <= active_reached_tolerance
+        and float(np.max(np.abs(measured - knots[index]))) <= active_reached_tolerance
         and velocity_settled
     ):
         index += 1
@@ -734,7 +842,9 @@ class ArmTrackingRuntime:
                 waist_rad=self.calibration.waist_reference_rad,
                 calibration_id=self.calibration.calibration_id,
             )
-        self.filter = PositionVelocityFilter()
+        self.filter = PositionVelocityFilter(
+            max_prediction_displacement_m=_TRACKING_MAX_PREDICTED_DISPLACEMENT_M
+        )
         self.learned_forecaster = None
         self.trajectory_model_error: str | None = None
         if config.trajectory_model_path is not None:
@@ -752,6 +862,12 @@ class ArmTrackingRuntime:
         self.last_sequence = -1
         self.target_sequence = 0
         self.last_target_track: int | None = None
+        self.last_target_class_name: str | None = None
+        self.last_safe_target_q: tuple[float, ...] | None = None
+        self.last_safe_target_tau_ff: tuple[float, ...] | None = None
+        self.last_safe_target_session: str | None = None
+        self.last_safe_motion_scale = 1.0
+        self.last_safe_perception_at = 0.0
         self.last_process_at = 0.0
         self.last_depth_preview_at = 0.0
         # A support plane is a live safety input, not a calibration constant.
@@ -792,10 +908,73 @@ class ArmTrackingRuntime:
         self._approach_last_advance_q: tuple[float, ...] | None = None
         self._approach_raw_waypoint_count: int | None = None
         self._approach_completed = False
+        self._profile_lock = threading.Lock()
         try:
             self.ik = G1RightArmIK(default_urdf_path(repo_root))
         except IKUnavailable as exc:
             self.ik_error = str(exc)
+
+    def set_follow_profile(self, profile: str) -> dict[str, Any]:
+        """Apply robot-selected motion limits while the bridge is disarmed."""
+
+        limits = follow_profile_limits(profile)
+        # This is a configuration mutation, so do not trust the normal
+        # high-rate polling cache: read the bridge directly and close the
+        # brief DISARMED->ARMING race.
+        arm_state = dict(self.transport.arm_state())
+        self.last_arm_state = dict(arm_state)
+        self.last_arm_poll_at = time.monotonic()
+        if arm_state.get("state") != "DISARMED":
+            raise RuntimeError(
+                "follow profile can only change while the arm bridge is DISARMED"
+            )
+        changed = False
+        with self._profile_lock:
+            (
+                maximum_joint_step_rad,
+                maximum_velocity_rad_s,
+                maximum_acceleration_rad_s2,
+                maximum_jerk_rad_s3,
+            ) = limits
+            current_limits = (
+                self.config.maximum_joint_step_rad,
+                self.config.maximum_velocity_rad_s,
+                self.config.maximum_acceleration_rad_s2,
+                self.config.maximum_jerk_rad_s3,
+            )
+            if self.config.follow_profile != profile or current_limits != limits:
+                changed = True
+                self.config = replace(
+                    self.config,
+                    follow_profile=profile,
+                    maximum_joint_step_rad=maximum_joint_step_rad,
+                    maximum_velocity_rad_s=maximum_velocity_rad_s,
+                    maximum_acceleration_rad_s2=maximum_acceleration_rad_s2,
+                    maximum_jerk_rad_s3=maximum_jerk_rad_s3,
+                )
+                # A cached route was validated against the previous limits.
+                # Force fresh planning before readiness can succeed.
+                self.filter.reset()
+                self.last_target_track = None
+                self.last_target_class_name = None
+                self._start_escape_path = None
+                self._start_escape_target_index = 1
+                self._approach_path = None
+                self._approach_target_index = 1
+                self._approach_validated_target_index = None
+                self._approach_target_xyz = None
+                self._approach_last_advance_q = None
+                self._approach_raw_waypoint_count = None
+                self._approach_completed = False
+        return {
+            "ok": True,
+            "changed": changed,
+            "follow_profile": profile,
+            "maximum_joint_step_rad": maximum_joint_step_rad,
+            "maximum_velocity_rad_s": maximum_velocity_rad_s,
+            "maximum_acceleration_rad_s2": maximum_acceleration_rad_s2,
+            "maximum_jerk_rad_s3": maximum_jerk_rad_s3,
+        }
 
     def start(self) -> None:
         if self.thread is not None:
@@ -832,11 +1011,19 @@ class ArmTrackingRuntime:
                 if frame is None:
                     self.last_sequence = -1
                     diagnostics = getattr(self.transport, "depth_diagnostics", lambda: {})()
-                    self._report(
-                        status="waiting_for_depth",
-                        reason="depth_receive_timeout",
+                    status = {
+                        "enabled": True,
+                        "mode": "execute" if self.config.execute else "dry-run",
+                        "calibration_id": self.calibration.calibration_id,
+                        "status": "waiting_for_depth",
+                        "reason": "depth_receive_timeout",
                         **diagnostics,
-                    )
+                    }
+                    if not self._republish_last_safe_target(
+                        status,
+                        reason="depth_receive_timeout",
+                    ):
+                        self.update_status(status, None)
                     continue
                 retry_s = 0.25
                 if frame.sequence <= self.last_sequence:
@@ -931,6 +1118,23 @@ class ArmTrackingRuntime:
             )
         arm_state = self._arm_state()
         base_status["visualization"] = self._visualization_context(arm_state)
+        if arm_state.get("state") == "RETURNING":
+            # The robot-local bridge owns this bounded trajectory. Do not
+            # publish fresh tracking targets or turn an unrelated perception
+            # rejection into an immediate stop while it retraces to neutral.
+            base_status.update(
+                {
+                    "status": "returning_to_neutral",
+                    "reason": "operator_return",
+                    "arm_state": "RETURNING",
+                    "arm_weight": arm_state.get("weight"),
+                    "return_reason": arm_state.get("return_reason"),
+                    "return_waypoint_index": arm_state.get("return_waypoint_index"),
+                    "return_waypoint_count": arm_state.get("return_waypoint_count"),
+                }
+            )
+            self.update_status(base_status, colormap)
+            return
         recognized_ids = {
             self.calibration.calibration_id,
             f"factory-{self.calibration.camera_serial}-{frame.z16.shape[1]}x{frame.z16.shape[0]}",
@@ -1020,20 +1224,18 @@ class ArmTrackingRuntime:
                         arm_state,
                     )
                     return
-            self.filter.reset()
             self._reject(base_status, "target_lost", colormap)
             return
         selected_track_id = int(selected["track_id"])
-        if self.last_target_track is not None and selected_track_id != self.last_target_track:
-            self.filter.reset()
-            self._approach_path = None
-            self._approach_target_index = 1
-            self._approach_validated_target_index = None
-            self._approach_target_xyz = None
-            self._approach_last_advance_q = None
-            self._approach_raw_waypoint_count = None
-            self._approach_completed = False
-        elif (
+        selected_class_name = str(selected.get("class_name", ""))
+        track_changed = (
+            self.last_target_track is not None and selected_track_id != self.last_target_track
+        )
+        class_changed = (
+            self.last_target_class_name is not None
+            and selected_class_name != self.last_target_class_name
+        )
+        if (
             self.intercept_controller is not None
             and self.intercept_controller.active_track_id is not None
             and selected_track_id != self.intercept_controller.active_track_id
@@ -1079,27 +1281,119 @@ class ArmTrackingRuntime:
                 self._reject(base_status, "support_plane_unavailable", colormap)
                 return
         localization_started = time.monotonic()
-        estimate = estimate_adaptive_roi_depth(
+        candidates = adaptive_roi_depth_candidates(
             aligned,
             bbox,
             depth_scale=frame.depth_scale,
         )
-        if estimate is None or not estimate.is_certain:
+        base_status["depth_candidate_count"] = len(candidates)
+        base_status["depth_candidate_m"] = [
+            round(float(candidate.depth_m), 5) for candidate in candidates
+        ]
+        if not candidates:
             self._reject(base_status, "depth_uncertain", colormap)
             return
-        # Use the registered depth point for the actual object XYZ.  The plane is
-        # retained as a bounded tabletop/clearance validator; intersecting a ray
-        # with a stale plane can otherwise extrapolate to metres outside the robot.
-        optical_depth_point = deproject_pixel(
-            estimate.pixel_xy,
-            estimate.depth_m,
-            self.calibration.rgb_intrinsics,
-        )
-        direct_torso = self.calibration.optical_to_torso.apply(optical_depth_point)
-        if not np.all(np.isfinite(direct_torso)) or np.linalg.norm(direct_torso) > 2.0:
+        if self.filter.state is not None and rgb_time <= self.filter.state.timestamp_s:
+            self._reject(base_status, "waiting_for_new_rgb_frame", colormap)
+            return
+
+        localized_candidates: list[tuple[DepthEstimate, np.ndarray, float]] = []
+        for candidate in candidates:
+            optical_depth_point = deproject_pixel(
+                candidate.pixel_xy,
+                candidate.depth_m,
+                self.calibration.rgb_intrinsics,
+            )
+            direct_torso = self.calibration.optical_to_torso.apply(optical_depth_point)
+            if not np.all(np.isfinite(direct_torso)) or np.linalg.norm(direct_torso) > 2.0:
+                continue
+            torso_candidate, height_candidate_m = clamp_point_height_to_support(
+                direct_torso,
+                plane,
+            )
+            localized_candidates.append((candidate, torso_candidate, height_candidate_m))
+        if not localized_candidates:
             self._reject(base_status, "localization_outlier", colormap)
             return
-        torso, object_height_m = clamp_point_height_to_support(direct_torso, plane)
+
+        association_mode = "cold_start_support_rank"
+        association_residuals: tuple[float, ...] = ()
+        selected_index: int | None = None
+        prior = self.filter.state
+        prior_age_s = None if prior is None else rgb_time - prior.timestamp_s
+        base_status["depth_temporal_prior_age_ms"] = (
+            None if prior_age_s is None else round(max(0.0, prior_age_s) * 1000.0, 3)
+        )
+        if class_changed:
+            if arm_motion_is_active(arm_state):
+                self._reject(base_status, "target_identity_unconfirmed", colormap)
+                return
+            self.filter.reset()
+            prior = None
+        elif prior is not None and prior_age_s is not None:
+            if prior_age_s <= _TRACKING_ASSOCIATION_TTL_S:
+                expected_position = self.filter.predict(prior_age_s)
+                assert expected_position is not None
+                selected_index, association_residuals = select_temporally_consistent_point(
+                    [item[1] for item in localized_candidates],
+                    expected_position,
+                )
+                association_mode = "temporal_3d"
+                base_status["depth_temporal_expected_xyz_m"] = expected_position.round(5).tolist()
+                base_status["depth_temporal_candidate_residual_m"] = [
+                    round(value, 5) for value in association_residuals
+                ]
+                if selected_index is None:
+                    self._reject(base_status, "depth_temporal_outlier", colormap)
+                    return
+            else:
+                self.filter.reset()
+                prior = None
+                if arm_motion_is_active(arm_state):
+                    self._reject(
+                        base_status,
+                        "target_reacquisition_requires_rearm",
+                        colormap,
+                    )
+                    return
+        if (
+            prior is None
+            and arm_motion_is_active(arm_state)
+            and self.last_target_track is not None
+        ):
+            # Once the temporal prior has expired, do not cold-start a new
+            # target while the arm is moving.  The bridge must return to a
+            # disarmed readiness cycle before a fresh identity can command it.
+            self._reject(
+                base_status,
+                "target_reacquisition_requires_rearm",
+                colormap,
+            )
+            return
+        if track_changed and arm_motion_is_active(arm_state) and association_mode != "temporal_3d":
+            self._reject(base_status, "target_identity_unconfirmed", colormap)
+            return
+        if selected_index is None:
+            selected_index = max(
+                range(len(localized_candidates)),
+                key=lambda index: (
+                    localized_candidates[index][0].sample_count,
+                    localized_candidates[index][0].valid_fraction,
+                    -localized_candidates[index][0].depth_m,
+                ),
+            )
+        estimate, torso, object_height_m = localized_candidates[selected_index]
+        base_status.update(
+            {
+                "depth_association_mode": association_mode,
+                "depth_selected_candidate_index": selected_index,
+                "depth_selected_residual_m": (
+                    None
+                    if not association_residuals
+                    else round(association_residuals[selected_index], 5)
+                ),
+            }
+        )
         base_status.update(
             {
                 "depth_valid": True,
@@ -1109,11 +1403,10 @@ class ArmTrackingRuntime:
                 "object_height_above_table_m": round(object_height_m, 5),
             }
         )
-        if self.filter.state is not None and rgb_time <= self.filter.state.timestamp_s:
-            self._reject(base_status, "waiting_for_new_rgb_frame", colormap)
-            return
         tracked = self.filter.update(torso, rgb_time)
-        alpha_beta_prediction = self.filter.predict(self.config.prediction_horizon_s)
+        planar_speed_mps = float(np.linalg.norm(tracked.velocity_mps[:2]))
+        prediction_horizon_s = adaptive_prediction_horizon(tracked.velocity_mps)
+        alpha_beta_prediction = self.filter.predict(prediction_horizon_s)
         assert alpha_beta_prediction is not None
         learned_prediction = None
         if self.learned_forecaster is not None:
@@ -1121,9 +1414,9 @@ class ArmTrackingRuntime:
             # detector/depth samples so pixel-scale YOLO jitter is not amplified
             # into a large velocity forecast.
             self.learned_forecaster.update(tracked.position_m, rgb_time)
-            learned_prediction = self.learned_forecaster.predict(self.config.prediction_horizon_s)
+            learned_prediction = self.learned_forecaster.predict(prediction_horizon_s)
         self._score_due_predictions(torso, rgb_time)
-        due_time = rgb_time + self.config.prediction_horizon_s
+        due_time = rgb_time + prediction_horizon_s
         self._queue_prediction("alpha_beta_fallback", alpha_beta_prediction, due_time)
         if learned_prediction is not None:
             self._queue_prediction("learned_trajectory", learned_prediction, due_time)
@@ -1149,6 +1442,8 @@ class ArmTrackingRuntime:
                 "estimator_consecutive_observations": self.filter.consecutive_observations,
                 "estimator_residual_m": round(self.filter.last_residual_m, 6),
                 "predicted_xyz_m": predicted.round(5).tolist(),
+                "prediction_horizon_ms": round(prediction_horizon_s * 1000.0, 1),
+                "planar_target_speed_m_s": round(planar_speed_mps, 5),
                 "prediction_source": prediction_source,
             }
         )
@@ -1232,32 +1527,38 @@ class ArmTrackingRuntime:
                 np.asarray((0.0, 0.0, 0.0, 1.0), dtype=float),
             )
             intercept_publish_allowed = intercept_decision.may_publish or (
-                self.intercept_profile.preview_staging_enabled
-                and intercept_decision.may_stage
+                self.intercept_profile.preview_staging_enabled and intercept_decision.may_stage
             )
         else:
             target = tabletop_tracking_target(predicted, plane)
         raw_target_position = target.position.copy()
-        workspace_correction_m = 0.0
-        if self.intercept_profile is not None:
-            projected_target, workspace_correction_m = project_target_into_workspace(
-                target,
-                self.calibration.workspace,
-                maximum_correction_m=0.08,
+        # A bunny can cross a calibrated workspace edge while the arm is
+        # already moving. Saturate every finite target at that physical
+        # boundary instead of dropping the target stream and tripping the
+        # robot deadman. The published telemetry retains the raw target and
+        # exact correction, while lateral/height motion remains continuous.
+        projected_target, workspace_correction_m = project_target_into_workspace(
+            target,
+            self.calibration.workspace,
+        )
+        if projected_target is None:
+            base_status.update(
+                {
+                    "raw_target_xyz_m": raw_target_position.round(5).tolist(),
+                    "workspace_correction_m": round(workspace_correction_m, 5),
+                }
             )
-            if projected_target is None:
-                base_status.update(
-                    {
-                        "raw_target_xyz_m": raw_target_position.round(5).tolist(),
-                        "workspace_correction_m": round(workspace_correction_m, 5),
-                    }
-                )
-                self._reject(base_status, "workspace_violation", colormap)
-                return
-            target = projected_target
+            self._reject(base_status, "workspace_violation", colormap)
+            return
+        target = projected_target
         base_status.update(
             {
                 "status": "tracking",
+                "follow_profile": self.config.follow_profile,
+                "tracking_target_mode": "fixed_torso_z",
+                "tracking_target_torso_z_m": _TRACKING_FIXED_TORSO_Z_M,
+                "tracking_right_offset_m": _TRACKING_RIGHT_OFFSET_M,
+                "minimum_link_support_clearance_m": (self.config.minimum_link_support_clearance_m),
                 "track_id": int(selected["track_id"]),
                 "depth_valid_fraction": (
                     None if estimate is None else round(estimate.valid_fraction, 4)
@@ -1309,15 +1610,34 @@ class ArmTrackingRuntime:
         if not self.calibration.workspace.contains(target.position):
             self._reject(base_status, "workspace_violation", colormap)
             return
-        if not has_support_clearance(target.position, plane, minimum_clearance_m=0.05):
+        if intercept_decision is not None and not has_support_clearance(
+            target.position,
+            plane,
+            minimum_clearance_m=0.005 - _TRACKING_CLEARANCE_COMPARISON_EPSILON_M,
+        ):
             self._reject(base_status, "support_plane_clearance", colormap)
             return
         ik_step_type = (
-            "intercept_local_translation"
-            if intercept_decision is not None
-            else "analytic_local_translation"
+            "intercept_local_translation" if intercept_decision is not None else "realtime_follow"
         )
         current_transform = self.ik.forward_kinematics(last_q)
+        cartesian_hand_error_m = float(np.linalg.norm(target.position - current_transform[:3, 3]))
+        motion_scale = tracking_motion_scale(planar_speed_mps, cartesian_hand_error_m)
+        base_status.update(
+            {
+                "cartesian_hand_error_m": round(cartesian_hand_error_m, 5),
+                "motion_scale": round(motion_scale, 4),
+                "effective_max_velocity_rad_s": round(
+                    self.config.maximum_velocity_rad_s * motion_scale, 4
+                ),
+                "effective_max_acceleration_rad_s2": round(
+                    self.config.maximum_acceleration_rad_s2 * motion_scale, 4
+                ),
+                "effective_max_jerk_rad_s3": round(
+                    self.config.maximum_jerk_rad_s3 * motion_scale, 4
+                ),
+            }
+        )
         start_topology = plane.classify_point(
             current_transform[:3, 3],
             side_margin_m=0.10,
@@ -1330,13 +1650,10 @@ class ArmTrackingRuntime:
             or (not self._approach_completed and start_topology != "above_clearance")
         )
         if approach_needed:
-            if (
-                self._approach_path is not None
-                and cached_approach_should_be_invalidated(
-                    self._approach_target_xyz,
-                    target.position,
-                    arm_state,
-                )
+            if self._approach_path is not None and cached_approach_should_be_invalidated(
+                self._approach_target_xyz,
+                target.position,
+                arm_state,
             ):
                 self._approach_path = None
                 self._approach_validated_target_index = None
@@ -1360,7 +1677,12 @@ class ArmTrackingRuntime:
                     self._reject(base_status, "ik_approach_not_precomputed", colormap)
                     return
                 transform = current_transform.copy()
-                transform[:3, 3] = target.position
+                gross_target = (
+                    target
+                    if self.intercept_profile is not None
+                    else gross_tabletop_approach_target(target, plane)
+                )
+                transform[:3, 3] = gross_target.position
                 approach = self.ik.plan_adaptive_table_approach(
                     transform,
                     last_q,
@@ -1412,13 +1734,9 @@ class ArmTrackingRuntime:
                         end,
                         support_plane=plane,
                         maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
-                        maximum_acceleration_rad_s2=(
-                            self.config.maximum_acceleration_rad_s2
-                        ),
+                        maximum_acceleration_rad_s2=(self.config.maximum_acceleration_rad_s2),
                         maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
-                        minimum_support_clearance_m=(
-                            self.config.minimum_link_support_clearance_m
-                        ),
+                        minimum_support_clearance_m=(self.config.minimum_link_support_clearance_m),
                     ),
                     # Longer edges let Ruckig preserve velocity through the
                     # gross table-clearance motion. Every candidate shortcut
@@ -1466,14 +1784,14 @@ class ArmTrackingRuntime:
                 self._approach_target_index,
                 reached_tolerance_rad=0.018,
                 last_advance_q_rad=self._approach_last_advance_q,
-                residual_lookahead_rad=0.035,
+                residual_lookahead_rad=0.100,
                 measured_velocity_rad_s=measured_right_arm_velocity(arm_state),
                 # Do not require a full stop at every prevalidated knot.  The
                 # next edge is still selected only after measured arrival, so
                 # this relaxes a servo-settle artifact without corner cutting.
-                maximum_waypoint_velocity_rad_s=0.10,
-                final_reached_tolerance_rad=0.025,
-                final_maximum_waypoint_velocity_rad_s=0.10,
+                maximum_waypoint_velocity_rad_s=0.35,
+                final_reached_tolerance_rad=0.060,
+                final_maximum_waypoint_velocity_rad_s=0.35,
             )
             self._approach_target_index = waypoint_index
             if waypoint_index > previous_waypoint_index:
@@ -1498,9 +1816,7 @@ class ArmTrackingRuntime:
                         maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
                         maximum_acceleration_rad_s2=self.config.maximum_acceleration_rad_s2,
                         maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
-                        minimum_support_clearance_m=(
-                            self.config.minimum_link_support_clearance_m
-                        ),
+                        minimum_support_clearance_m=(self.config.minimum_link_support_clearance_m),
                         current_velocity_rad_s=measured_velocity,
                     ):
                         self._approach_path = None
@@ -1534,17 +1850,17 @@ class ArmTrackingRuntime:
                 ik_step_type = (
                     "intercept_local_translation"
                     if intercept_decision is not None
-                    else "analytic_local_translation"
+                    else "realtime_follow"
                 )
+                base_status["approach_handoff"] = True
                 transform = self.ik.forward_kinematics(last_q)
                 transform[:3, 3] = target.position
                 ik = self.ik.solve_local_translation(
                     transform,
                     last_q,
-                    support_plane=plane,
-                    minimum_support_clearance_m=(
-                        self.config.minimum_link_support_clearance_m
-                    ),
+                    support_plane=(plane if intercept_decision is not None else None),
+                    minimum_support_clearance_m=(self.config.minimum_link_support_clearance_m),
+                    maximum_joint_step_rad=self.config.maximum_joint_step_rad,
                 )
             else:
                 ik = IKResult(True, waypoint, 0.0, 0.0)
@@ -1556,10 +1872,9 @@ class ArmTrackingRuntime:
             ik = self.ik.solve_local_translation(
                 transform,
                 last_q,
-                support_plane=plane,
-                minimum_support_clearance_m=(
-                    self.config.minimum_link_support_clearance_m
-                ),
+                support_plane=(plane if intercept_decision is not None else None),
+                minimum_support_clearance_m=(self.config.minimum_link_support_clearance_m),
+                maximum_joint_step_rad=self.config.maximum_joint_step_rad,
             )
         base_status.update(
             {
@@ -1684,7 +1999,13 @@ class ArmTrackingRuntime:
                     right_arm_q=[float(value) for value in ik.q_rad],
                     right_arm_tau_ff=gravity_tau_ff,
                     pipeline_age_ms=pipeline_age_ms,
+                    motion_scale=motion_scale,
                 )
+                self.last_safe_target_q = tuple(float(value) for value in ik.q_rad)
+                self.last_safe_target_tau_ff = tuple(float(value) for value in gravity_tau_ff)
+                self.last_safe_target_session = str(arm_state["session_id"])
+                self.last_safe_motion_scale = motion_scale
+                self.last_safe_perception_at = min(frame.receipt_time_s, rgb_time)
                 base_status["target_publish_latency_ms"] = round(
                     max(0.0, (time.monotonic() - publish_started) * 1000.0),
                     3,
@@ -1701,6 +2022,7 @@ class ArmTrackingRuntime:
         elif self.config.execute and intercept_decision is not None:
             base_status["status"] = "intercept_preview"
         self.last_target_track = int(selected["track_id"])
+        self.last_target_class_name = selected_class_name
         self.update_status(base_status, colormap)
 
     @staticmethod
@@ -1758,7 +2080,11 @@ class ArmTrackingRuntime:
             return
         target_position = projected_target.position
         base_status["workspace_correction_m"] = round(workspace_correction_m, 5)
-        if not has_support_clearance(target_position, plane, minimum_clearance_m=0.05):
+        if not has_support_clearance(
+            target_position,
+            plane,
+            minimum_clearance_m=(0.005 - _TRACKING_CLEARANCE_COMPARISON_EPSILON_M),
+        ):
             self._reject(base_status, "support_plane_clearance", colormap)
             return
         collision_labels = self.ik.collision_labels(measured_q)
@@ -1772,9 +2098,8 @@ class ArmTrackingRuntime:
             transform,
             measured_q,
             support_plane=plane,
-            minimum_support_clearance_m=(
-                self.config.minimum_link_support_clearance_m
-            ),
+            minimum_support_clearance_m=(self.config.minimum_link_support_clearance_m),
+            maximum_joint_step_rad=self.config.maximum_joint_step_rad,
         )
         base_status.update(
             {
@@ -1828,6 +2153,7 @@ class ArmTrackingRuntime:
                     right_arm_q=[float(value) for value in ik.q_rad],
                     right_arm_tau_ff=gravity_tau_ff,
                     pipeline_age_ms=pipeline_age_ms,
+                    motion_scale=1.0,
                 )
                 base_status["target_publish_latency_ms"] = round(
                     max(0.0, (time.monotonic() - publish_started) * 1000.0),
@@ -1894,16 +2220,12 @@ class ArmTrackingRuntime:
                 "predicted_bounded_arm_command_rad": [
                     round(float(value), 6) for value in measured_q
                 ],
-                "gravity_feedforward_tau_nm": [
-                    round(float(value), 6) for value in gravity_tau_ff
-                ],
+                "gravity_feedforward_tau_nm": [round(float(value), 6) for value in gravity_tau_ff],
                 "pipeline_age_ms": round(pipeline_age_ms, 3),
             }
         )
         if self.config.execute:
-            if arm_state.get("state") not in ("ARMING", "ARMED") or not arm_state.get(
-                "session_id"
-            ):
+            if arm_state.get("state") not in ("ARMING", "ARMED") or not arm_state.get("session_id"):
                 self._reject(base_status, "arm_not_explicitly_enabled", colormap)
                 return
             if pipeline_age_ms > 450.0:
@@ -1917,6 +2239,7 @@ class ArmTrackingRuntime:
                     right_arm_q=measured_q,
                     right_arm_tau_ff=gravity_tau_ff,
                     pipeline_age_ms=pipeline_age_ms,
+                    motion_scale=1.0,
                 )
             except Exception as exc:
                 base_status["transport_error"] = f"{type(exc).__name__}: {exc}"
@@ -2239,13 +2562,19 @@ class ArmTrackingRuntime:
         return result
 
     def _stop_arm(self, reason: str, *, force: bool = False) -> None:
-        if not self.config.execute or (self.last_target_track is None and not force):
+        if not self.config.execute:
+            return
+        if self.last_target_track is None and not force:
+            self.last_target_class_name = None
+            self.filter.reset()
             return
         try:
             self.transport.stop_arm(reason)
         except Exception:
             pass
         self.last_target_track = None
+        self.last_target_class_name = None
+        self.filter.reset()
         self._start_escape_path = None
         self._start_escape_target_index = 1
         self._approach_path = None
@@ -2263,6 +2592,12 @@ class ArmTrackingRuntime:
             self.intercept_controller.reset()
         self.filter.reset()
         self.last_target_track = None
+        self.last_target_class_name = None
+        self.last_safe_target_q = None
+        self.last_safe_target_tau_ff = None
+        self.last_safe_target_session = None
+        self.last_safe_motion_scale = 1.0
+        self.last_safe_perception_at = 0.0
 
     def _reject(self, status: dict[str, Any], reason: str, colormap: bytes | None) -> None:
         if self.intercept_controller is not None and reason != "arm_not_explicitly_enabled":
@@ -2275,9 +2610,70 @@ class ArmTrackingRuntime:
             ):
                 self.intercept_controller.reset()
         status.update({"status": "rejected", "reason": reason})
+        if reason in _SOFT_PERCEPTION_REJECTIONS and self._republish_last_safe_target(
+            status,
+            reason=reason,
+            colormap=colormap,
+        ):
+            return
         if reason not in _SOFT_PERCEPTION_REJECTIONS:
             self._stop_arm(reason)
         self.update_status(status, colormap)
+
+    def _republish_last_safe_target(
+        self,
+        status: dict[str, Any],
+        *,
+        reason: str,
+        colormap: bytes | None = None,
+    ) -> bool:
+        """Bridge a brief perception gap without extending stale-data motion."""
+
+        if (
+            not self.config.execute
+            or self.last_safe_target_q is None
+            or self.last_safe_target_tau_ff is None
+            or self.last_safe_target_session is None
+            or self.last_safe_perception_at <= 0.0
+        ):
+            return False
+        now = time.monotonic()
+        pipeline_age_ms = max(0.0, (now - self.last_safe_perception_at) * 1000.0)
+        if pipeline_age_ms > 450.0:
+            return False
+        arm_state = self._arm_state()
+        if (
+            arm_state.get("state") not in ("ARMING", "ARMED")
+            or arm_state.get("session_id") != self.last_safe_target_session
+        ):
+            return False
+        try:
+            self.transport.publish_target(
+                session_id=self.last_safe_target_session,
+                sequence=self.target_sequence,
+                calibration_id=self.calibration.calibration_id,
+                right_arm_q=self.last_safe_target_q,
+                right_arm_tau_ff=self.last_safe_target_tau_ff,
+                pipeline_age_ms=pipeline_age_ms,
+                motion_scale=self.last_safe_motion_scale,
+            )
+        except Exception as exc:
+            status["transport_error"] = f"{type(exc).__name__}: {exc}"
+            self._stop_arm("arm_target_publish_failed", force=True)
+            return False
+        self.target_sequence += 1
+        status.update(
+            {
+                "status": "target_republished",
+                "reason": reason,
+                "follow_profile": self.config.follow_profile,
+                "target_sequence": self.target_sequence,
+                "pipeline_age_ms": round(pipeline_age_ms, 3),
+                "reused_last_safe_target": True,
+            }
+        )
+        self.update_status(status, colormap)
+        return True
 
     def _report(self, **values: Any) -> None:
         status = {

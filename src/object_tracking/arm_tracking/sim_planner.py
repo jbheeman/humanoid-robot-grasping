@@ -31,7 +31,7 @@ class SimPlannerConfig:
     maximum_acceleration_rad_s2: float = 4.0
     maximum_jerk_rad_s3: float = 30.0
     top_clearance_m: float = 0.11
-    minimum_link_support_clearance_m: float = 0.055
+    minimum_link_support_clearance_m: float = 0.005
     path_compression_span_rad: float = 0.70
     path_compression_skip_knots: int = 32
 

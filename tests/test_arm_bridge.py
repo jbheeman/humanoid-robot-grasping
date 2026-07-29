@@ -135,9 +135,7 @@ def test_enable_requires_safe_stable_low_state(changes: dict[str, object], code:
         ({"arm_q": (math.nan,) + (0.0,) * 13}, "robot_state_non_finite"),
     ],
 )
-def test_state_report_exposes_enable_blockers(
-    changes: dict[str, object], blocker: str
-) -> None:
+def test_state_report_exposes_enable_blockers(changes: dict[str, object], blocker: str) -> None:
     clock = FakeClock()
     controller, hardware = bridge(clock)
     hardware.state = robot_state(clock, **changes)
@@ -255,13 +253,9 @@ def test_gravity_feedforward_is_validated_and_slew_limited() -> None:
     controller.tick()
 
     maximum_step = controller.config.max_tau_ff_slew_nm_s * period
-    assert max(abs(value) for value in controller.commanded_right_tau_ff) <= (
-        maximum_step + 1e-9
-    )
+    assert max(abs(value) for value in controller.commanded_right_tau_ff) <= (maximum_step + 1e-9)
     assert hardware.commands[-1].tau[:7] == (0.0,) * 7
-    assert hardware.commands[-1].tau[7:] == pytest.approx(
-        controller.commanded_right_tau_ff
-    )
+    assert hardware.commands[-1].tau[7:] == pytest.approx(controller.commanded_right_tau_ff)
 
     with pytest.raises(ArmBridgeError) as rejected:
         controller.set_target(
@@ -376,9 +370,54 @@ def test_ruckig_limits_velocity_acceleration_and_jerk_during_replanning() -> Non
             previous_acceleration,
         )
     ]
-    assert max(abs(value) for value in replanned_jerk) <= (
-        controller.config.max_jerk_rad_s3 + 1e-6
+    assert max(abs(value) for value in replanned_jerk) <= (controller.config.max_jerk_rad_s3 + 1e-6)
+
+
+def test_tracking_motion_scale_bounds_ruckig_limits() -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock)
+    arm(controller, hardware, clock)
+    controller.set_target(
+        session_id="session-a",
+        sequence=0,
+        calibration_id="cal-1",
+        right_arm_q=[0.4] + [0.0] * 6,
+        source_timestamp=clock.wall,
+        motion_scale=0.35,
     )
+    clock.advance(1.0 / controller.config.control_hz)
+    hardware.state = robot_state(clock)
+    controller.tick()
+
+    assert controller.state_report()["motion_scale"] == pytest.approx(0.35)
+    assert max(controller._ruckig_input.max_velocity) == pytest.approx(
+        controller.config.max_velocity_rad_s * 0.35
+    )
+    assert max(controller._ruckig_input.max_acceleration) == pytest.approx(
+        controller.config.max_acceleration_rad_s2 * 0.35
+    )
+    assert max(controller._ruckig_input.max_jerk) == pytest.approx(
+        controller.config.max_jerk_rad_s3 * 0.35
+    )
+
+
+@pytest.mark.parametrize("motion_scale", [True, 0.34, 1.01, math.nan])
+def test_tracking_motion_scale_rejects_invalid_values(motion_scale: object) -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock)
+    arm(controller, hardware, clock)
+
+    with pytest.raises(ArmBridgeError) as rejected:
+        controller.set_target(
+            session_id="session-a",
+            sequence=0,
+            calibration_id="cal-1",
+            right_arm_q=[0.1] * 7,
+            source_timestamp=clock.wall,
+            motion_scale=motion_scale,
+        )
+
+    assert rejected.value.code == "invalid_motion_scale"
 
 
 def test_ruckig_online_output_persists_across_control_ticks() -> None:
@@ -514,6 +553,154 @@ def test_deadman_holds_and_releases_weight_within_bounded_ramp() -> None:
     controller.tick()
     assert hardware.commands[-1].weight == 0.0
     assert controller.state is ArmState.DISARMED
+
+
+def test_following_error_is_debounced_but_retains_a_hard_cap() -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(
+        clock,
+        max_following_error_rad=0.40,
+        following_error_debounce_s=0.150,
+        hard_max_following_error_rad=0.55,
+    )
+    arm(controller, hardware, clock)
+
+    assert controller.commanded_right is not None
+    controller.commanded_right[3] = 0.40021
+    controller.desired_right = tuple(controller.commanded_right)
+    for _ in range(2):
+        clock.advance(0.05)
+        hardware.state = robot_state(clock)
+        controller.tick()
+    assert controller.state is ArmState.ARMED
+
+    controller.commanded_right[3] = 0.0
+    controller.desired_right = tuple(controller.commanded_right)
+    clock.advance(0.01)
+    hardware.state = robot_state(clock)
+    controller.tick()
+    assert controller.health_report()["following_error_duration_ms"] is None
+
+    controller.commanded_right[3] = 0.41
+    controller.desired_right = tuple(controller.commanded_right)
+    for _ in range(4):
+        clock.advance(0.05)
+        hardware.state = robot_state(clock)
+        controller.tick()
+    assert controller.state is ArmState.FAULT
+    assert controller.fault_reason == "following_error"
+
+    hard_clock = FakeClock()
+    hard_controller, hard_hardware = bridge(
+        hard_clock,
+        max_following_error_rad=0.40,
+        following_error_debounce_s=0.150,
+        hard_max_following_error_rad=0.55,
+    )
+    arm(hard_controller, hard_hardware, hard_clock)
+    assert hard_controller.commanded_right is not None
+    hard_controller.commanded_right[3] = 0.56
+    hard_controller.desired_right = tuple(hard_controller.commanded_right)
+    hard_clock.advance(0.004)
+    hard_hardware.state = robot_state(hard_clock)
+    hard_controller.tick()
+    assert hard_controller.state is ArmState.FAULT
+
+
+def test_operator_return_retraces_targets_to_measured_session_start_pose() -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock)
+    arm(controller, hardware, clock)
+    dt = 1.0 / controller.config.control_hz
+
+    for sequence, target, duration in (
+        (1, [0.15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.6),
+        (2, [0.30, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0], 0.2),
+    ):
+        controller.set_target(
+            session_id="session-a",
+            sequence=sequence,
+            calibration_id="cal-1",
+            right_arm_q=target,
+            source_timestamp=clock.wall,
+        )
+        for _ in range(round(duration / dt)):
+            hardware.state = robot_state(
+                clock,
+                q=(0.0,) * 7 + tuple(controller.commanded_right or (0.0,) * 7),
+                arm_dq=(0.0,) * 14,
+            )
+            controller.tick()
+            clock.advance(dt)
+
+    report = controller.return_to_neutral("ctrl_c")
+    assert report["state"] == "RETURNING"
+    assert report["return_reason"] == "ctrl_c"
+    assert controller.desired_right == (0.15, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    assert controller.weight == 1.0
+    with pytest.raises(ArmBridgeError) as rejected:
+        controller.set_target(
+            session_id="session-a",
+            sequence=3,
+            calibration_id="cal-1",
+            right_arm_q=[0.1] * 7,
+            source_timestamp=clock.wall,
+        )
+    assert rejected.value.code == "not_armed"
+
+    for _ in range(round(6.0 / dt)):
+        hardware.state = robot_state(
+            clock,
+            q=(0.0,) * 7 + tuple(controller.commanded_right or (0.0,) * 7),
+            arm_dq=(0.0,) * 14,
+        )
+        controller.tick()
+        clock.advance(dt)
+        if controller.state is ArmState.HOLDING:
+            break
+
+    assert controller.state is ArmState.HOLDING
+    assert controller.hold_reason == "return_complete"
+    assert controller.commanded_right == pytest.approx([0.0] * 7, abs=0.03)
+    assert controller.weight > 0.0
+
+    clock.advance(controller.config.weight_ramp_s)
+    hardware.state = robot_state(clock)
+    controller.tick()
+    assert controller.state is ArmState.DISARMED
+
+
+def test_operator_return_timeout_falls_back_to_bounded_release() -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock, return_timeout_s=0.02)
+    arm(controller, hardware, clock)
+    controller.set_target(
+        session_id="session-a",
+        sequence=1,
+        calibration_id="cal-1",
+        right_arm_q=[0.30, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0],
+        source_timestamp=clock.wall,
+    )
+    controller.return_to_neutral("ctrl_c")
+
+    clock.advance(0.021)
+    hardware.state = robot_state(clock)
+    controller.tick()
+
+    assert controller.state is ArmState.HOLDING
+    assert controller.hold_reason == "return_timeout"
+
+
+def test_safety_fault_preempts_controlled_return() -> None:
+    clock = FakeClock()
+    controller, _hardware = bridge(clock)
+    arm(controller, _hardware, clock)
+    controller.return_to_neutral("ctrl_c")
+    clock.advance(controller.config.state_ttl_s + 0.001)
+    controller.tick()
+
+    assert controller.state is ArmState.FAULT
+    assert controller.fault_reason == "robot_state_stale"
 
 
 def test_tracking_target_during_arming_keeps_deadman_alive() -> None:

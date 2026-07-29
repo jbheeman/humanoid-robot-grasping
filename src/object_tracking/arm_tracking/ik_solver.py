@@ -1803,7 +1803,7 @@ class G1RightArmIK:
             or not np.all(np.isfinite(target))
             or not np.all(np.isfinite(last_q))
             or not math.isfinite(maximum_joint_step_rad)
-            or not 0.0 < maximum_joint_step_rad <= 0.05
+            or not 0.0 < maximum_joint_step_rad <= 0.075
             or not math.isfinite(minimum_support_clearance_m)
             or minimum_support_clearance_m <= 0.0
             or not math.isfinite(damping)
@@ -1874,9 +1874,8 @@ class G1RightArmIK:
                 (last_q, candidate),
                 support_plane=support_plane,
                 minimum_support_clearance_m=minimum_support_clearance_m,
-                # Four swept intervals keep every maximum 0.040-rad realtime
-                # edge collision/table checked without returning to the much
-                # slower full-route sampling cadence.
+                # Swept intervals keep every bounded realtime edge collision
+                # checked without returning to full-route sampling cadence.
                 edge_step_rad=0.010,
             )
             if validation_error is None:

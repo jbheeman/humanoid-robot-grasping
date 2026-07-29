@@ -7,6 +7,7 @@ and unit tests can import this module without a ROS installation.
 from __future__ import annotations
 
 import json
+import math
 import os
 import secrets
 import threading
@@ -169,9 +170,7 @@ class RosTrackingTransport:
                         types["String"], ARM_STATE_TOPIC, self._on_arm_state, qos
                     )
                 else:
-                    target_publisher = node.create_publisher(
-                        types["String"], ARM_TARGET_TOPIC, qos
-                    )
+                    target_publisher = node.create_publisher(types["String"], ARM_TARGET_TOPIC, qos)
                     arm_subscription = node.create_subscription(
                         types["String"], ARM_STATE_TOPIC, self._on_arm_state, qos
                     )
@@ -347,6 +346,7 @@ class RosTrackingTransport:
         right_arm_q: Sequence[float],
         right_arm_tau_ff: Sequence[float],
         pipeline_age_ms: float,
+        motion_scale: float = 1.0,
     ) -> None:
         self._require_started()
         joints = tuple(float(value) for value in right_arm_q)
@@ -357,6 +357,9 @@ class RosTrackingTransport:
             raise ValueError("right_arm_tau_ff must contain exactly seven torques")
         if sequence < 0:
             raise ValueError("sequence must be non-negative")
+        scale = float(motion_scale)
+        if not math.isfinite(scale) or not 0.35 <= scale <= 1.0:
+            raise ValueError("motion_scale must be finite and within [0.35, 1.0]")
         message = self._types["String"]()
         message.data = json.dumps(
             {
@@ -365,9 +368,8 @@ class RosTrackingTransport:
                 "calibration_id": str(calibration_id),
                 "right_arm_q": list(joints),
                 "right_arm_tau_ff": list(torque),
-                "pipeline_age_ms": max(
-                    0, min((1 << 32) - 1, int(round(pipeline_age_ms)))
-                ),
+                "pipeline_age_ms": max(0, min((1 << 32) - 1, int(round(pipeline_age_ms)))),
+                "motion_scale": scale,
             },
             separators=(",", ":"),
             sort_keys=True,
@@ -377,6 +379,9 @@ class RosTrackingTransport:
 
     def stop_arm(self, reason: str) -> None:
         self._arm_call("stop", reason=str(reason or "operator_stop"))
+
+    def return_arm(self, reason: str) -> dict[str, Any]:
+        return self._arm_call("return", reason=str(reason or "operator_return"))
 
     def commissioning(self, command: str, payload: dict[str, Any]) -> dict[str, Any]:
         self._require_started()

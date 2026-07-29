@@ -313,6 +313,7 @@ def test_actual_worker_drives_bridge_at_250_hz_without_path_faults() -> None:
             assert solver.validate_joint_path(
                 (previous_q, commanded_q),
                 support_plane=support,
+                minimum_support_clearance_m=0.005,
                 require_escape_cleared=False,
             ) is None
             maximum_speed = max(maximum_speed, max(abs(value) for value in commanded_dq))

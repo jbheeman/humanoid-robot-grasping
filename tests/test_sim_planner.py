@@ -59,7 +59,7 @@ class FakeSolver:
         minimum_support_clearance_m,
     ):
         assert support_plane.source == "test"
-        assert minimum_support_clearance_m == 0.055
+        assert minimum_support_clearance_m == 0.005
         return IKResult(True, (0.01,) * 7, 0.001, 0.0)
 
     def gravity_compensation_torque(self, _q):

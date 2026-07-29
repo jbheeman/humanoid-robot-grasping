@@ -206,8 +206,10 @@ def test_target_and_service_calls_use_ros_entities() -> None:
         [0.1] * 7,
         [-0.2] * 7,
         12.4,
+        0.7,
     )
     transport.heartbeat_arm("session")
+    assert transport.return_arm("demo_complete") == {"state": "ARMED"}
     transport.stop_arm("done")
 
     control = next(
@@ -218,6 +220,7 @@ def test_target_and_service_calls_use_ros_entities() -> None:
     assert [json.loads(message.data)["operation"] for message in control.messages] == [
         "enable",
         "heartbeat",
+        "return",
         "stop",
     ]
     target = runner.node.publishers[0].messages[0]
@@ -226,6 +229,7 @@ def test_target_and_service_calls_use_ros_entities() -> None:
     assert target_payload["pipeline_age_ms"] == 12
     assert target_payload["right_arm_q"] == [0.1] * 7
     assert target_payload["right_arm_tau_ff"] == [-0.2] * 7
+    assert target_payload["motion_scale"] == 0.7
     transport.close()
 
 

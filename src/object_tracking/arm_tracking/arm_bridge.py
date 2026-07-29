@@ -32,6 +32,7 @@ class ArmState(str, Enum):
     DISARMED = "DISARMED"
     ARMING = "ARMING"
     ARMED = "ARMED"
+    RETURNING = "RETURNING"
     HOLDING = "HOLDING"
     FAULT = "FAULT"
 
@@ -101,9 +102,7 @@ class ArmCommand:
     tau: tuple[float, ...] = (0.0,) * 14
 
     def __post_init__(self) -> None:
-        if not all(
-            len(values) == 14 for values in (self.q, self.dq, self.kp, self.kd, self.tau)
-        ):
+        if not all(len(values) == 14 for values in (self.q, self.dq, self.kp, self.kd, self.tau)):
             raise ValueError("ArmCommand must represent all 14 arm joints")
 
 
@@ -148,8 +147,19 @@ class ArmBridgeConfig:
     max_velocity_rad_s: float = 0.50
     max_acceleration_rad_s2: float = 2.0
     max_jerk_rad_s3: float = 20.0
+    return_max_velocity_rad_s: float = 0.50
+    return_max_acceleration_rad_s2: float = 2.0
+    return_max_jerk_rad_s3: float = 20.0
+    return_timeout_s: float = 12.0
+    return_waypoint_tolerance_rad: float = 0.025
+    return_measured_tolerance_rad: float = 0.05
+    return_velocity_tolerance_rad_s: float = 0.12
+    return_history_min_delta_rad: float = 0.01
+    return_history_max_points: int = 2048
     max_tau_ff_slew_nm_s: float = 200.0
     max_following_error_rad: float = 0.35
+    following_error_debounce_s: float = 0.150
+    hard_max_following_error_rad: float = 0.55
     max_left_drift_rad: float = 0.01
     kp: float = 80.0
     kd: float = 3.0
@@ -175,8 +185,18 @@ class ArmBridgeConfig:
             "max_velocity_rad_s": self.max_velocity_rad_s,
             "max_acceleration_rad_s2": self.max_acceleration_rad_s2,
             "max_jerk_rad_s3": self.max_jerk_rad_s3,
+            "return_max_velocity_rad_s": self.return_max_velocity_rad_s,
+            "return_max_acceleration_rad_s2": self.return_max_acceleration_rad_s2,
+            "return_max_jerk_rad_s3": self.return_max_jerk_rad_s3,
+            "return_timeout_s": self.return_timeout_s,
+            "return_waypoint_tolerance_rad": self.return_waypoint_tolerance_rad,
+            "return_measured_tolerance_rad": self.return_measured_tolerance_rad,
+            "return_velocity_tolerance_rad_s": self.return_velocity_tolerance_rad_s,
+            "return_history_min_delta_rad": self.return_history_min_delta_rad,
             "max_tau_ff_slew_nm_s": self.max_tau_ff_slew_nm_s,
             "max_following_error_rad": self.max_following_error_rad,
+            "following_error_debounce_s": self.following_error_debounce_s,
+            "hard_max_following_error_rad": self.hard_max_following_error_rad,
             "max_left_drift_rad": self.max_left_drift_rad,
         }
         for name, value in positive.items():
@@ -188,11 +208,12 @@ class ArmBridgeConfig:
             raise ValueError("startup_settle_timeout_s must cover startup_settle_s")
         if self.control_hz < 50.0 or self.control_hz > 250.0:
             raise ValueError("control_hz must be within the verified 50-250 Hz range")
+        if isinstance(self.return_history_max_points, bool) or self.return_history_max_points < 2:
+            raise ValueError("return_history_max_points must be an integer >= 2")
         if len(self.right_joint_limits) != 7:
             raise ValueError("right_joint_limits must contain seven ranges")
         if len(self.right_tau_ff_limits_nm) != 7 or not all(
-            math.isfinite(value) and value > 0.0
-            for value in self.right_tau_ff_limits_nm
+            math.isfinite(value) and value > 0.0 for value in self.right_tau_ff_limits_nm
         ):
             raise ValueError("right_tau_ff_limits_nm must contain seven positive limits")
         if self.joint_limit_margin_rad < 0.0:
@@ -242,9 +263,7 @@ class LoopMetrics:
                 if self.last_gravity_calculation_s is None
                 else round(self.last_gravity_calculation_s * 1_000_000.0, 3)
             ),
-            "max_gravity_calculation_us": round(
-                self.max_gravity_calculation_s * 1_000_000.0, 3
-            ),
+            "max_gravity_calculation_us": round(self.max_gravity_calculation_s * 1_000_000.0, 3),
             "deferred_arming_targets": self.deferred_arming_targets,
         }
 
@@ -282,6 +301,13 @@ class ArmBridgeController:
         self.left_latch: tuple[float, ...] | None = None
         self.commanded_right: list[float] | None = None
         self.desired_right: tuple[float, ...] | None = None
+        self.desired_motion_scale = 1.0
+        self.neutral_right: tuple[float, ...] | None = None
+        self._return_history: list[tuple[float, ...]] = []
+        self._return_path: list[tuple[float, ...]] = []
+        self._return_index = 0
+        self._return_started_at: float | None = None
+        self._return_reason: str | None = None
         self.commanded_right_tau_ff = [0.0] * 7
         self.desired_right_tau_ff = (0.0,) * 7
         self.right_velocity = [0.0] * 7
@@ -297,6 +323,7 @@ class ArmBridgeController:
         self._settle_started_at: float | None = None
         self._settle_stable_since: float | None = None
         self._arming_phase: str | None = None
+        self._following_error_since: float | None = None
         self.metrics = LoopMetrics()
 
     @property
@@ -363,6 +390,8 @@ class ArmBridgeController:
             self.left_latch = tuple(robot.arm_q[:7])
             self.commanded_right = list(robot.arm_q[7:])
             self.desired_right = tuple(robot.arm_q[7:])
+            self.desired_motion_scale = 1.0
+            self._initialize_return_path(robot.arm_q[7:])
             self.commanded_right_tau_ff = [0.0] * 7
             self.desired_right_tau_ff = (0.0,) * 7
             self.right_velocity = [0.0] * 7
@@ -372,6 +401,7 @@ class ArmBridgeController:
             self.fault_reason = None
             self.fault_details = None
             self.hold_reason = None
+            self._following_error_since = None
             self.state = ArmState.ARMING
             self._transition_at = now
             self._settle_started_at = now
@@ -421,6 +451,8 @@ class ArmBridgeController:
             self.left_latch = tuple(robot.arm_q[:7])
             self.commanded_right = list(robot.arm_q[7:])
             self.desired_right = tuple(robot.arm_q[7:])
+            self.desired_motion_scale = 1.0
+            self._initialize_return_path(robot.arm_q[7:])
             self.commanded_right_tau_ff = [0.0] * 7
             self.desired_right_tau_ff = (0.0,) * 7
             self.right_velocity = [0.0] * 7
@@ -430,6 +462,7 @@ class ArmBridgeController:
             self.fault_reason = None
             self.fault_details = None
             self.hold_reason = None
+            self._following_error_since = None
             self.state = ArmState.ARMING
             self._transition_at = now
             self._settle_started_at = now
@@ -447,6 +480,7 @@ class ArmBridgeController:
         right_arm_tau_ff: object = None,
         source_timestamp: object = None,
         pipeline_age_ms: object = None,
+        motion_scale: object = 1.0,
     ) -> dict[str, object]:
         now = self._monotonic()
         with self._lock:
@@ -499,6 +533,19 @@ class ArmBridgeController:
                 )
             target = self._validate_target(right_arm_q)
             tau_ff = self._validate_tau_ff(right_arm_tau_ff)
+            if isinstance(motion_scale, bool):
+                raise ArmBridgeError("motion_scale must be numeric", code="invalid_motion_scale")
+            try:
+                scale = float(motion_scale)
+            except (TypeError, ValueError) as exc:
+                raise ArmBridgeError(
+                    "motion_scale must be numeric", code="invalid_motion_scale"
+                ) from exc
+            if not math.isfinite(scale) or not 0.35 <= scale <= 1.0:
+                raise ArmBridgeError(
+                    "motion_scale must be within [0.35, 1.0]",
+                    code="invalid_motion_scale",
+                )
             assert self.commanded_right is not None
             self._require_safe_robot_state(
                 now,
@@ -518,6 +565,8 @@ class ArmBridgeController:
                 self.metrics.deferred_arming_targets += 1
                 return self.state_report(now)
             self.desired_right = target
+            self.desired_motion_scale = scale
+            self._record_return_waypoint(target)
             if self.gravity_compensator is None:
                 self.desired_right_tau_ff = tau_ff
             return self.state_report(now)
@@ -553,6 +602,8 @@ class ArmBridgeController:
                 now, require_stable=False, require_commissioning_verification=True
             )
             self.desired_right = target
+            self.desired_motion_scale = 1.0
+            self._record_return_waypoint(target)
             self.last_sequence = sequence
             self.last_target_at = now
             return self.state_report(now)
@@ -581,6 +632,38 @@ class ArmBridgeController:
         now = self._monotonic()
         with self._lock:
             self._begin_holding(reason, now)
+            return self.state_report(now)
+
+    def return_to_neutral(self, reason: str = "operator_return") -> dict[str, object]:
+        """Retrace accepted targets to session-start pose before releasing."""
+
+        now = self._monotonic()
+        with self._lock:
+            if self.state is ArmState.RETURNING:
+                return self.state_report(now)
+            if self.state not in (ArmState.ARMING, ArmState.ARMED):
+                raise ArmBridgeError(
+                    f"Controlled return rejected from {self.state.value}",
+                    code="invalid_state",
+                )
+            if self.neutral_right is None or self.commanded_right is None:
+                self._begin_holding("return_pose_unavailable", now)
+                return self.state_report(now)
+
+            # The newest accepted target is the edge currently being traversed.
+            # Return to its predecessor first, then replay the accepted path in
+            # reverse until the measured session-start pose is reached.
+            path = list(reversed(self._return_history[:-1]))
+            if not path or path[-1] != self.neutral_right:
+                path.append(self.neutral_right)
+            self._return_path = path
+            self._return_index = 0
+            self._return_started_at = now
+            self._return_reason = str(reason or "operator_return")
+            self.hold_reason = None
+            self.state = ArmState.RETURNING
+            self._transition_at = now
+            self.desired_right = self._return_path[0]
             return self.state_report(now)
 
     def tick(self, now: float | None = None) -> None:
@@ -630,25 +713,10 @@ class ArmBridgeController:
                     and self.commanded_right is not None
                     and self.weight >= 0.5
                 ):
-                    measured_right = robot.arm_q[7:]
-                    errors = [
-                        abs(measured_right[i] - self.commanded_right[i]) for i in range(7)
-                    ]
-                    self.metrics.maximum_following_error_rad = max(
-                        self.metrics.maximum_following_error_rad,
-                        max(errors),
-                    )
-                    worst_joint = max(range(7), key=errors.__getitem__)
-                    if errors[worst_joint] > self.config.max_following_error_rad:
-                        self.fault_details = {
-                            "joint_index": worst_joint,
-                            "error_rad": errors[worst_joint],
-                            "measured_rad": measured_right[worst_joint],
-                            "commanded_rad": self.commanded_right[worst_joint],
-                        }
-                        self._enter_fault("following_error", now)
-                    elif (
-                        self.control_mode is ArmControlMode.COMMISSIONING
+                    self._check_following_error(robot, now)
+                    if (
+                        self.state is ArmState.ARMED
+                        and self.control_mode is ArmControlMode.COMMISSIONING
                         and self.left_latch is not None
                         and any(
                             abs(actual - expected) > self.config.max_left_drift_rad
@@ -657,11 +725,28 @@ class ArmBridgeController:
                     ):
                         self._enter_fault("left_arm_drift", now)
 
-            if self.state is ArmState.ARMED:
+            if (
+                self.state is ArmState.RETURNING
+                and self._return_started_at is not None
+                and now - self._return_started_at >= self.config.return_timeout_s
+            ):
+                self._begin_holding("return_timeout", now)
+
+            if (
+                self.state is ArmState.RETURNING
+                and robot is not None
+                and self.commanded_right is not None
+                and self.weight >= 0.5
+            ):
+                self._check_following_error(robot, now)
+
+            if self.state in (ArmState.ARMED, ArmState.RETURNING):
                 try:
                     self._interpolate_right(dt)
                 except (ArmBridgeError, RuntimeError, ValueError) as exc:
                     self._enter_fault(f"trajectory_generation:{exc}", now)
+                if self.state is ArmState.RETURNING and robot is not None:
+                    self._advance_return(now, robot)
             elif self.state in (ArmState.HOLDING, ArmState.FAULT):
                 elapsed = max(0.0, now - self._transition_at)
                 release_s = self._deadline_trigger_s(self.config.weight_ramp_s)
@@ -670,7 +755,13 @@ class ArmBridgeController:
             if (
                 self.gravity_compensator is not None
                 and robot is not None
-                and self.state in (ArmState.ARMING, ArmState.ARMED, ArmState.HOLDING)
+                and self.state
+                in (
+                    ArmState.ARMING,
+                    ArmState.ARMED,
+                    ArmState.RETURNING,
+                    ArmState.HOLDING,
+                )
             ):
                 started = time.perf_counter()
                 try:
@@ -713,6 +804,8 @@ class ArmBridgeController:
                 "max_velocity_rad_s": self.config.max_velocity_rad_s,
                 "max_acceleration_rad_s2": self.config.max_acceleration_rad_s2,
                 "max_jerk_rad_s3": self.config.max_jerk_rad_s3,
+                "return_max_velocity_rad_s": self.config.return_max_velocity_rad_s,
+                "return_timeout_s": self.config.return_timeout_s,
                 "gravity_feedforward": True,
                 "gravity_feedforward_source": (
                     "perception_target"
@@ -732,6 +825,14 @@ class ArmBridgeController:
                 "loop": self.metrics.as_dict(),
                 "fault_reason": self.fault_reason,
                 "fault_details": self.fault_details,
+                "following_error_duration_ms": (
+                    None
+                    if self._following_error_since is None
+                    else round(
+                        max(0.0, self._monotonic() - self._following_error_since) * 1000.0,
+                        3,
+                    )
+                ),
             }
 
     def state_report(self, now: float | None = None) -> dict[str, object]:
@@ -770,9 +871,7 @@ class ArmBridgeController:
                         enable_blockers.append("waist_state_non_finite")
                     elif any(
                         abs(actual - expected) > self.config.max_waist_deviation_rad
-                        for actual, expected in zip(
-                            robot.waist_q, self.config.waist_reference_rad
-                        )
+                        for actual, expected in zip(robot.waist_q, self.config.waist_reference_rad)
                     ):
                         enable_blockers.append("waist_calibration_mismatch")
             commanded_arm = (
@@ -832,11 +931,26 @@ class ArmBridgeController:
                 "weight": round(self.weight, 6),
                 "arming_phase": self._arming_phase,
                 "hold_reason": self.hold_reason,
+                "return_reason": self._return_reason,
+                "return_waypoint_index": (
+                    None if self.state is not ArmState.RETURNING else self._return_index
+                ),
+                "return_waypoint_count": len(self._return_path),
                 "fault_reason": self.fault_reason,
                 "fault_details": self.fault_details,
                 "commanded_arm_q": commanded_arm,
                 "commanded_right_tau_ff_nm": list(self.commanded_right_tau_ff),
                 "desired_right_tau_ff_nm": list(self.desired_right_tau_ff),
+                "motion_scale": self.desired_motion_scale,
+                "effective_max_velocity_rad_s": (
+                    self.config.max_velocity_rad_s * self.desired_motion_scale
+                ),
+                "effective_max_acceleration_rad_s2": (
+                    self.config.max_acceleration_rad_s2 * self.desired_motion_scale
+                ),
+                "effective_max_jerk_rad_s3": (
+                    self.config.max_jerk_rad_s3 * self.desired_motion_scale
+                ),
                 "visualization": visual,
                 "loop": self.metrics.as_dict(),
             }
@@ -984,8 +1098,7 @@ class ArmBridgeController:
         ):
             if abs(value_nm) > limit_nm:
                 raise ArmBridgeError(
-                    f"{RIGHT_ARM_JOINT_NAMES[index]} gravity torque exceeds "
-                    f"{limit_nm:.2f} Nm",
+                    f"{RIGHT_ARM_JOINT_NAMES[index]} gravity torque exceeds {limit_nm:.2f} Nm",
                     code="torque_feedforward_limit",
                 )
         return torque
@@ -1001,9 +1114,26 @@ class ArmBridgeController:
         inp.target_position = list(self.desired_right)
         inp.target_velocity = [0.0] * 7
         inp.target_acceleration = [0.0] * 7
-        inp.max_velocity = [self.config.max_velocity_rad_s] * 7
-        inp.max_acceleration = [self.config.max_acceleration_rad_s2] * 7
-        inp.max_jerk = [self.config.max_jerk_rad_s3] * 7
+        returning = self.state is ArmState.RETURNING
+        motion_scale = 1.0 if returning else self.desired_motion_scale
+        max_velocity = (
+            self.config.return_max_velocity_rad_s
+            if returning
+            else self.config.max_velocity_rad_s * motion_scale
+        )
+        max_acceleration = (
+            self.config.return_max_acceleration_rad_s2
+            if returning
+            else self.config.max_acceleration_rad_s2 * motion_scale
+        )
+        max_jerk = (
+            self.config.return_max_jerk_rad_s3
+            if returning
+            else self.config.max_jerk_rad_s3 * motion_scale
+        )
+        inp.max_velocity = [max_velocity] * 7
+        inp.max_acceleration = [max_acceleration] * 7
+        inp.max_jerk = [max_jerk] * 7
         if not self._ruckig.validate_input(
             inp,
             check_current_state_within_limits=False,
@@ -1061,8 +1191,7 @@ class ArmBridgeController:
         if self._arming_phase == "settling":
             measured = robot.arm_q[7:]
             pose_error = max(
-                abs(actual - expected)
-                for actual, expected in zip(measured, self.commanded_right)
+                abs(actual - expected) for actual, expected in zip(measured, self.commanded_right)
             )
             velocity = max(abs(value) for value in robot.arm_dq[7:])
             stable = (
@@ -1098,6 +1227,88 @@ class ArmBridgeController:
 
         self._ruckig_input = InputParameter(7)
         self._ruckig_output = OutputParameter(7)
+
+    def _initialize_return_path(self, measured_right: Sequence[float]) -> None:
+        neutral = tuple(float(value) for value in measured_right)
+        self.neutral_right = neutral
+        self._return_history = [neutral]
+        self._return_path = []
+        self._return_index = 0
+        self._return_started_at = None
+        self._return_reason = None
+
+    def _record_return_waypoint(self, target: tuple[float, ...]) -> None:
+        if not self._return_history:
+            return
+        if (
+            max(
+                abs(actual - previous) for actual, previous in zip(target, self._return_history[-1])
+            )
+            < self.config.return_history_min_delta_rad
+        ):
+            return
+        self._return_history.append(target)
+        excess = len(self._return_history) - self.config.return_history_max_points
+        if excess > 0:
+            # Never discard the measured neutral pose at index zero.
+            del self._return_history[1 : 1 + excess]
+
+    def _check_following_error(self, robot: RobotState, now: float) -> None:
+        assert self.commanded_right is not None
+        measured_right = robot.arm_q[7:]
+        errors = [abs(measured_right[index] - self.commanded_right[index]) for index in range(7)]
+        self.metrics.maximum_following_error_rad = max(
+            self.metrics.maximum_following_error_rad,
+            max(errors),
+        )
+        worst_joint = max(range(7), key=errors.__getitem__)
+        worst_error = errors[worst_joint]
+        if worst_error <= self.config.max_following_error_rad:
+            self._following_error_since = None
+            return
+        if self._following_error_since is None:
+            self._following_error_since = now
+        duration_s = max(0.0, now - self._following_error_since)
+        self.fault_details = {
+            "joint_index": worst_joint,
+            "error_rad": worst_error,
+            "measured_rad": measured_right[worst_joint],
+            "commanded_rad": self.commanded_right[worst_joint],
+            "duration_ms": round(duration_s * 1000.0, 3),
+            "hard_limit_rad": self.config.hard_max_following_error_rad,
+        }
+        if (
+            self.config.hard_max_following_error_rad > self.config.max_following_error_rad
+            and worst_error > self.config.hard_max_following_error_rad
+        ) or duration_s >= self._deadline_trigger_s(self.config.following_error_debounce_s):
+            self._enter_fault("following_error", now)
+
+    def _advance_return(self, now: float, robot: RobotState) -> None:
+        if (
+            self.state is not ArmState.RETURNING
+            or self.commanded_right is None
+            or self.desired_right is None
+        ):
+            return
+        command_error = max(
+            abs(actual - desired)
+            for actual, desired in zip(self.commanded_right, self.desired_right)
+        )
+        measured_error = max(
+            abs(actual - desired) for actual, desired in zip(robot.arm_q[7:], self.desired_right)
+        )
+        measured_velocity = max(abs(value) for value in robot.arm_dq[7:])
+        if (
+            command_error > self.config.return_waypoint_tolerance_rad
+            or measured_error > self.config.return_measured_tolerance_rad
+            or measured_velocity > self.config.return_velocity_tolerance_rad_s
+        ):
+            return
+        self._return_index += 1
+        if self._return_index >= len(self._return_path):
+            self._begin_holding("return_complete", now)
+            return
+        self.desired_right = self._return_path[self._return_index]
 
     def _publish(self, now: float, robot: RobotState | None) -> None:
         if (
@@ -1170,11 +1381,19 @@ class ArmBridgeController:
         self.left_latch = None
         self.commanded_right = None
         self.desired_right = None
+        self.desired_motion_scale = 1.0
+        self.neutral_right = None
+        self._return_history = []
+        self._return_path = []
+        self._return_index = 0
+        self._return_started_at = None
+        self._return_reason = None
         self.commanded_right_tau_ff = [0.0] * 7
         self.desired_right_tau_ff = (0.0,) * 7
         self._settle_started_at = None
         self._settle_stable_since = None
         self._arming_phase = None
+        self._following_error_since = None
         self.right_velocity = [0.0] * 7
         self.right_acceleration = [0.0] * 7
         self.weight = 0.0

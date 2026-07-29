@@ -45,6 +45,7 @@ ALLOW_NOMINAL_SUPPORT_PLANE="${ALLOW_NOMINAL_SUPPORT_PLANE:-0}"
 ARM_HOME="${ARM_HOME:-}"
 G1_ROBOT_ID="${G1_ROBOT_ID:-}"
 TARGET_HZ="${TARGET_HZ:-20}"
+FOLLOW_PROFILE="${FOLLOW_PROFILE:-balanced}"
 EXECUTE="${EXECUTE:-0}"
 RESEARCH_RECORD="${RESEARCH_RECORD:-1}"
 RESEARCH_HZ="${RESEARCH_HZ:-5}"
@@ -59,6 +60,10 @@ server_args=()
 
 while (($#)); do
   case "$1" in
+    --follow-profile)
+      FOLLOW_PROFILE="${2:?--follow-profile requires balanced or aggressive}"
+      shift
+      ;;
     -h|--help)
       echo "Usage: scripts/gb10/start.sh [server options]"
       exit 0
@@ -67,6 +72,11 @@ while (($#)); do
   esac
   shift
 done
+
+if [[ "${FOLLOW_PROFILE}" != "balanced" && "${FOLLOW_PROFILE}" != "aggressive" ]]; then
+  echo "FOLLOW_PROFILE must be balanced or aggressive." >&2
+  exit 2
+fi
 
 source "${ROOT_DIR}/scripts/shared/run-logging.sh"
 log_component="gb10-vision"
@@ -135,7 +145,7 @@ export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
 
 PIPELINE="${PIPELINE:-udpsrc address=0.0.0.0 port=${UDP_PORT} buffer-size=1048576 ! application/x-rtp,media=video,encoding-name=H264,clock-rate=90000 ! queue ! rtpjitterbuffer latency=20 drop-on-latency=true ! rtph264depay ! h264parse ! avdec_h264 max-threads=8 ! videoconvert ! videoscale ! video/x-raw,width=${VISION_WIDTH},height=${VISION_HEIGHT},format=BGR ! queue max-size-buffers=1 max-size-time=0 max-size-bytes=0 leaky=downstream ! appsink sync=false drop=true max-buffers=1}"
 
-tracking_args=(--target-hz "${TARGET_HZ}")
+tracking_args=(--target-hz "${TARGET_HZ}" --follow-profile "${FOLLOW_PROFILE}")
 if [[ -n "${CALIBRATION}" ]]; then
   tracking_args+=(--calibration "${CALIBRATION}")
 fi

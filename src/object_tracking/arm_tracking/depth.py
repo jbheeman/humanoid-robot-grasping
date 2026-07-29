@@ -220,15 +220,45 @@ def estimate_adaptive_roi_depth(
     fails.  The fallback never samples outside the detection box.
     """
 
+    candidates = adaptive_roi_depth_candidates(
+        z16,
+        bbox_xyxy,
+        depth_scale=depth_scale,
+        roi_fractions=roi_fractions,
+        fallback_offsets=fallback_offsets,
+        fallback_fraction=fallback_fraction,
+    )
+    if not candidates:
+        return None
+    return max(
+        candidates,
+        key=lambda item: (item.sample_count, item.valid_fraction, -item.depth_m),
+    )
+
+
+def adaptive_roi_depth_candidates(
+    z16: np.ndarray,
+    bbox_xyxy: tuple[float, float, float, float] | list[float],
+    *,
+    depth_scale: float,
+    roi_fractions: tuple[float, ...] = (0.1, 0.15, 0.2, 0.3, 0.4, 0.6),
+    fallback_offsets: tuple[float, ...] = (-0.2, 0.0, 0.2),
+    fallback_fraction: float = 0.2,
+) -> tuple[DepthEstimate, ...]:
+    """Expose every certain centered ROI candidate for temporal association.
+
+    Cold-start callers can retain the historic sample-support ranking through
+    :func:`estimate_adaptive_roi_depth`. Realtime callers should project these
+    candidates into the robot frame and select the one consistent with the
+    previously filtered object state.
+    """
+
     if not roi_fractions:
         raise ValueError("roi_fractions must not be empty")
     if (
         not fallback_offsets
         or not 0.0 < fallback_fraction <= 1.0
-        or any(
-            abs(offset) + fallback_fraction / 2.0 > 0.5
-            for offset in fallback_offsets
-        )
+        or any(abs(offset) + fallback_fraction / 2.0 > 0.5 for offset in fallback_offsets)
     ):
         raise ValueError("fallback depth patches must remain inside the detection box")
     candidates = []
@@ -242,7 +272,7 @@ def estimate_adaptive_roi_depth(
         if estimate is not None and estimate.is_certain:
             candidates.append(estimate)
     if candidates:
-        return max(candidates, key=lambda item: (item.sample_count, item.valid_fraction))
+        return tuple(candidates)
 
     x1, y1, x2, y2 = (float(item) for item in bbox_xyxy)
     width, height = x2 - x1, y2 - y1
@@ -266,8 +296,5 @@ def estimate_adaptive_roi_depth(
             if estimate is not None and estimate.is_certain:
                 fallback_candidates.append(estimate)
     if not fallback_candidates:
-        return None
-    return max(
-        fallback_candidates,
-        key=lambda item: (item.sample_count, item.valid_fraction, -item.depth_m),
-    )
+        return ()
+    return tuple(fallback_candidates)

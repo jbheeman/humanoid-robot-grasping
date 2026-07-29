@@ -29,20 +29,25 @@ from object_tracking.arm_tracking.geometry import (
 from object_tracking.arm_tracking.runtime import (
     ArmTrackingRuntime,
     RuntimeConfig,
+    adaptive_prediction_horizon,
     arm_motion_is_active,
     cached_approach_should_be_invalidated,
     clamp_point_height_to_support,
     compress_validated_joint_path,
     enforce_tracking_palm_clearance,
+    follow_profile_limits,
+    gross_tabletop_approach_target,
     measured_right_arm_for_intercept,
     project_target_into_workspace,
     tabletop_tracking_target,
     register_depth_in_rgb,
     right_arm_ik_seed,
     ruckig_edge_is_valid,
+    select_temporally_consistent_point,
     select_start_escape_waypoint,
     support_region_from_pixel_prior,
     tabletop_footprint_dimensions_plausible,
+    tracking_motion_scale,
 )
 
 
@@ -51,6 +56,7 @@ class FakeTrackingTransport:
         self.started = False
         self.closed = False
         self.stops: list[str] = []
+        self.returns: list[str] = []
         self.state: dict[str, Any] = {"state": "DISARMED", "weight": 0.0}
         self.depth_frames: list[DepthFrame] = []
         self.published: list[dict[str, Any]] = []
@@ -79,6 +85,7 @@ class FakeTrackingTransport:
         right_arm_q: Sequence[float],
         right_arm_tau_ff: Sequence[float],
         pipeline_age_ms: float,
+        motion_scale: float = 1.0,
     ) -> None:
         self.published.append(
             {
@@ -88,14 +95,68 @@ class FakeTrackingTransport:
                 "right_arm_q": tuple(float(value) for value in right_arm_q),
                 "right_arm_tau_ff": tuple(float(value) for value in right_arm_tau_ff),
                 "pipeline_age_ms": pipeline_age_ms,
+                "motion_scale": motion_scale,
             }
         )
 
     def stop_arm(self, reason: str) -> None:
         self.stops.append(reason)
 
+    def return_arm(self, reason: str) -> dict[str, Any]:
+        self.returns.append(reason)
+        return {"state": "RETURNING", "return_reason": reason}
+
     def commissioning(self, command: str, payload: dict[str, Any]) -> dict[str, Any]:
         return {"command": command, **payload}
+
+
+def test_realtime_follow_lookahead_and_motion_scale_are_bounded() -> None:
+    assert adaptive_prediction_horizon((0.0, 0.0, 0.0)) == pytest.approx(0.15)
+    assert adaptive_prediction_horizon((0.08, 0.0, 0.0)) == pytest.approx(0.25)
+    assert adaptive_prediction_horizon((1.0, 0.0, 0.0)) == pytest.approx(0.45)
+    assert tracking_motion_scale(0.0, 0.0) == pytest.approx(0.35)
+    assert tracking_motion_scale(0.10, 0.0) == pytest.approx(0.675)
+    assert tracking_motion_scale(0.0, 0.15) == pytest.approx(1.0)
+
+
+def test_temporal_association_rejects_recorded_background_depth_flip() -> None:
+    index, residuals = select_temporally_consistent_point(
+        (
+            (0.45, -0.06, 0.084),
+            (0.64, -0.10, 0.033),
+        ),
+        (0.452, -0.061, 0.084),
+    )
+    assert index == 0
+    assert residuals[0] < 0.003
+    assert residuals[1] > 0.19
+
+    rejected, rejected_residuals = select_temporally_consistent_point(
+        ((0.64, -0.10, 0.033),),
+        (0.452, -0.061, 0.084),
+    )
+    assert rejected is None
+    assert rejected_residuals[0] > 0.19
+
+
+def test_final_approach_hands_off_at_recorded_live_residual() -> None:
+    path = ((0.0,) * 7, (0.2,) + (0.0,) * 6)
+    measured = (0.15005,) + (0.0,) * 6
+
+    waypoint, index, error = select_start_escape_waypoint(
+        measured,
+        path,
+        1,
+        reached_tolerance_rad=0.018,
+        measured_velocity_rad_s=(0.30,) + (0.0,) * 6,
+        maximum_waypoint_velocity_rad_s=0.35,
+        final_reached_tolerance_rad=0.060,
+        final_maximum_waypoint_velocity_rad_s=0.35,
+    )
+
+    assert waypoint is None
+    assert index == len(path)
+    assert error is None
 
 
 def _calibration() -> Calibration:
@@ -224,12 +285,90 @@ class FakeInterceptIK:
         *,
         support_plane: SupportRegion,
         minimum_support_clearance_m: float = 0.05,
+        maximum_joint_step_rad: float = 0.040,
     ) -> Any:
         del target_transform, support_plane
-        assert minimum_support_clearance_m == 0.065
+        assert minimum_support_clearance_m == 0.005
+        assert maximum_joint_step_rad in (0.040, 0.075)
         from object_tracking.arm_tracking.ik_solver import IKResult
 
         return IKResult(True, tuple(float(value) for value in initial_q), 0.0, 0.0)
+
+
+def test_follow_profiles_are_explicit_and_reversible() -> None:
+    assert follow_profile_limits("balanced") == (0.040, 1.00, 4.00, 30.0)
+    assert follow_profile_limits("aggressive") == (0.075, 1.25, 5.00, 40.0)
+    with pytest.raises(ValueError, match="unknown follow profile"):
+        follow_profile_limits("reckless")
+
+
+def test_robot_can_select_follow_profile_only_while_disarmed(tmp_path: Path) -> None:
+    calibration_path = tmp_path / "calibration.yaml"
+    save_calibration_atomic(_calibration(), calibration_path)
+    transport = FakeTrackingTransport()
+    runtime = ArmTrackingRuntime(
+        RuntimeConfig(calibration_path=calibration_path),
+        lambda: {},
+        lambda status, depth: None,
+        transport=transport,
+        repo_root=tmp_path,
+    )
+    runtime.last_target_track = 7
+    runtime._approach_path = ((0.0,) * 7, (0.01,) * 7)
+
+    applied = runtime.set_follow_profile("aggressive")
+
+    assert applied["changed"] is True
+    assert runtime.config.follow_profile == "aggressive"
+    assert runtime.config.maximum_joint_step_rad == pytest.approx(0.075)
+    assert runtime.config.maximum_velocity_rad_s == pytest.approx(1.25)
+    assert runtime.last_target_track is None
+    assert runtime._approach_path is None
+    assert runtime.set_follow_profile("aggressive")["changed"] is False
+
+    transport.state = {"state": "ARMING", "session_id": "live"}
+    with pytest.raises(RuntimeError, match="DISARMED"):
+        runtime.set_follow_profile("balanced")
+    assert runtime.config.follow_profile == "aggressive"
+
+
+def test_brief_perception_gap_republishes_only_fresh_safe_target(
+    tmp_path: Path,
+    monkeypatch: Any,
+) -> None:
+    calibration_path = tmp_path / "calibration.yaml"
+    save_calibration_atomic(_calibration(), calibration_path)
+    transport = FakeTrackingTransport()
+    transport.state = {"state": "ARMED", "session_id": "demo"}
+    statuses: list[dict[str, Any]] = []
+    runtime = ArmTrackingRuntime(
+        RuntimeConfig(calibration_path=calibration_path, execute=True),
+        lambda: {},
+        lambda status, depth: statuses.append(dict(status)),
+        transport=transport,
+        repo_root=tmp_path,
+    )
+    clock = [100.0]
+    monkeypatch.setattr(runtime_module.time, "monotonic", lambda: clock[0])
+    runtime.last_arm_poll_at = clock[0]
+    runtime.last_arm_state = dict(transport.state)
+    runtime.last_safe_target_q = (0.1,) * 7
+    runtime.last_safe_target_tau_ff = (0.0,) * 7
+    runtime.last_safe_target_session = "demo"
+    runtime.last_safe_perception_at = 99.8
+
+    assert runtime._republish_last_safe_target({}, reason="rgb_depth_pair_stale")
+    assert transport.published[-1]["right_arm_q"] == (0.1,) * 7
+    assert statuses[-1]["status"] == "target_republished"
+    assert statuses[-1]["reused_last_safe_target"] is True
+
+    clock[0] = 100.249
+    assert runtime._republish_last_safe_target({}, reason="rgb_depth_pair_stale")
+    assert len(transport.published) == 2
+
+    clock[0] = 100.251
+    assert not runtime._republish_last_safe_target({}, reason="rgb_depth_pair_stale")
+    assert len(transport.published) == 2
 
 
 def test_identity_registration_preserves_valid_depth_pixels() -> None:
@@ -710,11 +849,11 @@ def test_tracking_target_stays_in_high_tabletop_interaction_corridor() -> None:
 
     elevated = enforce_tracking_palm_clearance(target, support)
 
-    assert support.signed_distance(elevated.position) == pytest.approx(0.110)
+    assert support.signed_distance(elevated.position) == pytest.approx(0.005)
     np.testing.assert_allclose(elevated.position[:2], target.position[:2], atol=1e-9)
 
 
-def test_tabletop_tracking_target_is_right_of_object_and_above_its_top() -> None:
+def test_tabletop_tracking_target_uses_fixed_torso_z_and_55mm_right_offset() -> None:
     support = SupportRegion.from_xy_bounds(
         Plane((0.0, 0.0, 1.0), -0.005),
         (0.35, -0.35),
@@ -723,8 +862,23 @@ def test_tabletop_tracking_target_is_right_of_object_and_above_its_top() -> None
     target = tabletop_tracking_target((0.516, 0.001, 0.084), support)
 
     assert target.position[0] == pytest.approx(0.516)
-    assert target.position[1] == pytest.approx(-0.059)
-    assert support.signed_distance(target.position) == pytest.approx(0.110)
+    assert target.position[1] == pytest.approx(-0.054)
+    assert target.position[2] == pytest.approx(0.0)
+
+
+def test_gross_tabletop_approach_stages_above_low_tracking_target() -> None:
+    support = SupportRegion.from_xy_bounds(
+        Plane((0.0, 0.0, 1.0), 0.0),
+        (0.35, -0.35),
+        (0.80, 0.35),
+    )
+    low = TargetPose(np.asarray((0.45, -0.11, 0.035)), np.asarray((0.0, 0.0, 0.0, 1.0)))
+
+    staged = gross_tabletop_approach_target(low, support)
+
+    assert staged.position[0] == pytest.approx(0.380)
+    assert staged.position[1] == pytest.approx(low.position[1])
+    assert support.signed_distance(staged.position) == pytest.approx(0.160)
 
 
 def test_close_pregrasp_target_projects_into_reachable_workspace() -> None:
@@ -741,7 +895,7 @@ def test_close_pregrasp_target_projects_into_reachable_workspace() -> None:
     assert correction == pytest.approx(0.035)
 
 
-def test_far_target_is_not_hidden_by_workspace_projection() -> None:
+def test_far_target_saturates_at_workspace_boundary_without_dropping_stream() -> None:
     workspace = WorkspaceBounds((0.37, -0.35, -0.03), (0.80, 0.35, 0.25))
     target = TargetPose(
         np.asarray((0.20, -0.06, 0.09)),
@@ -749,6 +903,24 @@ def test_far_target_is_not_hidden_by_workspace_projection() -> None:
     )
 
     projected, correction = project_target_into_workspace(target, workspace)
+
+    assert projected is not None
+    np.testing.assert_allclose(projected.position, (0.375, -0.06, 0.09))
+    assert correction > 0.08
+
+
+def test_explicit_workspace_correction_limit_can_reject_far_target() -> None:
+    workspace = WorkspaceBounds((0.37, -0.35, -0.03), (0.80, 0.35, 0.25))
+    target = TargetPose(
+        np.asarray((0.20, -0.06, 0.09)),
+        np.asarray((0.0, 0.0, 0.0, 1.0)),
+    )
+
+    projected, correction = project_target_into_workspace(
+        target,
+        workspace,
+        maximum_correction_m=0.08,
+    )
 
     assert projected is None
     assert correction > 0.08
@@ -825,7 +997,19 @@ def test_runtime_uses_injected_transport_for_arm_state_and_stop(tmp_path: Path) 
     assert runtime._approach_completed is False
 
 
-def test_transient_perception_rejection_leaves_session_for_deadman(tmp_path: Path) -> None:
+@pytest.mark.parametrize(
+    "reason",
+    [
+        "rgb_depth_pair_stale",
+        "depth_temporal_outlier",
+        "target_identity_unconfirmed",
+        "target_reacquisition_requires_rearm",
+    ],
+)
+def test_transient_perception_rejection_leaves_session_for_deadman(
+    tmp_path: Path,
+    reason: str,
+) -> None:
     calibration_path = tmp_path / "calibration.yaml"
     save_calibration_atomic(_calibration(), calibration_path)
     transport = FakeTrackingTransport()
@@ -840,12 +1024,12 @@ def test_transient_perception_rejection_leaves_session_for_deadman(tmp_path: Pat
     runtime.last_target_track = 3
     runtime._approach_path = ((0.0,) * 7, (0.01,) * 7)
 
-    runtime._reject({}, "rgb_depth_pair_stale", None)
+    runtime._reject({}, reason, None)
 
     assert transport.stops == []
     assert runtime.last_target_track == 3
     assert runtime._approach_path is not None
-    assert statuses[-1]["reason"] == "rgb_depth_pair_stale"
+    assert statuses[-1]["reason"] == reason
 
 
 def test_cached_approach_tracks_target_drift_only_while_disarmed() -> None:
@@ -1077,10 +1261,12 @@ def test_continuous_mode_target_loss_order_is_unchanged_without_intercept_profil
         "_support_plane",
         lambda *args, **kwargs: pytest.fail("support plane should not run before target loss"),
     )
+    retained = runtime.filter.update((0.45, -0.06, 0.084), receipt_time - 0.1)
 
     runtime._process_latest()
 
     assert statuses[-1]["reason"] == "target_lost"
+    assert runtime.filter.state is retained
 
 
 @pytest.mark.parametrize(
@@ -1159,8 +1345,8 @@ def test_intercept_preview_and_commit_publish_gate(
     monkeypatch.setattr(runtime, "_support_plane", lambda *args, **kwargs: support)
     monkeypatch.setattr(
         runtime_module,
-        "estimate_adaptive_roi_depth",
-        lambda *args, **kwargs: DepthEstimate(1.0, (1.5, 1.0), 12, 1.0, 0.001, 0.002),
+        "adaptive_roi_depth_candidates",
+        lambda *args, **kwargs: (DepthEstimate(1.0, (1.5, 1.0), 12, 1.0, 0.001, 0.002),),
     )
     monkeypatch.setattr(
         runtime_module,

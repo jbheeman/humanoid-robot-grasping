@@ -69,9 +69,14 @@ class NativeArmService:
                 right_arm_tau_ff=payload.get("right_arm_tau_ff"),
                 source_timestamp=payload.get("source_timestamp"),
                 pipeline_age_ms=payload.get("pipeline_age_ms"),
+                motion_scale=payload.get("motion_scale", 1.0),
             )
         if operation == "stop":
             return self.controller.stop(str(payload.get("reason") or "operator_stop"))
+        if operation == "return":
+            return self.controller.return_to_neutral(
+                str(payload.get("reason") or "operator_return")
+            )
         if operation == "state":
             return self.controller.state_report()
         raise ArmBridgeError("Unknown native arm operation", code="invalid_request")
@@ -150,6 +155,7 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-velocity-rad-s", type=float, default=0.15)
     parser.add_argument("--max-acceleration-rad-s2", type=float, default=0.5)
     parser.add_argument("--max-jerk-rad-s3", type=float, default=2.0)
+    parser.add_argument("--max-following-error-rad", type=float, default=0.35)
     parser.add_argument("--arm-kp", type=float, default=80.0)
     parser.add_argument("--arm-kd", type=float, default=3.0)
     parser.add_argument("--wrist-kp", type=float, default=40.0)
@@ -207,14 +213,13 @@ def main() -> int:
             max_velocity_rad_s=args.max_velocity_rad_s,
             max_acceleration_rad_s2=args.max_acceleration_rad_s2,
             max_jerk_rad_s3=args.max_jerk_rad_s3,
+            max_following_error_rad=args.max_following_error_rad,
             kp=args.arm_kp,
             kd=args.arm_kd,
             wrist_kp=args.wrist_kp,
             wrist_kd=args.wrist_kd,
             calibration_id=None if calibration is None else calibration.calibration_id,
-            waist_reference_rad=(
-                None if calibration is None else calibration.waist_reference_rad
-            ),
+            waist_reference_rad=(None if calibration is None else calibration.waist_reference_rad),
             # The standing controller naturally pitches the waist while the
             # arm's mass moves forward/up.  Use the operator-selected live
             # tilt envelope here too; the old fixed 3 degree gate rejected

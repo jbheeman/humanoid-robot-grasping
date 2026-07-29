@@ -7,6 +7,7 @@ import numpy as np
 from object_tracking.arm_tracking.depth import (
     DepthFrame,
     DepthFrameBuffer,
+    adaptive_roi_depth_candidates,
     estimate_adaptive_roi_depth,
     estimate_roi_depth,
     pair_rgb_depth,
@@ -125,6 +126,20 @@ class RobustDepthTests(unittest.TestCase):
         self.assertGreaterEqual(estimate.sample_count, 8)
         self.assertGreaterEqual(estimate.pixel_xy[0], 28)
         self.assertLess(estimate.pixel_xy[0], 45)
+
+    def test_adaptive_roi_exposes_competing_foreground_and_background(self) -> None:
+        depth = np.full((100, 100), 790, dtype=np.uint16)
+        depth[44:56, 44:56] = 580
+
+        candidates = adaptive_roi_depth_candidates(
+            depth,
+            [20, 20, 80, 80],
+            depth_scale=0.001,
+        )
+
+        candidate_depths = {round(candidate.depth_m, 2) for candidate in candidates}
+        self.assertIn(0.58, candidate_depths)
+        self.assertIn(0.79, candidate_depths)
 
     def test_adaptive_roi_fallback_stays_inside_detection(self) -> None:
         depth = np.zeros((100, 100), dtype=np.uint16)

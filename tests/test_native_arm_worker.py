@@ -26,6 +26,10 @@ class FakeController:
         self.calls.append(("stop", reason))
         return {"state": "HOLDING"}
 
+    def return_to_neutral(self, reason):
+        self.calls.append(("return", reason))
+        return {"state": "RETURNING"}
+
     def state_report(self):
         self.calls.append(("state", {}))
         return {"state": "DISARMED"}
@@ -35,36 +39,44 @@ def test_native_service_preserves_guarded_tracking_protocol() -> None:
     controller = FakeController()
     service = NativeArmService(controller)  # type: ignore[arg-type]
 
-    assert service.dispatch({
-        "operation": "enable",
-        "payload": {"session_id": "s", "calibration_id": "c"},
-    }) == {"state": "ARMING"}
-    assert service.dispatch({
-        "operation": "heartbeat", "payload": {"session_id": "s"}
-    }) == {"state": "ARMED"}
-    assert service.dispatch({
-        "operation": "target",
-        "payload": {
-            "session_id": "s",
-            "sequence": 7,
-            "calibration_id": "c",
-            "right_arm_q": [0.01] * 7,
-            "right_arm_tau_ff": [-0.2] * 7,
-            "pipeline_age_ms": 12,
-        },
-    }) == {"last_sequence": 7}
-    assert service.dispatch({
-        "operation": "stop", "payload": {"reason": "guard_complete"}
-    }) == {"state": "HOLDING"}
-    assert service.dispatch({"operation": "state", "payload": {}}) == {
-        "state": "DISARMED"
+    assert service.dispatch(
+        {
+            "operation": "enable",
+            "payload": {"session_id": "s", "calibration_id": "c"},
+        }
+    ) == {"state": "ARMING"}
+    assert service.dispatch({"operation": "heartbeat", "payload": {"session_id": "s"}}) == {
+        "state": "ARMED"
     }
+    assert service.dispatch(
+        {
+            "operation": "target",
+            "payload": {
+                "session_id": "s",
+                "sequence": 7,
+                "calibration_id": "c",
+                "right_arm_q": [0.01] * 7,
+                "right_arm_tau_ff": [-0.2] * 7,
+                "pipeline_age_ms": 12,
+                "motion_scale": 0.65,
+            },
+        }
+    ) == {"last_sequence": 7}
+    assert service.dispatch({"operation": "return", "payload": {"reason": "demo_complete"}}) == {
+        "state": "RETURNING"
+    }
+    assert service.dispatch({"operation": "stop", "payload": {"reason": "guard_complete"}}) == {
+        "state": "HOLDING"
+    }
+    assert service.dispatch({"operation": "state", "payload": {}}) == {"state": "DISARMED"}
 
     target = controller.calls[2]
     assert target[0] == "target"
     assert target[1]["pipeline_age_ms"] == 12
     assert target[1]["right_arm_q"] == [0.01] * 7
     assert target[1]["right_arm_tau_ff"] == [-0.2] * 7
+    assert target[1]["motion_scale"] == 0.65
+    assert controller.calls[3] == ("return", "demo_complete")
 
 
 def test_native_service_rejects_unknown_or_non_object_requests() -> None:

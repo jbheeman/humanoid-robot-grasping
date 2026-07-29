@@ -804,6 +804,22 @@ def arm_state_api() -> dict[str, Any]:
     return _transport_call("arm state", transport.arm_state)
 
 
+@app.post("/api/v1/arm/follow-profile")
+def arm_follow_profile_api(payload: dict[str, Any]) -> dict[str, Any]:
+    if arm_runtime is None:
+        raise HTTPException(status_code=503, detail="arm tracking runtime is unavailable")
+    profile = str(payload.get("follow_profile") or "")
+    if profile not in {"balanced", "aggressive"}:
+        raise HTTPException(
+            status_code=422,
+            detail="follow_profile must be balanced or aggressive",
+        )
+    try:
+        return arm_runtime.set_follow_profile(profile)
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+
+
 @app.post("/api/v1/arm/enable")
 def arm_enable_api(payload: dict[str, Any]) -> dict[str, Any]:
     transport = _require_transport()
@@ -812,6 +828,18 @@ def arm_enable_api(payload: dict[str, Any]) -> dict[str, Any]:
     if not session_id or not calibration_id:
         raise HTTPException(status_code=422, detail="session_id and calibration_id are required")
     if arm_runtime is not None:
+        requested_profile = payload.get("follow_profile")
+        if requested_profile is not None:
+            profile = str(requested_profile)
+            if profile not in {"balanced", "aggressive"}:
+                raise HTTPException(
+                    status_code=422,
+                    detail="follow_profile must be balanced or aggressive",
+                )
+            try:
+                arm_runtime.set_follow_profile(profile)
+            except RuntimeError as exc:
+                raise HTTPException(status_code=409, detail=str(exc)) from exc
         # Release any prior latched interception before enabling the new
         # session. Resetting after enable could immediately stop the session
         # that the operator just created.
@@ -833,6 +861,16 @@ def arm_stop_api(payload: dict[str, Any]) -> dict[str, Any]:
         return {"ok": True, "reason": reason}
 
     return _transport_call("arm stop", stop)
+
+
+@app.post("/api/v1/arm/return-to-neutral")
+def arm_return_api(payload: dict[str, Any]) -> dict[str, Any]:
+    transport = _require_transport()
+    reason = str(payload.get("reason") or "operator_return")
+    return _transport_call(
+        "arm return",
+        lambda: transport.return_arm(reason),
+    )
 
 
 @app.post("/api/v1/intercept/reset")
@@ -1359,6 +1397,12 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--target-hz", type=float, default=15.0)
     parser.add_argument(
+        "--follow-profile",
+        choices=("balanced", "aggressive"),
+        default="balanced",
+        help="Realtime arm-follow responsiveness profile",
+    )
+    parser.add_argument(
         "--ros-depth-only",
         action="store_true",
         help="Subscribe only to /g1/depth; manual arm control uses its separate ROS client",
@@ -1675,7 +1719,18 @@ def main() -> None:
             observe_only=args.ros_observe_only,
         )
         if args.calibration:
-            from object_tracking.arm_tracking.runtime import ArmTrackingRuntime, RuntimeConfig
+            from object_tracking.arm_tracking.runtime import (
+                ArmTrackingRuntime,
+                RuntimeConfig,
+                follow_profile_limits,
+            )
+
+            (
+                maximum_joint_step_rad,
+                maximum_velocity_rad_s,
+                maximum_acceleration_rad_s2,
+                maximum_jerk_rad_s3,
+            ) = follow_profile_limits(args.follow_profile)
 
             arm_runtime = ArmTrackingRuntime(
                 RuntimeConfig(
@@ -1686,6 +1741,11 @@ def main() -> None:
                     robot_id=args.robot_id,
                     execute=args.execute,
                     target_hz=args.target_hz,
+                    follow_profile=args.follow_profile,
+                    maximum_joint_step_rad=maximum_joint_step_rad,
+                    maximum_velocity_rad_s=maximum_velocity_rad_s,
+                    maximum_acceleration_rad_s2=maximum_acceleration_rad_s2,
+                    maximum_jerk_rad_s3=maximum_jerk_rad_s3,
                     trajectory_model_path=(
                         None if args.trajectory_model is None else Path(args.trajectory_model)
                     ),

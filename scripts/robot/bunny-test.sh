@@ -11,13 +11,15 @@ ARM_WEIGHT_RAMP_S="${ARM_WEIGHT_RAMP_S:-0.75}"
 ARM_MAX_VELOCITY_RAD_S="${ARM_MAX_VELOCITY_RAD_S:-1.00}"
 ARM_MAX_ACCELERATION_RAD_S2="${ARM_MAX_ACCELERATION_RAD_S2:-4.00}"
 ARM_MAX_JERK_RAD_S3="${ARM_MAX_JERK_RAD_S3:-30.0}"
+ARM_MAX_FOLLOWING_ERROR_RAD="${ARM_MAX_FOLLOWING_ERROR_RAD:-0.35}"
+FOLLOW_PROFILE="${FOLLOW_PROFILE:-balanced}"
 READY_TIMEOUT_S="${READY_TIMEOUT_S:-90}"
 READY_STABLE_SAMPLES="${READY_STABLE_SAMPLES:-4}"
 # RGB uses the root-owned 960x540@60 GStreamer service. Librealsense opens only
 # the depth interface so NVENC and ROS depth serialization cannot block the
 # same capture loop.
 DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS:-60}"
-DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS:-15}"
+DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS:-20}"
 # Domain 42 is also used by older project processes and has repeatedly left
 # the live G1 and GB10 participants undiscovered.  The live bunny test uses a
 # dedicated domain that is verified end-to-end during commissioning.
@@ -50,14 +52,18 @@ while (($#)); do
       MAX_WAIST_DEVIATION_DEG="${2:?--max-waist-deviation-deg requires a number}"
       shift 2
       ;;
+    --follow-profile)
+      FOLLOW_PROFILE="${2:?--follow-profile requires balanced or aggressive}"
+      shift 2
+      ;;
     -h|--help)
       cat <<'EOF'
 Usage: uv run g1 robot bunny-test [--client-ip 192.168.0.66]
 
-Starts the foreground robot bridge with movement permission, waits until the
-GB10 has fresh RGB/depth, bunny detection, table geometry, and safe IK, then
-automatically enables one guarded tracking session. Ctrl-C stops the arm and
-all robot-local processes.
+Starts the foreground robot bridge in DISARMED state, requires an interactive
+operator confirmation, then verifies fresh RGB/depth, bunny detection, table
+geometry, and safe IK before enabling one guarded tracking session. Ctrl-C
+retraces the accepted arm path to the measured startup pose before release.
 EOF
       exit 0
       ;;
@@ -67,6 +73,25 @@ EOF
       ;;
   esac
 done
+
+case "${FOLLOW_PROFILE}" in
+  balanced)
+    ARM_MAX_VELOCITY_RAD_S="1.00"
+    ARM_MAX_ACCELERATION_RAD_S2="4.00"
+    ARM_MAX_JERK_RAD_S3="30.0"
+    ARM_MAX_FOLLOWING_ERROR_RAD="0.35"
+    ;;
+  aggressive)
+    ARM_MAX_VELOCITY_RAD_S="1.25"
+    ARM_MAX_ACCELERATION_RAD_S2="5.00"
+    ARM_MAX_JERK_RAD_S3="40.0"
+    ARM_MAX_FOLLOWING_ERROR_RAD="0.40"
+    ;;
+  *)
+    echo "FOLLOW_PROFILE must be balanced or aggressive." >&2
+    exit 2
+    ;;
+esac
 
 if [[ ! -f "${CALIBRATION}" ]]; then
   echo "Missing calibration: ${CALIBRATION}" >&2
@@ -87,20 +112,98 @@ bridge_pid=""
 bridge_pgid=""
 session_enabled=0
 cleaning_up=0
-stop_remote_arm() {
+NATIVE_ARM_SOCKET="${NATIVE_ARM_SOCKET:-${XDG_RUNTIME_DIR:-/tmp}/g1-native-arm-${UID}.sock}"
+return_remote_arm() {
   if [[ "${session_enabled}" == "1" ]]; then
-    python3 - "${CLIENT_IP}" <<'PY' >/dev/null 2>&1 || true
+    python3 - "${CLIENT_IP}" "${NATIVE_ARM_SOCKET}" <<'PY' || true
 import json
+import socket
 import sys
+import time
 import urllib.request
 
-request = urllib.request.Request(
-    f"http://{sys.argv[1]}:8000/api/v1/arm/stop",
-    data=json.dumps({"reason": "operator_bunny_test_stopped"}).encode(),
-    headers={"Content-Type": "application/json"},
-    method="POST",
+host, socket_path = sys.argv[1:3]
+
+
+def native_call(operation, payload):
+    envelope = {
+        "request_id": f"bunny-cleanup-{time.monotonic_ns()}",
+        "operation": operation,
+        "payload": payload,
+    }
+    with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+        client.settimeout(1.0)
+        client.connect(socket_path)
+        client.sendall(
+            (json.dumps(envelope, separators=(",", ":")) + "\n").encode()
+        )
+        response = b""
+        while not response.endswith(b"\n"):
+            chunk = client.recv(65536)
+            if not chunk:
+                break
+            response += chunk
+    decoded = json.loads(response)
+    if not decoded.get("ok"):
+        raise RuntimeError(decoded.get("message") or "native arm request failed")
+    return decoded.get("report") or {}
+
+
+reason = "operator_bunny_test_interrupted"
+try:
+    request = urllib.request.Request(
+        f"http://{host}:8000/api/v1/arm/return-to-neutral",
+        data=json.dumps({"reason": reason}).encode(),
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    with urllib.request.urlopen(request, timeout=2) as response:
+        report = json.load(response)
+except Exception as exc:
+    print(f"GB10 return request failed ({exc}); using robot-local bridge.", flush=True)
+    try:
+        report = native_call("return", {"reason": reason})
+    except Exception as local_exc:
+        print(f"Controlled return unavailable: {local_exc}", flush=True)
+        try:
+            native_call("stop", {"reason": "return_request_failed"})
+        except Exception:
+            pass
+        raise SystemExit(1)
+
+print(
+    f"Returning arm to measured startup pose: state={report.get('state')}",
+    flush=True,
 )
-urllib.request.urlopen(request, timeout=2).read()
+deadline = time.monotonic() + 12.5
+while time.monotonic() < deadline:
+    try:
+        report = native_call("state", {})
+    except Exception:
+        time.sleep(0.1)
+        continue
+    state = report.get("state")
+    if state == "DISARMED":
+        print("Arm returned to startup pose and released.", flush=True)
+        raise SystemExit(0)
+    if state == "FAULT":
+        print(
+            f"Return faulted: {report.get('fault_reason')}; forcing bounded release.",
+            flush=True,
+        )
+        try:
+            native_call("stop", {"reason": "return_fault"})
+        except Exception:
+            pass
+        raise SystemExit(1)
+    time.sleep(0.1)
+
+print("Controlled return timed out; forcing bounded release.", flush=True)
+try:
+    native_call("stop", {"reason": "return_cleanup_timeout"})
+except Exception:
+    pass
+raise SystemExit(1)
 PY
   fi
 }
@@ -109,7 +212,7 @@ cleanup() {
     return
   fi
   cleaning_up=1
-  stop_remote_arm
+  return_remote_arm
   if [[ -n "${bridge_pgid}" ]]; then
     kill -TERM -- "-${bridge_pgid}" 2>/dev/null || true
     for _ in {1..50}; do
@@ -143,11 +246,13 @@ echo "  motion mode: ${EXPECTED_MOTION_MODE}"
 echo "  tilt limit:  ${MAX_TILT_DEG} degrees"
 echo "  waist limit: ${MAX_WAIST_DEVIATION_DEG} degrees"
 echo "  arm limits:  ${ARM_MAX_VELOCITY_RAD_S} rad/s, ${ARM_MAX_ACCELERATION_RAD_S2} rad/s^2, ${ARM_MAX_JERK_RAD_S3} rad/s^3"
+echo "  following error: ${ARM_MAX_FOLLOWING_ERROR_RAD} rad"
+echo "  follow profile: ${FOLLOW_PROFILE}"
 echo "  weight ramp: ${ARM_WEIGHT_RAMP_S} s"
 echo "  depth rate:  ${DEPTH_CAPTURE_FPS} Hz"
 echo "  depth publish: ${DEPTH_PUBLISH_FPS} Hz"
 echo "  ROS domain:  ${PROJECT_ROS_DOMAIN_ID}"
-echo "Keep the physical E-stop in hand. Ctrl-C performs a controlled stop."
+echo "Keep the physical E-stop in hand. Ctrl-C returns to startup pose, then releases."
 
 CLIENT_IP="${CLIENT_IP}" \
 CALIBRATION="${CALIBRATION}" \
@@ -159,6 +264,7 @@ ARM_WEIGHT_RAMP_S="${ARM_WEIGHT_RAMP_S}" \
 ARM_MAX_VELOCITY_RAD_S="${ARM_MAX_VELOCITY_RAD_S}" \
 ARM_MAX_ACCELERATION_RAD_S2="${ARM_MAX_ACCELERATION_RAD_S2}" \
 ARM_MAX_JERK_RAD_S3="${ARM_MAX_JERK_RAD_S3}" \
+ARM_MAX_FOLLOWING_ERROR_RAD="${ARM_MAX_FOLLOWING_ERROR_RAD}" \
 DEPTH_CAPTURE_FPS="${DEPTH_CAPTURE_FPS}" \
 DEPTH_PUBLISH_FPS="${DEPTH_PUBLISH_FPS}" \
 RGB_MODE=highfps-service \
@@ -171,11 +277,21 @@ bridge_pgid="$(
     tr -d '[:space:]'
 )"
 if [[ -z "${bridge_pgid}" ]]; then
-  echo "Could not determine the robot process group." >&2
-  exit 1
+    echo "Could not determine the robot process group." >&2
+    exit 1
 fi
 
-python3 - "${CLIENT_IP}" "${READY_TIMEOUT_S}" "${READY_STABLE_SAMPLES}" <<'PY'
+if [[ ! -t 0 ]]; then
+  echo "Refusing to enable: bunny-test requires an interactive terminal." >&2
+  echo "Run the command manually and press Enter at the operator gate." >&2
+  exit 1
+fi
+echo
+echo "ARM IS DISARMED. Confirm the area is clear and keep the E-stop in hand."
+read -r -p "Press Enter to begin GB10 verification and guarded arm enable... " _
+echo "Operator confirmed. Beginning guarded readiness verification."
+
+python3 - "${CLIENT_IP}" "${READY_TIMEOUT_S}" "${READY_STABLE_SAMPLES}" "${FOLLOW_PROFILE}" <<'PY'
 import json
 import sys
 import time
@@ -184,6 +300,7 @@ import urllib.request
 host = sys.argv[1]
 timeout_s = float(sys.argv[2])
 stable_samples = int(sys.argv[3])
+expected_follow_profile = sys.argv[4]
 if stable_samples < 1:
     raise SystemExit("READY_STABLE_SAMPLES must be positive")
 url = f"http://{host}:8000/health"
@@ -192,6 +309,7 @@ last_reason = "GB10 has not responded"
 last_reported_reason = None
 last_report_at = 0.0
 ready_samples = 0
+profile_negotiated = False
 while time.monotonic() < deadline:
     try:
         with urllib.request.urlopen(url, timeout=2) as response:
@@ -201,6 +319,27 @@ while time.monotonic() < deadline:
             f"http://{host}:8000/api/v1/arm/state", timeout=2
         ) as response:
             robot_arm = json.load(response)
+        if not profile_negotiated:
+            request = urllib.request.Request(
+                f"http://{host}:8000/api/v1/arm/follow-profile",
+                data=json.dumps(
+                    {"follow_profile": expected_follow_profile}
+                ).encode(),
+                headers={"Content-Type": "application/json"},
+                method="POST",
+            )
+            with urllib.request.urlopen(request, timeout=3) as response:
+                applied_profile = json.load(response)
+            if applied_profile.get("follow_profile") != expected_follow_profile:
+                raise RuntimeError("GB10 did not apply the robot-selected follow profile")
+            print(
+                "GB10 follow profile selected by robot: "
+                f"{expected_follow_profile}",
+                flush=True,
+            )
+            profile_negotiated = True
+            ready_samples = 0
+            continue
         visualization = tracking.get("visualization") or {}
         support_status = visualization.get("support_plane_status") or {}
         support_source = str(support_status.get("source") or "")
@@ -219,6 +358,7 @@ while time.monotonic() < deadline:
             and isinstance(command, list)
             and len(command) == 7
             and tracking.get("reason") == "arm_not_explicitly_enabled"
+            and tracking.get("follow_profile") == expected_follow_profile
         )
         ready = (
             structurally_ready
@@ -273,13 +413,13 @@ if ! kill -0 "${bridge_pid}" 2>/dev/null; then
 fi
 
 session_id="operator-bunny-test-$(date +%s)"
-python3 - "${CLIENT_IP}" "${session_id}" <<'PY'
+python3 - "${CLIENT_IP}" "${session_id}" "${FOLLOW_PROFILE}" <<'PY'
 import json
 import sys
 import urllib.error
 import urllib.request
 
-host, session_id = sys.argv[1:3]
+host, session_id, follow_profile = sys.argv[1:4]
 with urllib.request.urlopen(f"http://{host}:8000/health", timeout=3) as response:
     health = json.load(response)
 tracking = health.get("arm_tracking") or {}
@@ -289,7 +429,11 @@ if not calibration_id:
 request = urllib.request.Request(
     f"http://{host}:8000/api/v1/arm/enable",
     data=json.dumps(
-        {"session_id": session_id, "calibration_id": calibration_id}
+        {
+            "session_id": session_id,
+            "calibration_id": calibration_id,
+            "follow_profile": follow_profile,
+        }
     ).encode(),
     headers={"Content-Type": "application/json"},
     method="POST",
