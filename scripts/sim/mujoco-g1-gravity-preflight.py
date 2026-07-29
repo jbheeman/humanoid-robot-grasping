@@ -27,7 +27,9 @@ from object_tracking.arm_tracking.gravity import UrdfGravityCompensator
 from object_tracking.arm_tracking.ik_solver import G1RightArmIK, default_urdf_path
 from object_tracking.arm_tracking.joints import (
     BODY_JOINT_NAMES,
+    DEFAULT_RIGHT_JOINT_LIMITS,
     LEFT_ARM_JOINT_NAMES,
+    RIGHT_ARM_GRAVITY_FF_LIMITS_NM,
     RIGHT_ARM_JOINT_NAMES,
 )
 
@@ -239,6 +241,55 @@ def set_joint_positions(
     mujoco.mj_forward(model, data)
 
 
+def gravity_crosscheck(
+    mujoco: Any,
+    model: Any,
+    data: Any,
+    compensator: UrdfGravityCompensator,
+    initial_q: tuple[float, ...],
+    *,
+    samples: int = 250,
+) -> dict[str, float | int]:
+    """Compare the bounded robot-local evaluator with independent MuJoCo bias."""
+
+    rng = np.random.default_rng(20260728)
+    errors: list[float] = []
+    limits = np.asarray(RIGHT_ARM_GRAVITY_FF_LIMITS_NM)
+    for _ in range(samples):
+        right_q = tuple(
+            rng.uniform(lower + 0.08, upper - 0.08)
+            for lower, upper in DEFAULT_RIGHT_JOINT_LIMITS
+        )
+        body_q = list(initial_q)
+        body_q[22:29] = right_q
+        set_joint_positions(mujoco, model, data, tuple(body_q))
+        expected = np.asarray(
+            [
+                data.qfrc_bias[
+                    model.jnt_dofadr[
+                        mujoco.mj_name2id(
+                            model,
+                            mujoco.mjtObj.mjOBJ_JOINT,
+                            name,
+                        )
+                    ]
+                ]
+                for name in RIGHT_ARM_JOINT_NAMES
+            ]
+        )
+        expected = np.clip(expected, -limits, limits)
+        actual = np.asarray(compensator.torque(right_q))
+        errors.extend(np.abs(actual - expected).tolist())
+    set_joint_positions(mujoco, model, data, initial_q)
+    return {
+        "poses": samples,
+        "joint_samples": len(errors),
+        "maximum_absolute_error_nm": max(errors),
+        "p95_absolute_error_nm": float(np.percentile(errors, 95)),
+        "mean_absolute_error_nm": float(np.mean(errors)),
+    }
+
+
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--duration", type=float, default=6.0)
@@ -285,7 +336,15 @@ def main() -> int:
 
     clock = FakeClock()
     hardware = MujocoArmHardware(mujoco, model, data, clock, initial_q)
-    gravity = None if args.without_gravity_ff else UrdfGravityCompensator(urdf)
+    gravity_model = UrdfGravityCompensator(urdf)
+    gravity_validation = gravity_crosscheck(
+        mujoco,
+        model,
+        data,
+        gravity_model,
+        initial_q,
+    )
+    gravity = None if args.without_gravity_ff else gravity_model
     controller = ArmBridgeController(
         hardware,
         ArmBridgeConfig(
@@ -355,6 +414,7 @@ def main() -> int:
         "transport_free": True,
         "physics_hz": args.physics_hz,
         "gravity_feedforward": gravity is not None,
+        "gravity_model_crosscheck": gravity_validation,
         "bridge_state": controller.state.value,
         "fault_reason": controller.fault_reason,
         "target_sent": target_sent,
@@ -373,6 +433,7 @@ def main() -> int:
         controller.state is ArmState.ARMED
         and target_sent
         and tracking_errors
+        and gravity_validation["maximum_absolute_error_nm"] <= 1e-6
         and max(tracking_errors) <= 0.12
         and max(elbow_errors) <= 0.10
     )
