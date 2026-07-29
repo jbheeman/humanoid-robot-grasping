@@ -666,8 +666,17 @@ def main() -> int:
                 initial_body_velocity,
                 device=joint_velocity.device,
             )
-        write_joint_state(robot, joint_position, joint_velocity)
+        # Reset actuator/controller buffers before writing the captured state.
+        # Resetting afterwards restores the USD default position targets even
+        # though PhysX retains the written joint state.
         robot.reset()
+        write_joint_state(robot, joint_position, joint_velocity)
+        set_position_target(robot, joint_position[:, body_ids], body_ids)
+        set_velocity_target(
+            robot,
+            torch.zeros_like(joint_velocity[:, body_ids]),
+            body_ids,
+        )
 
     # Compute the calibrated frame only after legs, waist, and both arms match
     # the captured physical state.
@@ -832,6 +841,7 @@ def main() -> int:
     # the USD default pose.  ArmBridge.enable() must latch the replay's
     # measured pose, not that stale default, or the zero-weight arming command
     # pulls the arm away before the startup settle check can complete.
+    robot.write_data_to_sim()
     robot.update(0.0)
 
     clock = IsaacClock()
