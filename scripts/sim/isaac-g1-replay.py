@@ -438,6 +438,9 @@ class IsaacArmHardware:
         requested_q = torch.tensor([self.command.q], dtype=torch.float32, device=device)
         requested_dq = torch.tensor([self.command.dq], dtype=torch.float32, device=device)
         requested_tau = torch.tensor([self.command.tau], dtype=torch.float32, device=device)
+        # The official Isaac USD imports arm effort axes opposite to the
+        # canonical URDF/SDK torque convention used by the production planner.
+        requested_tau[:, 7:] *= -1.0
         # The real SDK's weight blends ownership away during HOLDING. Blending
         # the position target back to the current measured pose prevents the
         # fixed Isaac actuator stiffness from secretly holding a released arm.
@@ -994,7 +997,7 @@ def main() -> int:
         default_urdf_path(project_root)
     ).torque(initial_body[22:29])
     startup_arm_effort = torch.tensor(
-        [[0.0] * 7 + list(startup_right_tau)],
+        [[0.0] * 7 + [-value for value in startup_right_tau]],
         dtype=torch.float32,
         device=startup_arm_position.device,
     )
