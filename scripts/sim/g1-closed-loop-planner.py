@@ -100,6 +100,18 @@ def main() -> int:
                 reason=response.reason,
                 planning_latency_ms=round(response.planning_latency_ms, 3),
                 ruckig_duration_s=response.remaining_ruckig_duration_s,
+                measured_right_q_rad=[
+                    round(value, 5) for value in message.right_arm_q_rad
+                ],
+                target_right_q_rad=(
+                    None
+                    if response.right_arm_q_rad is None
+                    else [round(value, 5) for value in response.right_arm_q_rad]
+                ),
+                waypoint_index=planner._path_index,
+                waypoint_count=(
+                    None if planner._path is None else len(planner._path)
+                ),
             )
         except (OSError, ValueError) as exc:
             log("sim_planner_message_rejected", error=f"{type(exc).__name__}: {exc}")
