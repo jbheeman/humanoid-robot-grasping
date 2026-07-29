@@ -109,6 +109,73 @@ for line_number, line in enumerate(sys.stdin, 1):
         client.close()
 
 
+def test_submit_and_wait_returns_matching_startup_command() -> None:
+    worker = """
+import json, sys
+for line in sys.stdin:
+    value = json.loads(line)
+    result = {
+        "schema_version": 1,
+        "kind": "sim_command",
+        "episode_id": value["episode_id"],
+        "state_sequence": value["sequence"],
+        "simulation_time_s": value["simulation_time_s"],
+        "source_observation_time_s": value["object_observation"]["observation_time_s"],
+        "status": "preview",
+        "reason": "startup-ready",
+        "right_arm_q_rad": None,
+        "right_arm_tau_ff_nm": None,
+        "target_palm_position_m": None,
+        "predicted_crossing_m": None,
+        "crossing_time_from_now_s": None,
+        "remaining_ruckig_duration_s": None,
+        "arrival_slack_s": None,
+        "planning_latency_ms": 0.1,
+        "ik_step_type": None,
+    }
+    print(json.dumps(result), flush=True)
+"""
+    client = LatestPlannerProcess((sys.executable, "-u", "-c", worker))
+    client.start()
+    try:
+        response = client.submit_and_wait(state(7), timeout_s=2.0)
+        assert response.state_sequence == 7
+        assert response.reason == "startup-ready"
+        assert client.metrics().commands_received == 1
+    finally:
+        client.close()
+
+
+def test_submit_and_wait_times_out_without_response() -> None:
+    worker = """
+import sys, time
+for _line in sys.stdin:
+    time.sleep(10)
+"""
+    client = LatestPlannerProcess((sys.executable, "-u", "-c", worker))
+    client.start()
+    try:
+        with pytest.raises(TimeoutError, match="state 3"):
+            client.submit_and_wait(state(3), timeout_s=0.05)
+    finally:
+        client.close()
+
+
+def test_submit_and_wait_reports_worker_failure() -> None:
+    worker = """
+import sys
+for _line in sys.stdin:
+    print("not-json", flush=True)
+"""
+    client = LatestPlannerProcess((sys.executable, "-u", "-c", worker))
+    client.start()
+    try:
+        with pytest.raises(RuntimeError, match="planner startup failed"):
+            client.submit_and_wait(state(4), timeout_s=2.0)
+    finally:
+        client.close()
+
+
 def test_actual_worker_is_jsonl_only_and_cannot_open_robot_networks() -> None:
     root = Path(__file__).resolve().parents[1]
     worker = root / "scripts/sim/g1-closed-loop-planner.py"

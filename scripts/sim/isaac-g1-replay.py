@@ -234,6 +234,7 @@ from object_tracking.arm_tracking.runtime import (  # noqa: E402
 )
 from object_tracking.arm_tracking.sim_closed_loop import (  # noqa: E402
     ObjectObservation,
+    SimCommand,
     SimState,
 )
 from object_tracking.arm_tracking.sim_ipc import LatestPlannerProcess  # noqa: E402
@@ -873,6 +874,109 @@ def main() -> int:
         wall_time=lambda: clock.wall,
     )
     calibration_id = str(replay.get("calibration_id") or "sim-calibration")
+    planner_client: LatestPlannerProcess | None = None
+    planner_state_sequence = 0
+    warmup_command: SimCommand | None = None
+    if args.command_source == "closed_loop_ipc":
+        assert closed_loop_support is not None
+        planner_root = str(args.planner_project_root)
+        planner_command = [
+            "uv",
+            "run",
+            "python",
+            "scripts/sim/g1-closed-loop-planner.py",
+            "--project-root",
+            planner_root,
+            "--intercept-config",
+            str(args.planner_intercept_config),
+            "--max-velocity",
+            str(args.max_velocity),
+            "--max-acceleration",
+            str(args.max_acceleration),
+            "--max-jerk",
+            str(args.max_jerk),
+        ]
+        if args.planner_launcher == "wsl":
+            planner_command = [
+                "wsl.exe",
+                *(
+                    []
+                    if args.planner_wsl_distro is None
+                    else ["--distribution", args.planner_wsl_distro]
+                ),
+                "--cd",
+                planner_root,
+                "--",
+                *planner_command,
+            ]
+            planner_cwd = None
+        else:
+            planner_cwd = planner_root
+        planner_client = LatestPlannerProcess(planner_command, cwd=planner_cwd)
+        planner_client.start()
+        first_object_frame = object_frames[0]
+        first_object_position = tuple(
+            float(value) for value in first_object_frame["object_xyz_m"]
+        )
+        first_object_velocity = tuple(
+            float(value)
+            for value in (
+                first_object_frame.get("object_velocity_m_s")
+                if isinstance(first_object_frame.get("object_velocity_m_s"), list)
+                else (0.0, 0.0, 0.0)
+            )
+        )
+        warmup_observation = ObjectObservation(
+            track_id=int(first_object_frame.get("track_id") or 1),
+            class_name=str(first_object_frame.get("class_name") or "bunny"),
+            confidence=float(first_object_frame.get("confidence") or 1.0),
+            position_m=first_object_position,
+            velocity_m_s=first_object_velocity,
+            observation_time_s=clock.monotonic,
+            consecutive_observations=int(
+                first_object_frame.get("estimator_consecutive_observations") or 2
+            ),
+            residual_m=float(first_object_frame.get("estimator_residual_m") or 0.0),
+        )
+        measured_body_q = tuple(
+            float(value)
+            for value in tensor(robot.data.joint_pos)[0, body_ids].detach().cpu().tolist()
+        )
+        measured_body_dq = tuple(
+            float(value)
+            for value in tensor(robot.data.joint_vel)[0, body_ids].detach().cpu().tolist()
+        )
+        warmup_command = planner_client.submit_and_wait(
+            SimState(
+                episode_id=f"isaac-{args.replay.stem}",
+                sequence=planner_state_sequence,
+                simulation_time_s=clock.monotonic,
+                calibration_id=calibration_id,
+                joint_contract_id=joint_contract_id(),
+                body_q_rad=measured_body_q,
+                body_dq_rad_s=measured_body_dq,
+                support_region=closed_loop_support,
+                object_observation=warmup_observation,
+            ),
+            timeout_s=30.0,
+        )
+        if warmup_command.status != "target":
+            raise RuntimeError(
+                "planner startup did not produce a target: "
+                f"{warmup_command.status}:{warmup_command.reason}"
+            )
+        print(
+            json.dumps(
+                {
+                    "event": "isaac_planner_warmup_ready",
+                    "planning_latency_ms": warmup_command.planning_latency_ms,
+                    "reason": warmup_command.reason,
+                    "state_sequence": warmup_command.state_sequence,
+                },
+                sort_keys=True,
+            ),
+            flush=True,
+        )
     controller.enable(session_id="isaac-replay", calibration_id=calibration_id)
     dt = 1.0 / args.physics_hz
     startup_arm_position = torch.tensor(
@@ -911,9 +1015,33 @@ def main() -> int:
         if clock.monotonic > 12.0:
             raise RuntimeError(f"sim controller did not arm: {controller.state_report()}")
 
+    sequence = 0
+    if warmup_command is not None:
+        sequence += 1
+        controller.set_target(
+            session_id="isaac-replay",
+            sequence=sequence,
+            calibration_id=calibration_id,
+            right_arm_q=warmup_command.right_arm_q_rad,
+            right_arm_tau_ff=warmup_command.right_arm_tau_ff_nm,
+            pipeline_age_ms=int(
+                round(
+                    max(
+                        0.0,
+                        clock.monotonic
+                        - (
+                            clock.monotonic
+                            if warmup_command.source_observation_time_s is None
+                            else warmup_command.source_observation_time_s
+                        ),
+                    )
+                    * 1000.0
+                )
+            ),
+        )
+
     playback_start = clock.monotonic
     frame_index = 0
-    sequence = 0
     full_replay_time = float(frames[-1]["time_s"]) + args.tail_s
     final_time = (
         full_replay_time if args.max_replay_s is None else min(full_replay_time, args.max_replay_s)
@@ -934,11 +1062,11 @@ def main() -> int:
     planned_commands = 0
     planned_edge_validations = 0
     planned_ik_failures: dict[str, int] = {}
-    planner_client: LatestPlannerProcess | None = None
-    planner_state_sequence = 0
-    planner_last_applied_sequence = -1
+    planner_last_applied_sequence = (
+        -1 if warmup_command is None else warmup_command.state_sequence
+    )
     planner_next_state_at_s = 0.0
-    planner_target_commands = 0
+    planner_target_commands = int(warmup_command is not None)
     planner_expired_commands = 0
     planner_response_statuses: dict[str, int] = {}
     current_bunny_local = tuple(float(value) for value in object_frames[0]["object_xyz_m"])
@@ -956,42 +1084,6 @@ def main() -> int:
     first_contact_at_s: float | None = None
     last_contact_at_s: float | None = None
     contact_measurement_available = False
-    if args.command_source == "closed_loop_ipc":
-        planner_root = str(args.planner_project_root)
-        planner_command = [
-            "uv",
-            "run",
-            "python",
-            "scripts/sim/g1-closed-loop-planner.py",
-            "--project-root",
-            planner_root,
-            "--intercept-config",
-            str(args.planner_intercept_config),
-            "--max-velocity",
-            str(args.max_velocity),
-            "--max-acceleration",
-            str(args.max_acceleration),
-            "--max-jerk",
-            str(args.max_jerk),
-        ]
-        if args.planner_launcher == "wsl":
-            planner_command = [
-                "wsl.exe",
-                *(
-                    []
-                    if args.planner_wsl_distro is None
-                    else ["--distribution", args.planner_wsl_distro]
-                ),
-                "--cd",
-                planner_root,
-                "--",
-                *planner_command,
-            ]
-            planner_cwd = None
-        else:
-            planner_cwd = planner_root
-        planner_client = LatestPlannerProcess(planner_command, cwd=planner_cwd)
-        planner_client.start()
     while simulation_app.is_running() and clock.monotonic - playback_start <= final_time:
         elapsed = clock.monotonic - playback_start
         if args.command_source == "closed_loop_ipc":

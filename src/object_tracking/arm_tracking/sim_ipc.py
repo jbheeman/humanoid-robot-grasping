@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 import subprocess
 import threading
+import time
 from typing import Sequence
 
 from .sim_closed_loop import SimCommand, SimState, decode_message, encode_message
@@ -104,6 +105,36 @@ class LatestPlannerProcess:
             self._condition.notify()
             return self._latest
 
+    def submit_and_wait(self, state: SimState, *, timeout_s: float) -> SimCommand:
+        """Submit one state and wait for its matching response.
+
+        This is intended for episode startup, while physics is paused. Runtime
+        updates should continue to use :meth:`submit` so PhysX never blocks on
+        the planner.
+        """
+
+        if timeout_s <= 0.0:
+            raise ValueError("timeout_s must be positive")
+        deadline = time.monotonic() + timeout_s
+        self.submit(state)
+        with self._condition:
+            while True:
+                if self._latest is not None and self._latest.state_sequence == state.sequence:
+                    return self._latest
+                if self._last_error is not None:
+                    raise RuntimeError(f"planner startup failed: {self._last_error}")
+                process = self._process
+                if process is None or (process.poll() is not None and not self._stop):
+                    return_code = None if process is None else process.returncode
+                    raise RuntimeError(f"planner exited before responding: {return_code}")
+                remaining_s = deadline - time.monotonic()
+                if remaining_s <= 0.0:
+                    raise TimeoutError(
+                        f"planner did not respond to state {state.sequence} "
+                        f"within {timeout_s:.3f}s"
+                    )
+                self._condition.wait(timeout=remaining_s)
+
     def latest_command(self) -> SimCommand | None:
         with self._condition:
             return self._latest
@@ -151,7 +182,9 @@ class LatestPlannerProcess:
                         self._latest = decoded
                         self._commands_received += 1
                     self._last_error = None
+                    self._condition.notify_all()
             except (BrokenPipeError, OSError, ValueError) as exc:
                 with self._condition:
                     self._last_error = f"{type(exc).__name__}: {exc}"
+                    self._condition.notify_all()
                 break
