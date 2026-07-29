@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass
 import json
+import math
 from pathlib import Path
 import threading
 import time
@@ -35,6 +36,7 @@ from .interception import (
     load_live_intercept_config,
 )
 from .tracking import PositionVelocityFilter
+from .trajectory import ruckig_position_samples
 from .visualization import visualization_state
 
 
@@ -120,6 +122,9 @@ class RuntimeConfig:
     prediction_horizon_s: float = 0.150
     trajectory_model_path: Path | None = None
     intercept_config_path: Path | None = None
+    maximum_velocity_rad_s: float = 1.0
+    maximum_acceleration_rad_s2: float = 4.0
+    maximum_jerk_rad_s3: float = 30.0
 
     def __post_init__(self) -> None:
         if not 10.0 <= self.target_hz <= 30.0:
@@ -128,6 +133,15 @@ class RuntimeConfig:
             raise ValueError("automatic_support_hz must be between 1 and 10 Hz")
         if not 1 <= self.automatic_support_stable_samples <= 12:
             raise ValueError("automatic_support_stable_samples must be between 1 and 12")
+        if any(
+            not np.isfinite(value) or value <= 0.0
+            for value in (
+                self.maximum_velocity_rad_s,
+                self.maximum_acceleration_rad_s2,
+                self.maximum_jerk_rad_s3,
+            )
+        ):
+            raise ValueError("arm trajectory limits must be finite and positive")
 
 
 def register_depth_in_rgb(
@@ -343,6 +357,17 @@ def measured_right_arm_for_intercept(
     return tuple(float(value) for value in right), None
 
 
+def measured_right_arm_velocity(arm_state: dict[str, Any]) -> tuple[float, ...] | None:
+    visualization = arm_state.get("visualization") or {}
+    measured = visualization.get("measured_velocity_rad_s")
+    if not isinstance(measured, list) or len(measured) != 29:
+        return None
+    right = np.asarray(measured[22:29], dtype=float)
+    if right.shape != (7,) or not np.all(np.isfinite(right)):
+        return None
+    return tuple(float(value) for value in right)
+
+
 def select_start_escape_waypoint(
     measured_q_rad: Sequence[float],
     path: Sequence[Sequence[float]],
@@ -353,10 +378,17 @@ def select_start_escape_waypoint(
     last_advance_q_rad: Sequence[float] | None = None,
     residual_lookahead_rad: float = 0.100,
     minimum_progress_rad: float = 0.004,
+    measured_velocity_rad_s: Sequence[float] | None = None,
+    maximum_waypoint_velocity_rad_s: float = 0.02,
 ) -> tuple[tuple[float, ...] | None, int, str | None]:
     """Select one bounded escape waypoint using measured, not commanded, pose."""
 
     measured = np.asarray(measured_q_rad, dtype=float)
+    measured_velocity = (
+        None
+        if measured_velocity_rad_s is None
+        else np.asarray(measured_velocity_rad_s, dtype=float)
+    )
     knots = tuple(np.asarray(knot, dtype=float) for knot in path)
     if (
         measured.shape != (7,)
@@ -364,12 +396,25 @@ def select_start_escape_waypoint(
         or len(knots) < 2
         or any(knot.shape != (7,) or not np.all(np.isfinite(knot)) for knot in knots)
         or not 1 <= target_index < len(knots)
+        or (
+            measured_velocity is not None
+            and (
+                measured_velocity.shape != (7,)
+                or not np.all(np.isfinite(measured_velocity))
+            )
+        )
+        or not np.isfinite(maximum_waypoint_velocity_rad_s)
+        or maximum_waypoint_velocity_rad_s <= 0.0
     ):
         return None, target_index, "invalid_escape_path"
     index = target_index
+    velocity_settled = measured_velocity is None or float(
+        np.max(np.abs(measured_velocity))
+    ) <= maximum_waypoint_velocity_rad_s
     if (
         index < len(knots)
         and float(np.max(np.abs(measured - knots[index]))) <= reached_tolerance_rad
+        and velocity_settled
     ):
         index += 1
     elif last_advance_q_rad is not None and index < len(knots) - 1:
@@ -403,6 +448,49 @@ def select_start_escape_waypoint(
     if np.any(measured < corridor_minimum) or np.any(measured > corridor_maximum):
         return None, index, "escape_path_tracking_error"
     return tuple(float(value) for value in target), index, None
+
+
+def ruckig_edge_is_valid(
+    solver: Any,
+    begin: Sequence[float],
+    end: Sequence[float],
+    *,
+    support_plane: Any,
+    maximum_velocity_rad_s: float,
+    maximum_acceleration_rad_s2: float,
+    maximum_jerk_rad_s3: float,
+) -> bool:
+    """Validate the chord and synchronized Ruckig curve for one waypoint edge."""
+
+    if (
+        solver.validate_joint_path(
+            (begin, end),
+            support_plane=support_plane,
+            edge_step_rad=0.020,
+            semantic_edge_step_rad=0.010,
+            require_escape_cleared=False,
+        )
+        is not None
+    ):
+        return False
+    samples = ruckig_position_samples(
+        current_position=begin,
+        target_position=end,
+        maximum_velocity=maximum_velocity_rad_s,
+        maximum_acceleration=maximum_acceleration_rad_s2,
+        maximum_jerk=maximum_jerk_rad_s3,
+        sample_period_s=0.004,
+    )
+    return (
+        solver.validate_joint_path(
+            samples,
+            support_plane=support_plane,
+            edge_step_rad=0.010,
+            semantic_edge_step_rad=0.005,
+            require_escape_cleared=False,
+        )
+        is None
+    )
 
 
 def compress_validated_joint_path(
@@ -1132,6 +1220,16 @@ class ArmTrackingRuntime:
                     # edge against the same collision/support model. Avoid a
                     # duplicate full-path sweep before that mandatory pass.
                     final_validation_edge_step_rad=None,
+                    desired_palm_normal=(
+                        None
+                        if self.intercept_profile is None
+                        else self.intercept_profile.lane_facing_palm_normal
+                    ),
+                    maximum_palm_normal_error_rad=(
+                        math.radians(25.0)
+                        if self.intercept_profile is None
+                        else self.intercept_profile.planner.maximum_orientation_error_rad
+                    ),
                 )
                 if not approach.ok or approach.q_path is None:
                     # The new topology route is deliberately conservative.
@@ -1166,15 +1264,16 @@ class ArmTrackingRuntime:
                 raw_approach_path = approach.q_path
                 compressed_path = compress_validated_joint_path(
                     raw_approach_path,
-                    lambda begin, end: (
-                        self.ik.validate_joint_path(
-                            (begin, end),
-                            support_plane=plane,
-                            edge_step_rad=0.020,
-                            semantic_edge_step_rad=0.010,
-                            require_escape_cleared=False,
-                        )
-                        is None
+                    lambda begin, end: ruckig_edge_is_valid(
+                        self.ik,
+                        begin,
+                        end,
+                        support_plane=plane,
+                        maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
+                        maximum_acceleration_rad_s2=(
+                            self.config.maximum_acceleration_rad_s2
+                        ),
+                        maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
                     ),
                     # Longer edges let Ruckig preserve velocity through the
                     # gross table-clearance motion. Every candidate shortcut
@@ -1217,7 +1316,8 @@ class ArmTrackingRuntime:
                 last_q,
                 self._approach_path,
                 self._approach_target_index,
-                last_advance_q_rad=self._approach_last_advance_q,
+                reached_tolerance_rad=0.004,
+                measured_velocity_rad_s=measured_right_arm_velocity(arm_state),
             )
             self._approach_target_index = waypoint_index
             if waypoint_index > previous_waypoint_index:

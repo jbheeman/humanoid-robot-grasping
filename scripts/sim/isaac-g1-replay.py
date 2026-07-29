@@ -226,6 +226,7 @@ from object_tracking.arm_tracking.ik_solver import (  # noqa: E402
 )
 from object_tracking.arm_tracking.runtime import (  # noqa: E402
     compress_validated_joint_path,
+    ruckig_edge_is_valid,
     select_start_escape_waypoint,
 )
 from object_tracking.arm_tracking.sim_closed_loop import (  # noqa: E402
@@ -574,15 +575,14 @@ def main() -> int:
             raise RuntimeError(f"production table approach failed: {planned.reason}")
         planned_path = compress_validated_joint_path(
             planned.q_path,
-            lambda begin, end: (
-                planned_solver.validate_joint_path(
-                    (begin, end),
-                    support_plane=planned_support,
-                    edge_step_rad=0.020,
-                    semantic_edge_step_rad=0.010,
-                    require_escape_cleared=False,
-                )
-                is None
+            lambda begin, end: ruckig_edge_is_valid(
+                planned_solver,
+                begin,
+                end,
+                support_plane=planned_support,
+                maximum_velocity_rad_s=args.max_velocity,
+                maximum_acceleration_rad_s2=args.max_acceleration,
+                maximum_jerk_rad_s3=args.max_jerk,
             ),
             maximum_span_rad=0.40,
             maximum_skip_knots=16,
@@ -774,7 +774,6 @@ def main() -> int:
     initial_bunny = tensor(bunny.data.root_pos_w)[0].clone()
     bunny_orientation = tensor(bunny.data.root_quat_w)[0].clone()
     planned_target_index = 1
-    planned_last_advance_q = None if planned_path is None else planned_path[0]
     planned_approach_complete_at_s: float | None = None
     planned_next_command_at_s = 0.0
     planned_commands = 0
@@ -999,19 +998,21 @@ def main() -> int:
                 float(value)
                 for value in tensor(robot.data.joint_pos)[0, right_ids].detach().cpu().tolist()
             )
+            measured_velocity = tuple(
+                float(value)
+                for value in tensor(robot.data.joint_vel)[0, right_ids].detach().cpu().tolist()
+            )
             desired_q: tuple[float, ...] | None = None
             if planned_approach_complete_at_s is None:
-                previous_index = planned_target_index
                 desired_q, planned_target_index, selection_error = select_start_escape_waypoint(
                     measured,
                     planned_path,
                     planned_target_index,
-                    last_advance_q_rad=planned_last_advance_q,
+                    reached_tolerance_rad=0.004,
+                    measured_velocity_rad_s=measured_velocity,
                 )
                 if selection_error is not None:
                     raise RuntimeError(f"planned approach tracking failed: {selection_error}")
-                if planned_target_index > previous_index:
-                    planned_last_advance_q = measured
                 if desired_q is None:
                     planned_approach_complete_at_s = elapsed
                 else:

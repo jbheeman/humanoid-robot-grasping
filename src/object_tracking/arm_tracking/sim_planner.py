@@ -16,7 +16,11 @@ from .interception import (
     LiveInterceptController,
 )
 from .joints import joint_contract_id
-from .runtime import compress_validated_joint_path, select_start_escape_waypoint
+from .runtime import (
+    compress_validated_joint_path,
+    ruckig_edge_is_valid,
+    select_start_escape_waypoint,
+)
 from .sim_closed_loop import SequenceGate, SimCommand, SimState
 from .trajectory import minimum_ruckig_path_duration_s
 
@@ -46,7 +50,6 @@ class ClosedLoopInterceptionPlanner:
         self.sequence_gate = SequenceGate()
         self._path: tuple[tuple[float, ...], ...] | None = None
         self._path_index = 1
-        self._last_advance_q: tuple[float, ...] | None = None
         self._last_observation_time_s: float | None = None
 
     def plan(self, state: SimState) -> SimCommand:
@@ -204,6 +207,10 @@ class ClosedLoopInterceptionPlanner:
                     support_plane=state.support_region,
                     top_clearance_m=self.config.top_clearance_m,
                     final_validation_edge_step_rad=None,
+                    desired_palm_normal=self.profile.lane_facing_palm_normal,
+                    maximum_palm_normal_error_rad=(
+                        self.profile.planner.maximum_orientation_error_rad
+                    ),
                 )
                 route = "adaptive_table_approach"
                 if not approach.ok or approach.q_path is None:
@@ -218,15 +225,16 @@ class ClosedLoopInterceptionPlanner:
                     return None, f"ik_{approach.reason or 'approach_failed'}", ()
                 self._path = compress_validated_joint_path(
                     approach.q_path,
-                    lambda begin, end: (
-                        self.solver.validate_joint_path(
-                            (begin, end),
-                            support_plane=state.support_region,
-                            edge_step_rad=0.020,
-                            semantic_edge_step_rad=0.010,
-                            require_escape_cleared=False,
-                        )
-                        is None
+                    lambda begin, end: ruckig_edge_is_valid(
+                        self.solver,
+                        begin,
+                        end,
+                        support_plane=state.support_region,
+                        maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
+                        maximum_acceleration_rad_s2=(
+                            self.config.maximum_acceleration_rad_s2
+                        ),
+                        maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
                     ),
                     maximum_span_rad=self.config.path_compression_span_rad,
                     maximum_skip_knots=16,
@@ -234,16 +242,13 @@ class ClosedLoopInterceptionPlanner:
                 if self._path is None:
                     return None, "ik_approach_path_compression", ()
                 self._path_index = 1
-                self._last_advance_q = measured_q
-            previous_index = self._path_index
             waypoint, self._path_index, error = select_start_escape_waypoint(
                 measured_q,
                 self._path,
                 self._path_index,
-                last_advance_q_rad=self._last_advance_q,
+                reached_tolerance_rad=0.004,
+                measured_velocity_rad_s=state.right_arm_dq_rad_s,
             )
-            if self._path_index > previous_index:
-                self._last_advance_q = measured_q
             if error is not None:
                 self._reset_path()
                 return None, f"ik_{error}", ()
@@ -279,7 +284,6 @@ class ClosedLoopInterceptionPlanner:
     def _reset_path(self) -> None:
         self._path = None
         self._path_index = 1
-        self._last_advance_q = None
 
     def _response(
         self,

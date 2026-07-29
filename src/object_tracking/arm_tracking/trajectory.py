@@ -70,6 +70,40 @@ def minimum_ruckig_duration_s(
     return duration
 
 
+def ruckig_position_samples(
+    *,
+    current_position: Sequence[float],
+    target_position: Sequence[float],
+    maximum_velocity: float | Sequence[float],
+    maximum_acceleration: float | Sequence[float],
+    maximum_jerk: float | Sequence[float],
+    sample_period_s: float = 0.004,
+) -> tuple[tuple[float, ...], ...]:
+    """Sample the synchronized zero-endpoint-velocity trajectory for one edge."""
+
+    if not math.isfinite(sample_period_s) or sample_period_s <= 0.0:
+        raise ValueError("sample_period_s must be finite and positive")
+    inp = InputParameter(_DOF)
+    inp.current_position = _state(current_position, "current_position")
+    inp.current_velocity = (0.0,) * _DOF
+    inp.current_acceleration = (0.0,) * _DOF
+    inp.target_position = _state(target_position, "target_position")
+    inp.target_velocity = (0.0,) * _DOF
+    inp.target_acceleration = (0.0,) * _DOF
+    inp.max_velocity = _positive_limits(maximum_velocity, "maximum_velocity")
+    inp.max_acceleration = _positive_limits(maximum_acceleration, "maximum_acceleration")
+    inp.max_jerk = _positive_limits(maximum_jerk, "maximum_jerk")
+    trajectory = Trajectory(_DOF)
+    result = Ruckig(_DOF).calculate(inp, trajectory)
+    if result not in (Result.Working, Result.Finished):
+        raise ValueError(f"Ruckig could not calculate a trajectory: {result}")
+    steps = max(1, int(math.ceil(float(trajectory.duration) / sample_period_s)))
+    return tuple(
+        tuple(float(value) for value in trajectory.at_time(float(trajectory.duration) * i / steps)[0])
+        for i in range(steps + 1)
+    )
+
+
 def minimum_ruckig_path_duration_s(
     *,
     current_position: Sequence[float],

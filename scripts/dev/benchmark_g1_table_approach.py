@@ -14,7 +14,7 @@ import json
 import math
 from pathlib import Path
 import time
-from typing import Any
+from typing import Any, Callable, Sequence
 
 import numpy as np
 from ruckig import InputParameter, OutputParameter, Result, Ruckig
@@ -25,6 +25,7 @@ from object_tracking.arm_tracking.runtime import (
     compress_validated_joint_path,
     select_start_escape_waypoint,
 )
+from object_tracking.arm_tracking.trajectory import ruckig_position_samples
 
 
 LAB_START_Q = (
@@ -76,6 +77,9 @@ def simulate_ruckig_path(
     maximum_acceleration: float,
     maximum_jerk: float,
     timeout_s: float = 15.0,
+    state_validator: Callable[[Sequence[float]], str | None] | None = None,
+    strict_waypoint_stop: bool = False,
+    residual_lookahead_rad: float = 0.100,
 ) -> dict[str, Any]:
     dt = 1.0 / control_hz
     otg = Ruckig(7, dt)
@@ -96,14 +100,22 @@ def simulate_ruckig_path(
     jerks: list[float] = []
     waypoint_switches = 0
     steps = 0
+    previous_result = Result.Working
     while steps * dt <= timeout_s:
         previous_index = target_index
-        waypoint, target_index, error = select_start_escape_waypoint(
-            measured,
-            path,
-            target_index,
-            last_advance_q_rad=last_advance,
-        )
+        if strict_waypoint_stop:
+            if previous_result == Result.Finished:
+                target_index += 1
+            waypoint = None if target_index >= len(path) else path[target_index]
+            error = None
+        else:
+            waypoint, target_index, error = select_start_escape_waypoint(
+                measured,
+                path,
+                target_index,
+                last_advance_q_rad=last_advance,
+                residual_lookahead_rad=residual_lookahead_rad,
+            )
         if error is not None:
             return {"ok": False, "reason": error}
         if target_index > previous_index:
@@ -127,12 +139,23 @@ def simulate_ruckig_path(
         if result not in (Result.Working, Result.Finished):
             return {"ok": False, "reason": f"ruckig:{result}"}
         measured = np.asarray(out.new_position, dtype=float)
+        if state_validator is not None:
+            validation_error = state_validator(measured)
+            if validation_error is not None:
+                return {
+                    "ok": False,
+                    "reason": f"sampled_trajectory:{validation_error}",
+                    "step": steps,
+                    "target_index": target_index,
+                    "q_rad": [round(float(value), 6) for value in measured],
+                }
         velocity = np.asarray(out.new_velocity, dtype=float)
         acceleration = np.asarray(out.new_acceleration, dtype=float)
         velocities.append(float(np.max(np.abs(velocity))))
         accelerations.append(float(np.max(np.abs(acceleration))))
         jerks.append(float(np.max(np.abs((acceleration - previous_acceleration) / dt))))
         previous_acceleration = acceleration
+        previous_result = result
         out.pass_to_input(inp)
         steps += 1
     return {"ok": False, "reason": "timeout"}
@@ -149,6 +172,8 @@ def benchmark_target(
     maximum_jerk: float,
     compression_span_rad: float,
     compression_skip_knots: int,
+    strict_waypoint_stop: bool = True,
+    residual_lookahead_rad: float = 0.100,
 ) -> dict[str, Any]:
     target_transform = solver.forward_kinematics(LAB_START_Q)
     target_transform[:3, 3] = target_xyz
@@ -159,6 +184,8 @@ def benchmark_target(
         support_plane=support,
         top_clearance_m=0.11,
         final_validation_edge_step_rad=None,
+        desired_palm_normal=(0.0, 1.0, 0.0),
+        maximum_palm_normal_error_rad=math.radians(25.0),
     )
     adaptive_reason = planned.reason
     route = "adaptive"
@@ -193,6 +220,22 @@ def benchmark_target(
             semantic_edge_step_rad=0.010,
             require_escape_cleared=False,
         )
+        if error is None:
+            samples = ruckig_position_samples(
+                current_position=begin,
+                target_position=end,
+                maximum_velocity=maximum_velocity,
+                maximum_acceleration=maximum_acceleration,
+                maximum_jerk=maximum_jerk,
+                sample_period_s=1.0 / control_hz,
+            )
+            error = solver.validate_joint_path(
+                samples,
+                support_plane=support,
+                edge_step_rad=0.010,
+                semantic_edge_step_rad=0.005,
+                require_escape_cleared=False,
+            )
         validation_times.append((time.perf_counter() - edge_started) * 1000.0)
         return error is None
 
@@ -226,6 +269,21 @@ def benchmark_target(
         require_escape_cleared=False,
     )
     dense_validation_ms = (time.perf_counter() - dense_started) * 1000.0
+    previous_ruckig_q = np.asarray(compressed[0], dtype=float)
+
+    def validate_ruckig_sample(q: Sequence[float]) -> str | None:
+        nonlocal previous_ruckig_q
+        current_q = np.asarray(q, dtype=float)
+        error = solver.validate_joint_path(
+            (previous_ruckig_q, current_q),
+            support_plane=support,
+            edge_step_rad=0.005,
+            semantic_edge_step_rad=0.0025,
+            require_escape_cleared=False,
+        )
+        previous_ruckig_q = current_q
+        return error
+
     record.update(
         {
             "compressed_waypoints": len(compressed),
@@ -237,6 +295,9 @@ def benchmark_target(
                 maximum_velocity=maximum_velocity,
                 maximum_acceleration=maximum_acceleration,
                 maximum_jerk=maximum_jerk,
+                state_validator=validate_ruckig_sample,
+                strict_waypoint_stop=strict_waypoint_stop,
+                residual_lookahead_rad=residual_lookahead_rad,
             ),
         }
     )

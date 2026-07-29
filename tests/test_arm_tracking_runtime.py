@@ -36,6 +36,7 @@ from object_tracking.arm_tracking.runtime import (
     project_target_into_workspace,
     register_depth_in_rgb,
     right_arm_ik_seed,
+    ruckig_edge_is_valid,
     select_start_escape_waypoint,
     support_region_from_pixel_prior,
     tabletop_footprint_dimensions_plausible,
@@ -429,6 +430,29 @@ def test_dense_approach_path_is_compressed_into_long_validated_segments() -> Non
     assert checked == [(path[0], path[5]), (path[5], path[10])]
 
 
+def test_ruckig_edge_validation_checks_sampled_curve() -> None:
+    class RecordingSolver:
+        def __init__(self) -> None:
+            self.path_lengths: list[int] = []
+
+        def validate_joint_path(self, path: Sequence[Sequence[float]], **_kwargs: Any) -> None:
+            self.path_lengths.append(len(path))
+
+    solver = RecordingSolver()
+
+    assert ruckig_edge_is_valid(
+        solver,
+        (0.0,) * 7,
+        (0.3, -0.1, 0.2, 0.0, 0.0, 0.0, 0.0),
+        support_plane=None,
+        maximum_velocity_rad_s=1.0,
+        maximum_acceleration_rad_s2=4.0,
+        maximum_jerk_rad_s3=30.0,
+    )
+    assert solver.path_lengths[0] == 2
+    assert solver.path_lengths[1] > 2
+
+
 def test_approach_path_compression_rejects_an_invalid_adjacent_edge() -> None:
     path = ((0.0,) * 7, (0.02,) * 7)
 
@@ -555,6 +579,29 @@ def test_start_escape_waypoint_handles_observed_thirty_milliradian_residual() ->
     assert waypoint == path[2]
     assert index == 2
     assert error is None
+
+
+def test_start_escape_waypoint_waits_for_velocity_to_settle() -> None:
+    path = ((0.0,) * 7, (0.2,) + (0.0,) * 6, (0.4,) + (0.0,) * 6)
+    near_waypoint = (0.199,) + (0.0,) * 6
+
+    moving, moving_index, moving_error = select_start_escape_waypoint(
+        near_waypoint,
+        path,
+        1,
+        reached_tolerance_rad=0.004,
+        measured_velocity_rad_s=(0.08,) + (0.0,) * 6,
+    )
+    settled, settled_index, settled_error = select_start_escape_waypoint(
+        near_waypoint,
+        path,
+        1,
+        reached_tolerance_rad=0.004,
+        measured_velocity_rad_s=(0.0,) * 7,
+    )
+
+    assert (moving, moving_index, moving_error) == (path[1], 1, None)
+    assert (settled, settled_index, settled_error) == (path[2], 2, None)
 
 
 def test_start_escape_waypoint_looks_through_wide_compressed_edge() -> None:

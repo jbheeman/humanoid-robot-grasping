@@ -1,15 +1,35 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from pathlib import Path
 import numpy as np
 
 from object_tracking.arm_tracking.geometry import Plane, SupportRegion
 from object_tracking.arm_tracking.ik_solver import IKResult
 from object_tracking.arm_tracking.interception import LiveInterceptConfig
 from object_tracking.arm_tracking.joints import joint_contract_id
+from object_tracking.arm_tracking.runtime import RuntimeConfig
 from object_tracking.arm_tracking.sim_closed_loop import ObjectObservation, SimState
-from object_tracking.arm_tracking.sim_planner import ClosedLoopInterceptionPlanner
+from object_tracking.arm_tracking.sim_planner import (
+    ClosedLoopInterceptionPlanner,
+    SimPlannerConfig,
+)
 from object_tracking.intercept_planner import InterceptConfig
+
+
+def test_sim_and_live_planners_share_demo_ruckig_limits(tmp_path: Path) -> None:
+    live = RuntimeConfig(calibration_path=tmp_path / "calibration.json")
+    sim = SimPlannerConfig()
+
+    assert (
+        sim.maximum_velocity_rad_s,
+        sim.maximum_acceleration_rad_s2,
+        sim.maximum_jerk_rad_s3,
+    ) == (
+        live.maximum_velocity_rad_s,
+        live.maximum_acceleration_rad_s2,
+        live.maximum_jerk_rad_s3,
+    )
 
 
 class FakeSolver:

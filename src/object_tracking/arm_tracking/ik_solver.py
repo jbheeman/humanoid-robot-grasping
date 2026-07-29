@@ -654,6 +654,51 @@ class G1RightArmIK:
             raise RuntimeError(result.message)
         return np.asarray(result.x, dtype=float).reshape(7)
 
+    def _solve_position_only_numerical(
+        self,
+        target_xyz_m: Sequence[float],
+        seed_q_rad: Sequence[float],
+    ) -> np.ndarray:
+        """Find a redundant arm posture at a Cartesian point.
+
+        Gross table relocation must be allowed to change wrist orientation:
+        preserving the hip-rest orientation can force the forearm through the
+        near table edge. This optimizer is only used by the offline approach
+        planner; each returned posture and its complete incoming edge are
+        collision/support validated before they enter an executable route.
+        """
+
+        target = np.asarray(target_xyz_m, dtype=float)
+        seed = np.asarray(seed_q_rad, dtype=float)
+        if target.shape != (3,) or seed.shape != (7,):
+            raise ValueError("invalid position-only IK input")
+        sqrt_translation = np.sqrt(self.translation_weight)
+        sqrt_smooth = np.sqrt(0.1)
+        sqrt_regularization = np.sqrt(0.02)
+
+        def residual(q: np.ndarray) -> np.ndarray:
+            position = self.forward_kinematics(q)[:3, 3]
+            return np.concatenate(
+                (
+                    sqrt_translation * (position - target),
+                    sqrt_smooth * (q - seed),
+                    sqrt_regularization * q,
+                )
+            )
+
+        result = self.least_squares(
+            residual,
+            np.clip(seed, self.lower, self.upper),
+            bounds=(self.lower, self.upper),
+            max_nfev=80,
+            ftol=1e-6,
+            xtol=1e-6,
+            gtol=1e-6,
+        )
+        if not result.success or not np.all(np.isfinite(result.x)):
+            raise RuntimeError(result.message)
+        return np.asarray(result.x, dtype=float).reshape(7)
+
     def _collision_pairs(self, q: np.ndarray) -> set[int]:
         if self.collision_model is None or self.collision_data is None:
             return set()
@@ -1251,20 +1296,37 @@ class G1RightArmIK:
         support_plane: Any,
         side_margin_m: float = 0.10,
         top_clearance_m: float = 0.10,
-        maximum_cartesian_segment_m: float = 0.025,
+        maximum_cartesian_segment_m: float = 0.050,
         maximum_steps_per_sample: int = 12,
         final_validation_edge_step_rad: float | None = 0.010,
+        desired_palm_normal: Sequence[float] | None = None,
+        maximum_palm_normal_error_rad: float = math.radians(25.0),
     ) -> IKPathResult:
         """Plan a measured-start, table-topology-aware right-arm approach."""
 
         target = np.asarray(target_transform, dtype=float)
         start_q = np.asarray(start_q_rad, dtype=float)
+        palm_normal_target = (
+            None
+            if desired_palm_normal is None
+            else np.asarray(desired_palm_normal, dtype=float)
+        )
         if (
             target.shape != (4, 4)
             or start_q.shape != (7,)
             or not np.all(np.isfinite(target))
             or not np.all(np.isfinite(start_q))
             or maximum_steps_per_sample <= 0
+            or (
+                palm_normal_target is not None
+                and (
+                    palm_normal_target.shape != (3,)
+                    or not np.all(np.isfinite(palm_normal_target))
+                    or not np.isclose(np.linalg.norm(palm_normal_target), 1.0, atol=1e-3)
+                )
+            )
+            or not math.isfinite(maximum_palm_normal_error_rad)
+            or not 0.0 <= maximum_palm_normal_error_rad <= math.pi
             or (
                 final_validation_edge_step_rad is not None
                 and (
@@ -1302,57 +1364,78 @@ class G1RightArmIK:
         except ValueError as exc:
             return IKPathResult(False, None, float("inf"), 0.0, f"adaptive_route:{exc}")
 
-        # Hold the measured wrist orientation during the gross relocation.
-        # Barrier-orientation selection is a separate, endpoint-only problem;
-        # rotating while passing a table edge needlessly enlarges the swept
-        # hand envelope.
-        orientation = start_transform[:3, :3].copy()
-        for point in cartesian.points_xyz_m[1:]:
-            waypoint = np.eye(4)
-            waypoint[:3, :3] = orientation
-            waypoint[:3, 3] = np.asarray(point, dtype=float)
-            previous_error = float("inf")
-            for _ in range(maximum_steps_per_sample):
-                error = float(np.linalg.norm(waypoint[:3, 3] - self.forward_kinematics(q)[:3, 3]))
-                if error <= self.position_tolerance_m:
-                    break
-                result = self.solve_local_translation(
-                    waypoint,
-                    q,
+        # Do not preserve the hip-rest wrist orientation during gross
+        # relocation. On the G1 that local IK branch raises the hand while
+        # leaving the elbow below the near table edge, so the route repeatedly
+        # stops at link_support_region_clearance. Instead, solve redundant
+        # position-only postures and accept the first branch whose entire
+        # incoming edge passes the production collision/support validator.
+        route_points = cartesian.points_xyz_m[1:]
+        for point_index, point in enumerate(route_points):
+            target_xyz = np.asarray(point, dtype=float)
+            position_tolerance = max(self.position_tolerance_m, 0.025)
+            candidate_q: np.ndarray | None = None
+            last_reason = "position_error"
+            for seed_q in self._ik_seed_variants(q)[:maximum_steps_per_sample]:
+                try:
+                    candidate = self._solve_position_only_numerical(target_xyz, seed_q)
+                except (RuntimeError, ValueError):
+                    last_reason = "solver_failed"
+                    continue
+                error = float(
+                    np.linalg.norm(self.forward_kinematics(candidate)[:3, 3] - target_xyz)
+                )
+                if error > position_tolerance:
+                    last_reason = "position_error"
+                    continue
+                collisions = self._collision_pairs(candidate)
+                if collisions:
+                    last_reason = "self_collision"
+                    continue
+                if not self._arm_has_support_clearance(candidate, support_plane):
+                    last_reason = "link_support_region_clearance"
+                    continue
+                if point_index == len(route_points) - 1 and palm_normal_target is not None:
+                    # The interception profile owns lane orientation. Check
+                    # the actual G1 hand frame instead of inferring a sign
+                    # from table-corner ordering.
+                    palm_normal = self.forward_kinematics(candidate)[:3, 1]
+                    if float(palm_normal @ palm_normal_target) < math.cos(
+                        maximum_palm_normal_error_rad
+                    ):
+                        last_reason = "palm_not_lane_facing"
+                        continue
+                validation_error = self.validate_joint_path(
+                    (q, candidate),
                     support_plane=support_plane,
-                    maximum_joint_step_rad=0.025,
+                    edge_step_rad=0.010,
+                    semantic_edge_step_rad=0.005,
+                    require_escape_cleared=False,
                 )
-                if not result.ok or result.q_rad is None:
-                    return IKPathResult(
-                        False,
-                        None,
-                        error,
-                        result.orientation_error_rad,
-                        f"adaptive_ik:{result.reason or 'failed'}",
-                    )
-                candidate = np.asarray(result.q_rad, dtype=float)
-                candidate_error = float(
-                    np.linalg.norm(waypoint[:3, 3] - self.forward_kinematics(candidate)[:3, 3])
-                )
-                if candidate_error >= min(error, previous_error) - 1e-5:
-                    return IKPathResult(
-                        False,
-                        None,
-                        candidate_error,
-                        result.orientation_error_rad,
-                        "adaptive_ik:no_progress",
-                    )
-                q = candidate
-                path.append(tuple(float(value) for value in q))
-                previous_error = candidate_error
-            else:
+                if validation_error is not None:
+                    last_reason = validation_error
+                    continue
+                candidate_q = candidate
+                break
+            if candidate_q is None:
                 return IKPathResult(
                     False,
                     None,
-                    previous_error,
+                    float(np.linalg.norm(self.forward_kinematics(q)[:3, 3] - target_xyz)),
                     0.0,
-                    "adaptive_ik:step_limit",
+                    f"adaptive_reconfiguration:{last_reason}",
                 )
+            # Position-only IK can switch redundant elbow branches. Densify
+            # that already-validated edge so downstream Ruckig waypoints stay
+            # local instead of receiving one large branch jump.
+            joint_steps = max(
+                1,
+                int(np.ceil(float(np.max(np.abs(candidate_q - q))) / 0.08)),
+            )
+            for alpha in np.linspace(0.0, 1.0, joint_steps + 1)[1:]:
+                interpolated = (1.0 - alpha) * q + alpha * candidate_q
+                path.append(tuple(float(value) for value in interpolated))
+            q = candidate_q
         if final_validation_edge_step_rad is not None:
             validation_error = self.validate_joint_path(
                 path,

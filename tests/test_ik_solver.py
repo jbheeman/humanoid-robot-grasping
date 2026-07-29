@@ -402,6 +402,71 @@ def test_close_table_lab_pose_uses_staged_right_side_clearance() -> None:
     ) is None
 
 
+def test_close_table_adaptive_route_reconfigures_elbow_to_reach_target() -> None:
+    pytest.importorskip("pinocchio")
+    pytest.importorskip("scipy")
+    repo_root = Path(__file__).resolve().parents[1]
+    urdf = default_urdf_path(repo_root)
+    if not urdf.is_file():
+        pytest.skip("pinned G1 arm assets are not installed")
+    solver = G1RightArmIK(urdf)
+    start_q = (
+        0.2891673744,
+        -0.1298251152,
+        0.0039188415,
+        0.9780925512,
+        -0.1113813892,
+        -0.0022170816,
+        -0.0082091941,
+    )
+    origin = np.asarray((0.2622941631, 0.0478690107, 0.0129425348))
+    axis_u = np.asarray((0.9993987830, -0.0065124773, 0.0340537822))
+    axis_v = np.asarray((-0.0064480827, -0.9999772100, -0.0020004504))
+    normal = -np.cross(axis_u, axis_v)
+    support = SupportRegion(
+        plane=Plane(normal, -float(normal @ origin)),
+        origin=origin,
+        axis_u=axis_u,
+        axis_v=axis_v,
+        minimum_uv=(0.0, -0.3545687169),
+        maximum_uv=(0.34, 0.3254312831),
+        certified_edges=("u_min",),
+        edge_sources=(("u_min", "calibrated_pixel_near_edge"),),
+        lateral_margin_m=0.07,
+    )
+    target_xyz = np.asarray((0.36, -0.18, 0.15))
+    target = solver.forward_kinematics(start_q)
+    target[:3, 3] = target_xyz
+
+    route = solver.plan_adaptive_table_approach(
+        target,
+        start_q,
+        support_plane=support,
+        desired_palm_normal=(0.0, 1.0, 0.0),
+        maximum_palm_normal_error_rad=np.deg2rad(25.0),
+    )
+
+    assert route.ok, route.reason
+    assert route.q_path is not None
+    final_xyz = solver.forward_kinematics(route.q_path[-1])[:3, 3]
+    assert np.linalg.norm(final_xyz - target_xyz) <= 0.025
+    assert max(
+        np.max(np.abs(np.asarray(end) - np.asarray(begin)))
+        for begin, end in zip(route.q_path, route.q_path[1:])
+    ) <= 0.08 + 1e-9
+    palm_normal = solver.forward_kinematics(route.q_path[-1])[:3, 1]
+    assert float(palm_normal @ np.asarray((0.0, 1.0, 0.0))) >= np.cos(
+        np.deg2rad(25.0)
+    )
+    assert solver.validate_joint_path(
+        route.q_path,
+        support_plane=support,
+        edge_step_rad=0.005,
+        semantic_edge_step_rad=0.005,
+        require_escape_cleared=False,
+    ) is None
+
+
 def test_lab_g1_hip_rest_pose_has_bounded_guided_table_clearance() -> None:
     pytest.importorskip("pinocchio")
     pytest.importorskip("scipy")

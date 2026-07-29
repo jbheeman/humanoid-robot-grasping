@@ -5,6 +5,7 @@ import pytest
 from object_tracking.arm_tracking.trajectory import (
     minimum_ruckig_duration_s,
     minimum_ruckig_path_duration_s,
+    ruckig_position_samples,
 )
 
 
@@ -59,6 +60,21 @@ def test_path_duration_includes_all_remaining_waypoints() -> None:
     )
 
     assert path > direct
+
+
+def test_ruckig_samples_include_exact_edge_endpoints() -> None:
+    target = (0.30,) + (0.0,) * 6
+
+    samples = ruckig_position_samples(
+        current_position=(0.0,) * 7,
+        target_position=target,
+        sample_period_s=0.01,
+        **LIMITS,
+    )
+
+    assert samples[0] == pytest.approx((0.0,) * 7)
+    assert samples[-1] == pytest.approx(target)
+    assert len(samples) > 2
 
 
 @pytest.mark.parametrize(
