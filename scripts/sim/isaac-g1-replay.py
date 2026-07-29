@@ -1358,6 +1358,22 @@ def main() -> int:
         state = str(report["state"])
         states[state] = states.get(state, 0) + 1
         hardware.apply()
+        if args.bunny_motion == "ballistic" and contact_steps == 0:
+            # Model an externally driven plush/conveyor until interception.
+            # Release it immediately after the first measured impact so the
+            # post-contact velocity change remains a real PhysX outcome.
+            bunny.write_root_velocity_to_sim(
+                torch.cat(
+                    (
+                        initial_bunny_velocity_world.reshape(3),
+                        torch.zeros(
+                            3,
+                            dtype=initial_bunny_velocity_world.dtype,
+                            device=initial_bunny_velocity_world.device,
+                        ),
+                    )
+                ).reshape(1, 6)
+            )
         robot.write_data_to_sim()
         bunny.write_data_to_sim()
         sim.step(render=False)
