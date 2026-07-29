@@ -827,6 +827,12 @@ def main() -> int:
     for sensor in contact_sensors:
         sensor.reset()
     restore_body_state()
+    # ``write_joint_state_to_sim`` updates PhysX immediately, but after the
+    # second stage reset Isaac Lab's cached ``robot.data`` can still contain
+    # the USD default pose.  ArmBridge.enable() must latch the replay's
+    # measured pose, not that stale default, or the zero-weight arming command
+    # pulls the arm away before the startup settle check can complete.
+    robot.update(0.0)
 
     clock = IsaacClock()
     hardware = IsaacArmHardware(robot, left_ids, right_ids, clock)
