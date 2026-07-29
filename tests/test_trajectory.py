@@ -77,6 +77,26 @@ def test_ruckig_samples_include_exact_edge_endpoints() -> None:
     assert len(samples) > 2
 
 
+def test_ruckig_samples_include_nonzero_measured_velocity() -> None:
+    target = (0.30,) + (0.0,) * 6
+    stationary = ruckig_position_samples(
+        current_position=(0.0,) * 7,
+        target_position=target,
+        sample_period_s=0.01,
+        **LIMITS,
+    )
+    moving = ruckig_position_samples(
+        current_position=(0.0,) * 7,
+        current_velocity=(0.2,) + (0.0,) * 6,
+        target_position=target,
+        sample_period_s=0.01,
+        **LIMITS,
+    )
+
+    assert moving[1][0] != pytest.approx(stationary[1][0])
+    assert moving[-1] == pytest.approx(target)
+
+
 @pytest.mark.parametrize(
     ("changes", "message"),
     [

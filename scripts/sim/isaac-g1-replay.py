@@ -1015,17 +1015,6 @@ def main() -> int:
                     raise RuntimeError(f"planned approach tracking failed: {selection_error}")
                 if desired_q is None:
                     planned_approach_complete_at_s = elapsed
-                else:
-                    planned_edge_validations += 1
-                    edge_error = planned_solver.validate_joint_path(
-                        (measured, desired_q),
-                        support_plane=planned_support,
-                        edge_step_rad=0.020,
-                        semantic_edge_step_rad=0.010,
-                        require_escape_cleared=False,
-                    )
-                    if edge_error is not None:
-                        raise RuntimeError(f"planned measured approach edge failed: {edge_error}")
             if planned_approach_complete_at_s is not None and planned_target_xyz is not None:
                 transform = planned_solver.forward_kinematics(measured)
                 transform[:3, 3] = planned_target_xyz
@@ -1041,6 +1030,18 @@ def main() -> int:
                     planned_ik_failures[reason] = planned_ik_failures.get(reason, 0) + 1
                     desired_q = None
             if desired_q is not None:
+                planned_edge_validations += 1
+                if not ruckig_edge_is_valid(
+                    planned_solver,
+                    measured,
+                    desired_q,
+                    support_plane=planned_support,
+                    maximum_velocity_rad_s=args.max_velocity,
+                    maximum_acceleration_rad_s2=args.max_acceleration,
+                    maximum_jerk_rad_s3=args.max_jerk,
+                    current_velocity_rad_s=measured_velocity,
+                ):
+                    raise RuntimeError("planned measured Ruckig edge failed")
                 sequence += 1
                 try:
                     controller.set_target(

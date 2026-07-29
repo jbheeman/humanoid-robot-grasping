@@ -78,6 +78,8 @@ def ruckig_position_samples(
     maximum_acceleration: float | Sequence[float],
     maximum_jerk: float | Sequence[float],
     sample_period_s: float = 0.004,
+    current_velocity: Sequence[float] = (0.0,) * _DOF,
+    current_acceleration: Sequence[float] = (0.0,) * _DOF,
 ) -> tuple[tuple[float, ...], ...]:
     """Sample the synchronized zero-endpoint-velocity trajectory for one edge."""
 
@@ -85,8 +87,8 @@ def ruckig_position_samples(
         raise ValueError("sample_period_s must be finite and positive")
     inp = InputParameter(_DOF)
     inp.current_position = _state(current_position, "current_position")
-    inp.current_velocity = (0.0,) * _DOF
-    inp.current_acceleration = (0.0,) * _DOF
+    inp.current_velocity = _state(current_velocity, "current_velocity")
+    inp.current_acceleration = _state(current_acceleration, "current_acceleration")
     inp.target_position = _state(target_position, "target_position")
     inp.target_velocity = (0.0,) * _DOF
     inp.target_acceleration = (0.0,) * _DOF

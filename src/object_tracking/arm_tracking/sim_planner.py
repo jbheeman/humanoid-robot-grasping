@@ -253,16 +253,18 @@ class ClosedLoopInterceptionPlanner:
                 self._reset_path()
                 return None, f"ik_{error}", ()
             if waypoint is not None:
-                edge_error = self.solver.validate_joint_path(
-                    (measured_q, waypoint),
+                if not ruckig_edge_is_valid(
+                    self.solver,
+                    measured_q,
+                    waypoint,
                     support_plane=state.support_region,
-                    edge_step_rad=0.020,
-                    semantic_edge_step_rad=0.010,
-                    require_escape_cleared=False,
-                )
-                if edge_error is not None:
+                    maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
+                    maximum_acceleration_rad_s2=self.config.maximum_acceleration_rad_s2,
+                    maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
+                    current_velocity_rad_s=state.right_arm_dq_rad_s,
+                ):
                     self._reset_path()
-                    return None, f"ik_measured_edge:{edge_error}", ()
+                    return None, "ik_measured_edge:ruckig_path_invalid", ()
                 return (
                     waypoint,
                     route if "route" in locals() else "table_approach",

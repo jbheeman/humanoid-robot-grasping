@@ -459,6 +459,8 @@ def ruckig_edge_is_valid(
     maximum_velocity_rad_s: float,
     maximum_acceleration_rad_s2: float,
     maximum_jerk_rad_s3: float,
+    current_velocity_rad_s: Sequence[float] = (0.0,) * 7,
+    current_acceleration_rad_s2: Sequence[float] = (0.0,) * 7,
 ) -> bool:
     """Validate the chord and synchronized Ruckig curve for one waypoint edge."""
 
@@ -480,6 +482,8 @@ def ruckig_edge_is_valid(
         maximum_acceleration=maximum_acceleration_rad_s2,
         maximum_jerk=maximum_jerk_rad_s3,
         sample_period_s=0.004,
+        current_velocity=current_velocity_rad_s,
+        current_acceleration=current_acceleration_rad_s2,
     )
     return (
         solver.validate_joint_path(
@@ -1330,21 +1334,24 @@ class ArmTrackingRuntime:
                 self._reject(base_status, f"ik_{selection_error}", colormap)
                 return
             if waypoint is not None:
-                measured_edge_error = self.ik.validate_joint_path(
-                    (last_q, waypoint),
+                measured_velocity = measured_right_arm_velocity(arm_state) or (0.0,) * 7
+                if not ruckig_edge_is_valid(
+                    self.ik,
+                    last_q,
+                    waypoint,
                     support_plane=plane,
-                    edge_step_rad=0.020,
-                    semantic_edge_step_rad=0.010,
-                    require_escape_cleared=False,
-                )
-                if measured_edge_error is not None:
+                    maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
+                    maximum_acceleration_rad_s2=self.config.maximum_acceleration_rad_s2,
+                    maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
+                    current_velocity_rad_s=measured_velocity,
+                ):
                     self._approach_path = None
                     self._approach_target_xyz = None
                     self._approach_last_advance_q = None
                     self._approach_raw_waypoint_count = None
                     self._reject(
                         base_status,
-                        f"ik_measured_edge:{measured_edge_error}",
+                        "ik_measured_edge:ruckig_path_invalid",
                         colormap,
                     )
                     return
