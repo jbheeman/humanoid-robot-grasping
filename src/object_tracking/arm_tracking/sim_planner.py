@@ -53,6 +53,7 @@ class ClosedLoopInterceptionPlanner:
         self._path: tuple[tuple[float, ...], ...] | None = None
         self._path_index = 1
         self._validated_path_index: int | None = None
+        self._approach_target_position: np.ndarray | None = None
         self._last_observation_time_s: float | None = None
 
     def plan(self, state: SimState) -> SimCommand:
@@ -93,6 +94,15 @@ class ClosedLoopInterceptionPlanner:
                 palm_position_m=palm_position,
             )
         if decision.state in (InterceptState.HOLD, InterceptState.EXPIRED):
+            if self._path is not None and self._approach_target_position is not None:
+                return self._continue_staging_path(
+                    state,
+                    measured_q,
+                    measured_dq,
+                    decision.reason,
+                    started,
+                    decision,
+                )
             return self._measured_hold(state, measured_q, decision.reason, started, decision)
         publish_allowed = decision.may_publish or (
             self.profile.preview_staging_enabled and decision.may_stage
@@ -170,6 +180,68 @@ class ClosedLoopInterceptionPlanner:
             tau_nm=torque,
         )
 
+    def _continue_staging_path(
+        self,
+        state: SimState,
+        measured_q: tuple[float, ...],
+        measured_dq: tuple[float, ...],
+        decision_reason: str,
+        started: float,
+        decision: Any,
+    ) -> SimCommand:
+        """Finish an active collision-checked table approach during prediction holds."""
+
+        assert self._approach_target_position is not None
+        next_q, route_reason, remaining_targets = self._next_joint_target(
+            measured_q,
+            self._approach_target_position,
+            state,
+            path_only=True,
+        )
+        if next_q is None:
+            if route_reason != "approach_complete":
+                self.intercept.invalidate(route_reason, now_s=state.simulation_time_s)
+            return self._measured_hold(
+                state,
+                measured_q,
+                (
+                    decision_reason
+                    if route_reason == "approach_complete"
+                    else route_reason
+                ),
+                started,
+                decision,
+            )
+        duration = minimum_ruckig_path_duration_s(
+            current_position=measured_q,
+            current_velocity=measured_dq,
+            target_positions=remaining_targets,
+            maximum_velocity=self.config.maximum_velocity_rad_s,
+            maximum_acceleration=self.config.maximum_acceleration_rad_s2,
+            maximum_jerk=self.config.maximum_jerk_rad_s3,
+        )
+        try:
+            torque = self.solver.gravity_compensation_torque(next_q)
+        except (RuntimeError, ValueError):
+            return self._response(
+                state,
+                "hold",
+                "gravity_compensation_failed",
+                started,
+                decision=decision,
+                duration_s=duration,
+            )
+        return self._response(
+            state,
+            "target",
+            f"preview_stage:{route_reason}:prediction_hold:{decision_reason}",
+            started,
+            decision=decision,
+            duration_s=duration,
+            q_rad=next_q,
+            tau_nm=torque,
+        )
+
     def _measured_hold(
         self,
         state: SimState,
@@ -222,6 +294,8 @@ class ClosedLoopInterceptionPlanner:
         measured_q: tuple[float, ...],
         target_position: np.ndarray,
         state: SimState,
+        *,
+        path_only: bool = False,
     ) -> tuple[
         tuple[float, ...] | None,
         str,
@@ -286,6 +360,7 @@ class ClosedLoopInterceptionPlanner:
                 if self._path is None:
                     return None, "ik_approach_path_compression", ()
                 self._path_index = 1
+                self._approach_target_position = target_position.copy()
                 # Every compressed edge has already passed the complete chord
                 # and synchronized Ruckig collision/support validator.
                 self._validated_path_index = 1
@@ -336,6 +411,8 @@ class ClosedLoopInterceptionPlanner:
                     self._path[self._path_index :],
                 )
             self._reset_path()
+            if path_only:
+                return None, "approach_complete", ()
 
         target_transform = self.solver.forward_kinematics(measured_q)
         target_transform[:3, 3] = target_position
@@ -355,6 +432,7 @@ class ClosedLoopInterceptionPlanner:
         self._path = None
         self._path_index = 1
         self._validated_path_index = None
+        self._approach_target_position = None
 
     def _response(
         self,

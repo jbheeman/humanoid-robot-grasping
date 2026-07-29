@@ -164,6 +164,32 @@ def test_terminal_intercept_refreshes_gravity_supported_measured_hold() -> None:
     assert command.remaining_ruckig_duration_s == 0.0
 
 
+def test_prediction_hold_finishes_active_table_staging_path() -> None:
+    planner = ClosedLoopInterceptionPlanner(profile(), FakeSolver())  # type: ignore[arg-type]
+    planner._path = ((0.0,) * 7, (0.1,) * 7)
+    planner._path_index = 1
+    planner._validated_path_index = 1
+    planner._approach_target_position = np.asarray((0.4, -0.05, 0.16))
+    current = state(1, 1.0)
+    current = replace(
+        current,
+        object_observation=replace(
+            current.object_observation,
+            velocity_m_s=(0.0, 0.0, 0.0),
+        ),
+    )
+
+    command = planner.plan(current)
+
+    assert command.status == "target"
+    assert command.reason == (
+        "preview_stage:table_approach:prediction_hold:planner_object_too_slow"
+    )
+    assert command.right_arm_q_rad == (0.1,) * 7
+    assert command.right_arm_tau_ff_nm == (0.2,) * 7
+    assert command.remaining_ruckig_duration_s > 0.0
+
+
 def test_unreachable_ruckig_deadline_immediately_refreshes_measured_hold() -> None:
     planner = ClosedLoopInterceptionPlanner(
         profile(),
