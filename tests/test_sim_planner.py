@@ -203,7 +203,9 @@ def test_loaded_final_waypoint_accepts_bounded_servo_residual() -> None:
         1,
         reached_tolerance_rad=0.018,
         final_reached_tolerance_rad=0.08,
-        measured_velocity_rad_s=(0.0,) * 7,
+        measured_velocity_rad_s=(0.5,) + (0.0,) * 6,
+        maximum_waypoint_velocity_rad_s=0.1,
+        final_maximum_waypoint_velocity_rad_s=1.0,
     )
 
     assert waypoint is None

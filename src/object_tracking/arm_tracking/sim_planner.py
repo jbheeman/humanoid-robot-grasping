@@ -376,6 +376,7 @@ class ClosedLoopInterceptionPlanner:
                 measured_velocity_rad_s=state.right_arm_dq_rad_s,
                 maximum_waypoint_velocity_rad_s=0.10,
                 final_reached_tolerance_rad=0.08,
+                final_maximum_waypoint_velocity_rad_s=1.0,
             )
             if self._path_index > previous_path_index:
                 # Advancement requires measured arrival within 1 mrad with

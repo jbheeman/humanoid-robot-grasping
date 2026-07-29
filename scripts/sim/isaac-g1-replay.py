@@ -782,8 +782,8 @@ def main() -> int:
                 diffuse_color=(0.9, 0.9, 0.82), roughness=0.9
             ),
             physics_material=sim_utils.RigidBodyMaterialCfg(
-                static_friction=0.05 if args.bunny_motion == "ballistic" else 0.8,
-                dynamic_friction=0.02 if args.bunny_motion == "ballistic" else 0.7,
+                static_friction=0.0 if args.bunny_motion == "ballistic" else 0.8,
+                dynamic_friction=0.0 if args.bunny_motion == "ballistic" else 0.7,
                 restitution=0.05,
             ),
         )
@@ -801,8 +801,8 @@ def main() -> int:
                 diffuse_color=(0.9, 0.9, 0.82), roughness=0.9
             ),
             physics_material=sim_utils.RigidBodyMaterialCfg(
-                static_friction=0.05 if args.bunny_motion == "ballistic" else 0.8,
-                dynamic_friction=0.02 if args.bunny_motion == "ballistic" else 0.7,
+                static_friction=0.0 if args.bunny_motion == "ballistic" else 0.8,
+                dynamic_friction=0.0 if args.bunny_motion == "ballistic" else 0.7,
                 restitution=0.05,
             ),
         )

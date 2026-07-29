@@ -393,6 +393,7 @@ def select_start_escape_waypoint(
     measured_velocity_rad_s: Sequence[float] | None = None,
     maximum_waypoint_velocity_rad_s: float = 0.02,
     final_reached_tolerance_rad: float | None = None,
+    final_maximum_waypoint_velocity_rad_s: float | None = None,
 ) -> tuple[tuple[float, ...] | None, int, str | None]:
     """Select one bounded escape waypoint using measured, not commanded, pose."""
 
@@ -425,6 +426,14 @@ def select_start_escape_waypoint(
                 or final_reached_tolerance_rad < reached_tolerance_rad
             )
         )
+        or (
+            final_maximum_waypoint_velocity_rad_s is not None
+            and (
+                not np.isfinite(final_maximum_waypoint_velocity_rad_s)
+                or final_maximum_waypoint_velocity_rad_s
+                < maximum_waypoint_velocity_rad_s
+            )
+        )
     ):
         return None, target_index, "invalid_escape_path"
     index = target_index
@@ -433,9 +442,15 @@ def select_start_escape_waypoint(
         if final_reached_tolerance_rad is not None and index == len(knots) - 1
         else reached_tolerance_rad
     )
+    active_maximum_velocity = (
+        final_maximum_waypoint_velocity_rad_s
+        if final_maximum_waypoint_velocity_rad_s is not None
+        and index == len(knots) - 1
+        else maximum_waypoint_velocity_rad_s
+    )
     velocity_settled = measured_velocity is None or float(
         np.max(np.abs(measured_velocity))
-    ) <= maximum_waypoint_velocity_rad_s
+    ) <= active_maximum_velocity
     if (
         index < len(knots)
         and float(np.max(np.abs(measured - knots[index])))
@@ -1388,6 +1403,7 @@ class ArmTrackingRuntime:
                 measured_velocity_rad_s=measured_right_arm_velocity(arm_state),
                 maximum_waypoint_velocity_rad_s=0.10,
                 final_reached_tolerance_rad=0.08,
+                final_maximum_waypoint_velocity_rad_s=1.0,
             )
             self._approach_target_index = waypoint_index
             if waypoint_index > previous_waypoint_index:
