@@ -35,6 +35,12 @@ parser.add_argument("--max-jerk", type=float, default=30.0)
 parser.add_argument("--deadman-s", type=float, default=0.75)
 parser.add_argument("--tail-s", type=float, default=2.0)
 parser.add_argument(
+    "--post-contact-hold-s",
+    type=float,
+    default=0.5,
+    help="ballistic episode hold time after first measured hand contact",
+)
+parser.add_argument(
     "--command-source",
     choices=("recorded", "planned_approach", "closed_loop_ipc"),
     default="recorded",
@@ -138,7 +144,14 @@ args.kit_args = f"{required_kit_args} {args.kit_args or ''}".strip()
 
 if args.physics_hz < 100.0 or args.physics_hz > 250.0:
     parser.error("--physics-hz must be between 100 and 250")
-for name in ("max_velocity", "max_acceleration", "max_jerk", "deadman_s", "tail_s"):
+for name in (
+    "max_velocity",
+    "max_acceleration",
+    "max_jerk",
+    "deadman_s",
+    "tail_s",
+    "post_contact_hold_s",
+):
     if not math.isfinite(getattr(args, name)) or getattr(args, name) <= 0.0:
         parser.error(f"--{name.replace('_', '-')} must be finite and positive")
 if args.max_replay_s is not None and (
@@ -1235,6 +1248,7 @@ def main() -> int:
         if (
             planner_client is not None
             and closed_loop_support is not None
+            and first_contact_at_s is None
             and elapsed >= planner_next_state_at_s
         ):
             planner_next_state_at_s = elapsed + 1.0 / args.planner_state_hz
@@ -1427,6 +1441,34 @@ def main() -> int:
             contact_steps += 1
             if first_contact_at_s is None:
                 first_contact_at_s = elapsed
+                # Commit to the measured impact pose. Continuing toward later
+                # perception waypoints after interception makes the hand chase
+                # through the bunny instead of acting as a firm blocker.
+                sequence += 1
+                measured_right = tuple(
+                    float(value)
+                    for value in tensor(robot.data.joint_pos)[0, right_ids]
+                    .detach()
+                    .cpu()
+                    .tolist()
+                )
+                active_tau = (
+                    (0.0,) * 7
+                    if hardware.command is None
+                    else tuple(float(value) for value in hardware.command.tau[7:])
+                )
+                try:
+                    controller.set_target(
+                        session_id="isaac-replay",
+                        sequence=sequence,
+                        calibration_id=calibration_id,
+                        right_arm_q=measured_right,
+                        right_arm_tau_ff=active_tau,
+                        pipeline_age_ms=0,
+                    )
+                except ValueError as exc:
+                    code = str(getattr(exc, "code", type(exc).__name__))
+                    target_rejections[code] = target_rejections.get(code, 0) + 1
             last_contact_at_s = elapsed
         hand_positions = tensor(robot.data.body_pos_w)[0, hand_ids]
         bunny_position = tensor(bunny.data.root_pos_w)[0]
@@ -1442,6 +1484,11 @@ def main() -> int:
                 device=measured.device,
             )
             tracking_errors.append(float(torch.max(torch.abs(measured - commanded))))
+        if (
+            first_contact_at_s is not None
+            and elapsed - first_contact_at_s >= args.post_contact_hold_s
+        ):
+            break
 
     planner_metrics = None if planner_client is None else planner_client.metrics()
     if planner_client is not None:
@@ -1457,6 +1504,7 @@ def main() -> int:
         final_bunny_velocity,
     )
     wall_elapsed = time.perf_counter() - started_wall
+    simulated_duration = min(final_time, clock.monotonic - playback_start)
     ordered_errors = sorted(tracking_errors)
     p95_error = (
         None
@@ -1496,6 +1544,7 @@ def main() -> int:
         "calibrated_frame": args.calibrated_frame,
         "command_source": args.command_source,
         "gravity_feedforward_scale": args.gravity_feedforward_scale,
+        "post_contact_hold_s": args.post_contact_hold_s,
         "bunny_motion": args.bunny_motion,
         "object_proxy": proxy,
         "freshness_mode": args.freshness_mode,
@@ -1575,9 +1624,9 @@ def main() -> int:
             5,
         ),
         "joint_tracking_error_rad_p95": None if p95_error is None else round(p95_error, 6),
-        "simulated_duration_s": round(final_time, 4),
+        "simulated_duration_s": round(simulated_duration, 4),
         "wall_duration_s": round(wall_elapsed, 4),
-        "realtime_factor": round(final_time / max(wall_elapsed, 1e-9), 4),
+        "realtime_factor": round(simulated_duration / max(wall_elapsed, 1e-9), 4),
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
     args.output.write_text(json.dumps(result, indent=2, sort_keys=True) + "\n", encoding="utf-8")
