@@ -874,9 +874,22 @@ def main() -> int:
     calibration_id = str(replay.get("calibration_id") or "sim-calibration")
     controller.enable(session_id="isaac-replay", calibration_id=calibration_id)
     dt = 1.0 / args.physics_hz
+    startup_arm_position = torch.tensor(
+        [[*initial_body[15:22], *initial_body[22:29]]],
+        dtype=torch.float32,
+        device=tensor(robot.data.joint_pos).device,
+    )
+    startup_arm_velocity = torch.zeros_like(startup_arm_position)
     while controller.state is not ArmState.ARMED:
         controller.tick(clock.monotonic)
         hardware.apply()
+        if controller.state is ArmState.ARMING:
+            # Weight zero represents the handoff from the G1's underlying
+            # standing controller, which already holds the measured pose.
+            # Isaac has no such controller, so preserve only that startup hold
+            # until ArmBridge completes its measured-pose takeover.
+            set_position_target(robot, startup_arm_position, hardware.arm_ids)
+            set_velocity_target(robot, startup_arm_velocity, hardware.arm_ids)
         robot.write_data_to_sim()
         bunny.write_data_to_sim()
         sim.step(render=False)
