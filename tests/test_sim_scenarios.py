@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 from pathlib import Path
 import subprocess
@@ -8,6 +9,12 @@ import sys
 
 def passing_result() -> dict[str, object]:
     return {
+        "project_commit": "project-commit",
+        "project_tracked_dirty": False,
+        "unitree_sim_commit": "unitree-commit",
+        "runner_sha256": "runner-hash",
+        "planner_intercept_config_sha256": "config-hash",
+        "planner_urdf_sha256": "urdf-hash",
         "dds_enabled": False,
         "ros_enabled": False,
         "transport_import_guard_passed": True,
@@ -110,6 +117,21 @@ def test_matrix_summary_requires_every_canonical_streak_and_95_percent_heldout(
             }
         )
     )
+    (tmp_path / "provenance.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "project_commit": "project-commit",
+                "project_tracked_dirty": False,
+                "unitree_sim_commit": "unitree-commit",
+                "manifest_sha256": hashlib.sha256(manifest_path.read_bytes()).hexdigest(),
+                "intercept_config_sha256": "config-hash",
+                "runner_sha256": "runner-hash",
+                "planner_sha256": "planner-hash",
+                "planner_urdf_sha256": "urdf-hash",
+            }
+        )
+    )
     for case in cases:
         for repetition in range(case["repetitions"]):
             (results / f"{case['name']}__r{repetition:02d}.json").write_text(
@@ -127,9 +149,23 @@ def test_matrix_summary_requires_every_canonical_streak_and_95_percent_heldout(
     assert passed.returncode == 0, passed.stdout + passed.stderr
     assert json.loads((tmp_path / "summary.json").read_text())["passed"] is True
 
+    provenance_mismatch = passing_result()
+    provenance_mismatch["project_commit"] = "different-commit"
+    mismatch_path = results / "canonical_00__r03.json"
+    mismatch_path.write_text(json.dumps(provenance_mismatch))
+    mismatched = subprocess.run(command, cwd=root, capture_output=True, text=True)
+    assert mismatched.returncode == 1
+    mismatch_summary = json.loads((tmp_path / "summary.json").read_text())
+    mismatch_episode = next(
+        episode
+        for episode in mismatch_summary["episodes"]
+        if episode["case"] == "canonical_00" and episode["repetition"] == 3
+    )
+    assert any("project_commit mismatch" in item for item in mismatch_episode["failures"])
+
     failed_value = passing_result()
     failed_value["contact"] = {"maximum_force_n": 0.0, "duration_s": 0.0}
-    (results / "canonical_00__r03.json").write_text(json.dumps(failed_value))
+    mismatch_path.write_text(json.dumps(failed_value))
     failed = subprocess.run(command, cwd=root, capture_output=True, text=True)
     assert failed.returncode == 1
     summary = json.loads((tmp_path / "summary.json").read_text())

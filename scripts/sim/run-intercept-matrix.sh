@@ -30,6 +30,20 @@ mkdir -p "$SCENARIO_DIRECTORY" "$RESULT_DIRECTORY"
 uv run python "$PROJECT_ROOT/scripts/sim/generate-intercept-scenarios.py" \
   "$SCENARIO_DIRECTORY" >"$OUTPUT_DIRECTORY/manifest-generation.log"
 MANIFEST="$SCENARIO_DIRECTORY/manifest.json"
+PROVENANCE="$OUTPUT_DIRECTORY/provenance.json"
+INTERCEPT_CONFIG="$PROJECT_ROOT/tests/fixtures/lab-intercept-sim.yaml"
+PLANNER="$PROJECT_ROOT/scripts/sim/g1-closed-loop-planner.py"
+RUNNER="$PROJECT_ROOT/scripts/sim/isaac-g1-replay.py"
+PLANNER_URDF="$PROJECT_ROOT/.deps/xr_teleoperate/assets/g1/g1_body29_hand14.urdf"
+uv run python "$PROJECT_ROOT/scripts/sim/write-validation-provenance.py" \
+  --project-root "$PROJECT_ROOT" \
+  --unitree-root "$UNITREE_ROOT" \
+  --manifest "$MANIFEST" \
+  --intercept-config "$INTERCEPT_CONFIG" \
+  --runner "$RUNNER" \
+  --planner "$PLANNER" \
+  --urdf "$PLANNER_URDF" \
+  --output "$PROVENANCE" >"$OUTPUT_DIRECTORY/provenance-generation.log"
 
 if [[ -n "$ISAAC_PYTHON" ]]; then
   ISAAC_COMMAND=("$ISAAC_PYTHON")
@@ -78,7 +92,7 @@ for episode in "${EPISODES[@]}"; do
     --command-source closed_loop_ipc \
     --planner-launcher local \
     --planner-project-root "$PROJECT_ROOT" \
-    --planner-intercept-config "$PROJECT_ROOT/tests/fixtures/lab-intercept-sim.yaml" \
+    --planner-intercept-config "$INTERCEPT_CONFIG" \
     --planner-state-hz 30 \
     --planner-command-ttl-s 0.10 \
     --planner-max-realtime-factor 1.0 \

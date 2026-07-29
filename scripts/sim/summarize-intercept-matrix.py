@@ -4,12 +4,43 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from pathlib import Path
 
 
-def audit_result(value: dict[str, object]) -> list[str]:
+def sha256_file(path: Path) -> str:
+    return hashlib.sha256(path.read_bytes()).hexdigest()
+
+
+def audit_result(
+    value: dict[str, object],
+    provenance: dict[str, object],
+    *,
+    expected_replay_sha256: str | None,
+) -> list[str]:
     failures: list[str] = []
+    expected_fields = {
+        "project_commit": provenance.get("project_commit"),
+        "unitree_sim_commit": provenance.get("unitree_sim_commit"),
+        "runner_sha256": provenance.get("runner_sha256"),
+        "planner_intercept_config_sha256": provenance.get(
+            "intercept_config_sha256"
+        ),
+        "planner_urdf_sha256": provenance.get("planner_urdf_sha256"),
+    }
+    for field, expected in expected_fields.items():
+        if not isinstance(expected, str) or value.get(field) != expected:
+            failures.append(
+                f"{field} mismatch: result={value.get(field)!r} expected={expected!r}"
+            )
+    if value.get("project_tracked_dirty") is not False:
+        failures.append("project had tracked modifications")
+    if (
+        expected_replay_sha256 is not None
+        and value.get("replay_sha256") != expected_replay_sha256
+    ):
+        failures.append("replay hash mismatch")
     if value.get("dds_enabled") is not False or value.get("ros_enabled") is not False:
         failures.append("robot transport enabled")
     if value.get("transport_import_guard_passed") is not True:
@@ -75,11 +106,20 @@ def main() -> int:
     parser.add_argument("summary", type=Path)
     args = parser.parse_args()
     manifest = json.loads(args.manifest.read_text(encoding="utf-8"))
+    provenance_path = args.summary.parent / "provenance.json"
+    if not provenance_path.is_file():
+        raise SystemExit(f"validation provenance is missing: {provenance_path}")
+    provenance = json.loads(provenance_path.read_text(encoding="utf-8"))
     results = args.results_directory.resolve()
     episodes: list[dict[str, object]] = []
     missing: list[str] = []
     canonical_passes: dict[str, list[bool]] = {}
     heldout_passes: list[bool] = []
+    global_failures: list[str] = []
+    if provenance.get("project_tracked_dirty") is not False:
+        global_failures.append("matrix project checkout had tracked modifications")
+    if provenance.get("manifest_sha256") != sha256_file(args.manifest):
+        global_failures.append("matrix manifest hash mismatch")
 
     for case in manifest["cases"]:
         name = str(case["name"])
@@ -93,7 +133,17 @@ def main() -> int:
                 case_passes.append(False)
                 continue
             value = json.loads(path.read_text(encoding="utf-8"))
-            failures = audit_result(value)
+            scenario_path = case.get("path")
+            expected_replay_sha256 = (
+                None
+                if not isinstance(scenario_path, str)
+                else sha256_file(args.manifest.parent / scenario_path)
+            )
+            failures = audit_result(
+                value,
+                provenance,
+                expected_replay_sha256=expected_replay_sha256,
+            )
             passed = not failures
             case_passes.append(passed)
             episodes.append(
@@ -126,6 +176,7 @@ def main() -> int:
     overall_rate = passed_count / expected if expected else 0.0
     passed = (
         not missing
+        and not global_failures
         and len(episodes) == expected
         and not canonical_failures
         and len(heldout_passes) >= 50
@@ -143,6 +194,8 @@ def main() -> int:
         "heldout_episode_count": len(heldout_passes),
         "heldout_pass_rate": round(heldout_rate, 6),
         "missing_results": missing,
+        "global_failures": global_failures,
+        "provenance": provenance,
         "episodes": episodes,
     }
     args.summary.parent.mkdir(parents=True, exist_ok=True)

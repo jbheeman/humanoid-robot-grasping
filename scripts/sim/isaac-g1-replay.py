@@ -9,6 +9,7 @@ and therefore cannot address the physical robot.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import math
 import os
@@ -475,8 +476,33 @@ def support_geometry(
     return center, axis_u, axis_v, normal, maximum[0] - minimum[0], maximum[1] - minimum[1]
 
 
+def sha256_file(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
 def main() -> int:
     assert_no_robot_transport_imports()
+    project_commit = subprocess.check_output(
+        ["git", "-C", str(project_root), "rev-parse", "HEAD"],
+        text=True,
+    ).strip()
+    project_tracked_dirty = bool(
+        subprocess.check_output(
+            [
+                "git",
+                "-C",
+                str(project_root),
+                "status",
+                "--porcelain",
+                "--untracked-files=no",
+            ],
+            text=True,
+        ).strip()
+    )
     unitree_commit = subprocess.check_output(
         ["git", "-C", str(unitree_root), "rev-parse", "HEAD"],
         text=True,
@@ -1238,7 +1264,18 @@ def main() -> int:
     result = {
         "schema_version": 1,
         "replay": str(args.replay),
+        "project_commit": project_commit,
+        "project_tracked_dirty": project_tracked_dirty,
         "unitree_sim_commit": unitree_commit,
+        "replay_sha256": sha256_file(args.replay),
+        "runner_sha256": sha256_file(Path(__file__).resolve()),
+        "planner_intercept_config_sha256": (
+            None
+            if args.planner_intercept_config is None
+            or not Path(args.planner_intercept_config).is_file()
+            else sha256_file(Path(args.planner_intercept_config))
+        ),
+        "planner_urdf_sha256": sha256_file(default_urdf_path(project_root)),
         "dds_enabled": False,
         "ros_enabled": False,
         "transport_import_guard_passed": True,
