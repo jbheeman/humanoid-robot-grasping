@@ -112,6 +112,22 @@ def main() -> int:
                 waypoint_count=(
                     None if planner._path is None else len(planner._path)
                 ),
+                observed_object_position_m=(
+                    None
+                    if message.object_observation is None
+                    else [
+                        round(value, 5)
+                        for value in message.object_observation.position_m
+                    ]
+                ),
+                target_palm_position_m=(
+                    None
+                    if response.target_palm_position_m is None
+                    else [
+                        round(value, 5)
+                        for value in response.target_palm_position_m
+                    ]
+                ),
             )
         except (OSError, ValueError) as exc:
             log("sim_planner_message_rejected", error=f"{type(exc).__name__}: {exc}")
