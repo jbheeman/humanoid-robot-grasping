@@ -222,6 +222,7 @@ from object_tracking.arm_tracking.joints import (  # noqa: E402
     joint_contract_id,
 )
 from object_tracking.arm_tracking.geometry import SupportRegion  # noqa: E402
+from object_tracking.arm_tracking.gravity import UrdfGravityCompensator  # noqa: E402
 from object_tracking.arm_tracking.ik_solver import (  # noqa: E402
     G1RightArmIK,
     default_urdf_path,
@@ -880,9 +881,9 @@ def main() -> int:
         device=tensor(robot.data.joint_pos).device,
     )
     startup_arm_velocity = torch.zeros_like(startup_arm_position)
-    startup_right_tau = G1RightArmIK(
+    startup_right_tau = UrdfGravityCompensator(
         default_urdf_path(project_root)
-    ).gravity_compensation_torque(initial_body[22:29])
+    ).torque(initial_body[22:29])
     startup_arm_effort = torch.tensor(
         [[0.0] * 7 + list(startup_right_tau)],
         dtype=torch.float32,
