@@ -132,7 +132,9 @@ def episode(
         "object_proxy": {
             "shape": "capsule",
             "radius_m": 0.055,
-            "height_m": 0.16,
+            # Isaac's capsule height excludes both hemispherical caps. Keep
+            # the total proxy clear of the calibrated table at z=0.15.
+            "height_m": 0.10,
         },
         "scenario": {
             "name": name,
