@@ -1,0 +1,384 @@
+#!/usr/bin/env python3
+"""CPU rigid-body preflight for the G1 bridge's lift and gravity hold.
+
+Run with ``uv run --with mujoco python scripts/sim/mujoco-g1-gravity-preflight.py``.
+This is deliberately transport-free: it cannot command a physical robot.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import time
+from typing import Any
+
+import numpy as np
+
+from object_tracking.arm_tracking.arm_bridge import (
+    ArmBridgeConfig,
+    ArmBridgeController,
+    ArmCommand,
+    ArmState,
+    RobotState,
+)
+from object_tracking.arm_tracking.geometry import Plane, SupportRegion
+from object_tracking.arm_tracking.gravity import UrdfGravityCompensator
+from object_tracking.arm_tracking.ik_solver import G1RightArmIK, default_urdf_path
+from object_tracking.arm_tracking.joints import (
+    BODY_JOINT_NAMES,
+    LEFT_ARM_JOINT_NAMES,
+    RIGHT_ARM_JOINT_NAMES,
+)
+
+
+START_RIGHT_Q = (
+    0.2891673744,
+    -0.1298251152,
+    0.0039188415,
+    0.9780925512,
+    -0.1113813892,
+    -0.0022170816,
+    -0.0082091941,
+)
+SUPPORT_ORIGIN = np.asarray((0.2622941631, 0.0478690107, 0.0129425348))
+SUPPORT_U = np.asarray((0.9993987830, -0.0065124773, 0.0340537822))
+SUPPORT_V = np.asarray((-0.0064480827, -0.9999772100, -0.0020004504))
+
+
+def body_state() -> tuple[float, ...]:
+    return (
+        -0.05,
+        0.0,
+        0.0,
+        0.2,
+        -0.15,
+        0.0,
+        -0.05,
+        0.0,
+        0.0,
+        0.2,
+        -0.15,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        0.0,
+        *START_RIGHT_Q,
+    )
+
+
+def captured_support() -> SupportRegion:
+    normal = -np.cross(SUPPORT_U, SUPPORT_V)
+    normal /= np.linalg.norm(normal)
+    return SupportRegion(
+        plane=Plane(normal, -float(normal @ SUPPORT_ORIGIN)),
+        origin=SUPPORT_ORIGIN,
+        axis_u=SUPPORT_U,
+        axis_v=SUPPORT_V,
+        minimum_uv=(0.0, -0.3545687169),
+        maximum_uv=(0.34, 0.3254312831),
+        certified_edges=("u_min",),
+        edge_sources=(("u_min", "calibrated_pixel_near_edge"),),
+        lateral_margin_m=0.07,
+        source="captured_lab",
+    )
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.monotonic = 10.0
+        self.wall = 1_800_000_000.0
+
+    def advance(self, dt: float) -> None:
+        self.monotonic += dt
+        self.wall += dt
+
+
+class MujocoArmHardware:
+    def __init__(
+        self,
+        mujoco: Any,
+        model: Any,
+        data: Any,
+        clock: FakeClock,
+        initial_body_q: tuple[float, ...],
+    ) -> None:
+        self.mujoco = mujoco
+        self.model = model
+        self.data = data
+        self.clock = clock
+        self.initial_body_q = initial_body_q
+        self.joint_ids = {
+            name: mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+            for name in RIGHT_ARM_JOINT_NAMES
+        }
+        if any(value < 0 for value in self.joint_ids.values()):
+            raise RuntimeError("MuJoCo model is missing a canonical G1 body joint")
+        self.command: ArmCommand | None = None
+        self.published = 0
+
+    def start(self) -> None:
+        pass
+
+    def latest_state(self) -> RobotState:
+        q_values = list(self.initial_body_q)
+        dq_values = [0.0] * 29
+        for offset, name in enumerate(RIGHT_ARM_JOINT_NAMES):
+            joint = self.joint_ids[name]
+            q_values[22 + offset] = float(
+                self.data.qpos[self.model.jnt_qposadr[joint]]
+            )
+            dq_values[22 + offset] = float(
+                self.data.qvel[self.model.jnt_dofadr[joint]]
+            )
+        q = tuple(q_values)
+        dq = tuple(dq_values)
+        arm_indices = tuple(range(15, 29))
+        return RobotState(
+            arm_q=tuple(q[index] for index in arm_indices),
+            arm_dq=tuple(dq[index] for index in arm_indices),
+            body_q=q,
+            body_dq=dq,
+            waist_q=tuple(q[12:15]),
+            received_at=self.clock.monotonic,
+            standing=True,
+            standing_since=0.0,
+            compatible_motion_mode=True,
+            controller_available=True,
+            mode_machine=5,
+        )
+
+    def publish(self, command: ArmCommand) -> None:
+        self.command = command
+        self.published += 1
+
+    def apply_torques(self) -> None:
+        if self.command is None:
+            return
+        arm_command = dict(
+            zip((*LEFT_ARM_JOINT_NAMES, *RIGHT_ARM_JOINT_NAMES), range(14))
+        )
+        for arm_index, name in enumerate(RIGHT_ARM_JOINT_NAMES, start=7):
+            joint_id = self.joint_ids[name]
+            q_address = self.model.jnt_qposadr[joint_id]
+            v_address = self.model.jnt_dofadr[joint_id]
+            q = float(self.data.qpos[q_address])
+            index = arm_command[name]
+            assert index == arm_index
+            sdk_torque = (
+                self.command.kp[index] * (self.command.q[index] - q)
+                + self.command.kd[index] * self.command.dq[index]
+                + self.command.tau[index]
+            )
+            baseline_torque = (
+                80.0 * (self.initial_body_q[22 + arm_index - 7] - q)
+                + float(self.data.qfrc_bias[v_address])
+            )
+            torque = (
+                self.command.weight * sdk_torque
+                + (1.0 - self.command.weight) * baseline_torque
+            )
+            self.data.qfrc_applied[v_address] = torque
+
+    def close(self) -> None:
+        pass
+
+
+def load_model(mujoco: Any, urdf: Path, timestep_s: float) -> tuple[Any, Any]:
+    xml = urdf.read_text(encoding="utf-8").replace(
+        '<compiler meshdir="meshes" discardvisual="false"/>',
+        '<compiler discardvisual="false"/>',
+    )
+    assets = {
+        f"meshes/{path.name}": path.read_bytes()
+        for path in (urdf.parent / "meshes").iterdir()
+        if path.is_file()
+    }
+    spec = mujoco.MjSpec.from_string(xml, assets)
+    spec.assets = assets
+    # The physical G1's low-level controller already stabilizes the base,
+    # legs, waist, and opposite arm. Lock those joints and retain the complete
+    # right-arm/hand inertial tree so this test isolates arm_sdk dynamics.
+    for joint in tuple(spec.joints):
+        if joint.name and joint.name not in RIGHT_ARM_JOINT_NAMES:
+            spec.delete(joint)
+    spec.option.timestep = timestep_s
+    spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
+    model = spec.compile()
+    # This first preflight isolates torque tracking and gravity hold. URDF
+    # collision meshes include adjacent-link contacts that require the
+    # upstream Unitree exclusion table, so contact is disabled here and tested
+    # separately by the Isaac scene.
+    model.geom_contype[:] = 0
+    model.geom_conaffinity[:] = 0
+    # The arm_sdk derivative term is joint-local. Encoding its -kd*dq half as
+    # passive damping lets MuJoCo integrate that stiff term implicitly; the
+    # desired-velocity half remains in the applied command above.
+    model.dof_damping[:] = 3.0
+    data = mujoco.MjData(model)
+    return model, data
+
+
+def set_joint_positions(
+    mujoco: Any,
+    model: Any,
+    data: Any,
+    values: tuple[float, ...],
+) -> None:
+    desired = dict(zip(BODY_JOINT_NAMES, values))
+    for name in RIGHT_ARM_JOINT_NAMES:
+        joint = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_JOINT, name)
+        data.qpos[model.jnt_qposadr[joint]] = desired[name]
+    mujoco.mj_forward(model, data)
+
+
+def main() -> int:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--duration", type=float, default=6.0)
+    parser.add_argument("--hold", type=float, default=2.0)
+    parser.add_argument("--physics-hz", type=float, default=1000.0)
+    parser.add_argument("--max-velocity", type=float, default=1.0)
+    parser.add_argument("--max-acceleration", type=float, default=4.0)
+    parser.add_argument("--max-jerk", type=float, default=30.0)
+    parser.add_argument("--without-gravity-ff", action="store_true")
+    args = parser.parse_args()
+    if (
+        args.duration <= args.hold
+        or args.physics_hz < 250.0
+        or args.physics_hz % 250.0 != 0.0
+    ):
+        parser.error("duration must exceed hold and physics-hz must be a multiple of 250")
+
+    try:
+        import mujoco
+    except ImportError as exc:
+        raise SystemExit(
+            "MuJoCo is optional; run with: uv run --with mujoco python "
+            "scripts/sim/mujoco-g1-gravity-preflight.py"
+        ) from exc
+
+    root = Path(__file__).resolve().parents[2]
+    urdf = default_urdf_path(root)
+    dt = 1.0 / args.physics_hz
+    model, data = load_model(mujoco, urdf, dt)
+    initial_q = body_state()
+    set_joint_positions(mujoco, model, data, initial_q)
+
+    support = captured_support()
+    solver = G1RightArmIK(urdf)
+    approach = solver.plan_guided_clearance(
+        START_RIGHT_Q,
+        support_plane=support,
+        lift_m=0.12,
+        forward_m=0.04,
+    )
+    if not approach.ok or not approach.q_path:
+        raise RuntimeError(f"guided lift planning failed: {approach.reason}")
+    target_q = tuple(float(value) for value in approach.q_path[-1])
+
+    clock = FakeClock()
+    hardware = MujocoArmHardware(mujoco, model, data, clock, initial_q)
+    gravity = None if args.without_gravity_ff else UrdfGravityCompensator(urdf)
+    controller = ArmBridgeController(
+        hardware,
+        ArmBridgeConfig(
+            allow_movement=True,
+            calibration_id="lab-sim",
+            control_hz=250.0,
+            target_ttl_s=args.duration + 2.0,
+            deadman_s=args.duration + 2.0,
+            stable_standing_s=0.01,
+            startup_settle_s=0.0,
+            startup_settle_timeout_s=1.0,
+            weight_ramp_s=0.10,
+            max_velocity_rad_s=args.max_velocity,
+            max_acceleration_rad_s2=args.max_acceleration,
+            max_jerk_rad_s3=args.max_jerk,
+            max_following_error_rad=1.0,
+        ),
+        monotonic=lambda: clock.monotonic,
+        wall_time=lambda: clock.wall,
+        gravity_compensator=gravity,
+    )
+    controller.enable(session_id="mujoco-preflight", calibration_id="lab-sim")
+    sequence = 0
+    tracking_errors: list[float] = []
+    elbow_errors: list[float] = []
+    max_speed = 0.0
+    target_sent = False
+    started = time.perf_counter()
+    steps = int(round(args.duration / dt))
+    control_stride = int(round(args.physics_hz / 250.0))
+    for step in range(steps):
+        if step % control_stride == 0:
+            controller.tick(clock.monotonic)
+            if controller.state is ArmState.ARMED and not target_sent:
+                sequence += 1
+                controller.set_target(
+                    session_id="mujoco-preflight",
+                    sequence=sequence,
+                    calibration_id="lab-sim",
+                    right_arm_q=target_q,
+                    pipeline_age_ms=0,
+                )
+                target_sent = True
+        hardware.apply_torques()
+        mujoco.mj_step(model, data)
+        clock.advance(dt)
+        state = hardware.latest_state()
+        max_speed = max(max_speed, max(abs(value) for value in state.arm_dq[7:]))
+        if target_sent and step * dt >= args.duration - args.hold:
+            errors = [
+                abs(actual - expected)
+                for actual, expected in zip(state.arm_q[7:], target_q)
+            ]
+            tracking_errors.append(max(errors))
+            elbow_errors.append(errors[3])
+        if controller.state is ArmState.FAULT:
+            break
+
+    final = hardware.latest_state()
+    final_errors = [
+        abs(actual - expected) for actual, expected in zip(final.arm_q[7:], target_q)
+    ]
+    report = {
+        "schema_version": 1,
+        "simulator": f"mujoco-{mujoco.__version__}",
+        "model": "g1_body29_hand14.urdf",
+        "transport_free": True,
+        "physics_hz": args.physics_hz,
+        "gravity_feedforward": gravity is not None,
+        "bridge_state": controller.state.value,
+        "fault_reason": controller.fault_reason,
+        "target_sent": target_sent,
+        "published_commands": hardware.published,
+        "maximum_measured_speed_rad_s": max_speed,
+        "final_max_tracking_error_rad": max(final_errors),
+        "final_elbow_error_rad": final_errors[3],
+        "hold_max_tracking_error_rad": (
+            None if not tracking_errors else max(tracking_errors)
+        ),
+        "hold_max_elbow_error_rad": None if not elbow_errors else max(elbow_errors),
+        "bridge_metrics": controller.metrics.as_dict(),
+        "wall_runtime_s": time.perf_counter() - started,
+    }
+    report["passed"] = bool(
+        controller.state is ArmState.ARMED
+        and target_sent
+        and tracking_errors
+        and max(tracking_errors) <= 0.12
+        and max(elbow_errors) <= 0.10
+    )
+    print(json.dumps(report, indent=2, sort_keys=True))
+    return 0 if report["passed"] else 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -77,9 +77,9 @@ parser.add_argument(
 )
 parser.add_argument(
     "--bunny-motion",
-    choices=("static", "recorded"),
+    choices=("static", "recorded", "ballistic"),
     default="static",
-    help="keep the proxy fixed or kinematically replay recorded object positions",
+    help="keep the proxy at rest, kinematically replay it, or launch it dynamically",
 )
 parser.add_argument(
     "--max-replay-s",
@@ -201,6 +201,7 @@ import warp as wp  # noqa: E402
 import isaaclab.sim as sim_utils  # noqa: E402
 import isaaclab.utils.math as math_utils  # noqa: E402
 from isaaclab.assets import Articulation, RigidObject, RigidObjectCfg  # noqa: E402
+from isaaclab.sensors import ContactSensor, ContactSensorCfg  # noqa: E402
 from isaaclab.sim import SimulationContext  # noqa: E402
 if os.name == "nt":
     from isaaclab_physx.physics.physx_manager import PhysxManager  # noqa: E402
@@ -279,6 +280,27 @@ def local_to_world(
 ) -> torch.Tensor:
     point = torch.as_tensor(local_position, dtype=torch.float32, device=torso_position.device)
     return torso_position + quat_apply(torso_quaternion, point)
+
+
+def world_to_local(
+    torso_position: torch.Tensor,
+    torso_quaternion: torch.Tensor,
+    world_position: torch.Tensor,
+) -> torch.Tensor:
+    return math_utils.quat_apply_inverse(
+        torso_quaternion.reshape(1, 4),
+        (world_position - torso_position).reshape(1, 3),
+    ).reshape(3)
+
+
+def world_vector_to_local(
+    torso_quaternion: torch.Tensor,
+    world_vector: torch.Tensor,
+) -> torch.Tensor:
+    return math_utils.quat_apply_inverse(
+        torso_quaternion.reshape(1, 4),
+        world_vector.reshape(1, 3),
+    ).reshape(3)
 
 
 def write_joint_state(robot: Articulation, position: torch.Tensor, velocity: torch.Tensor) -> None:
@@ -483,6 +505,7 @@ def main() -> int:
     light.func("/World/Light", light)
     robot_cfg = G129_CFG_WITH_DEX1_BASE_FIX.copy()
     robot_cfg.prim_path = "/World/G1"
+    robot_cfg.spawn.activate_contact_sensors = True
     if args.actuator_profile == "sdk_numeric":
         # This is an experiment, not assumed parity: SDK gains and Isaac
         # implicit-drive gains share numbers but require step-response
@@ -671,6 +694,11 @@ def main() -> int:
         rigid_props=sim_utils.RigidBodyPropertiesCfg(kinematic_enabled=True),
         collision_props=sim_utils.CollisionPropertiesCfg(),
         visual_material=sim_utils.PreviewSurfaceCfg(diffuse_color=(0.35, 0.55, 0.65)),
+        physics_material=sim_utils.RigidBodyMaterialCfg(
+            static_friction=0.05 if args.bunny_motion == "ballistic" else 0.8,
+            dynamic_friction=0.02 if args.bunny_motion == "ballistic" else 0.7,
+            restitution=0.05,
+        ),
     )
     table.func(
         "/World/Table",
@@ -687,10 +715,26 @@ def main() -> int:
         torso_quaternion,
         object_frames[0]["object_xyz_m"],
     )
-    bunny_cfg = RigidObjectCfg(
-        prim_path="/World/BunnyProxy",
-        spawn=sim_utils.SphereCfg(
-            radius=0.055,
+    initial_bunny_velocity_local = torch.as_tensor(
+        object_frames[0].get("object_velocity_m_s") or (0.0, 0.0, 0.0),
+        dtype=torch.float32,
+        device=torso_position.device,
+    )
+    initial_bunny_velocity_world = quat_apply(
+        torso_quaternion,
+        initial_bunny_velocity_local,
+    )
+    proxy = replay.get("object_proxy")
+    if not isinstance(proxy, dict):
+        proxy = {"shape": "sphere", "radius_m": 0.055}
+    proxy_shape = str(proxy.get("shape") or "sphere")
+    proxy_radius_m = float(proxy.get("radius_m") or 0.055)
+    if proxy_shape == "capsule":
+        bunny_spawn = sim_utils.CapsuleCfg(
+            radius=proxy_radius_m,
+            height=float(proxy.get("height_m") or 0.16),
+            axis="Z",
+            activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
                 kinematic_enabled=args.bunny_motion == "recorded"
             ),
@@ -700,19 +744,62 @@ def main() -> int:
                 diffuse_color=(0.9, 0.9, 0.82), roughness=0.9
             ),
             physics_material=sim_utils.RigidBodyMaterialCfg(
-                static_friction=0.8,
-                dynamic_friction=0.7,
+                static_friction=0.05 if args.bunny_motion == "ballistic" else 0.8,
+                dynamic_friction=0.02 if args.bunny_motion == "ballistic" else 0.7,
                 restitution=0.05,
             ),
+        )
+    elif proxy_shape == "sphere":
+        bunny_spawn = sim_utils.SphereCfg(
+            radius=proxy_radius_m,
+            activate_contact_sensors=True,
+            rigid_props=sim_utils.RigidBodyPropertiesCfg(
+                kinematic_enabled=args.bunny_motion == "recorded"
+            ),
+            mass_props=sim_utils.MassPropertiesCfg(mass=0.12),
+            collision_props=sim_utils.CollisionPropertiesCfg(),
+            visual_material=sim_utils.PreviewSurfaceCfg(
+                diffuse_color=(0.9, 0.9, 0.82), roughness=0.9
+            ),
+            physics_material=sim_utils.RigidBodyMaterialCfg(
+                static_friction=0.05 if args.bunny_motion == "ballistic" else 0.8,
+                dynamic_friction=0.02 if args.bunny_motion == "ballistic" else 0.7,
+                restitution=0.05,
+            ),
+        )
+    else:
+        raise RuntimeError(f"unsupported object proxy shape: {proxy_shape}")
+    bunny_cfg = RigidObjectCfg(
+        prim_path="/World/BunnyProxy",
+        spawn=bunny_spawn,
+        init_state=RigidObjectCfg.InitialStateCfg(
+            pos=tuple(bunny_world.detach().cpu().tolist()),
+            lin_vel=(
+                tuple(initial_bunny_velocity_world.detach().cpu().tolist())
+                if args.bunny_motion == "ballistic"
+                else (0.0, 0.0, 0.0)
+            ),
         ),
-        init_state=RigidObjectCfg.InitialStateCfg(pos=tuple(bunny_world.detach().cpu().tolist())),
     )
     bunny = RigidObject(bunny_cfg)
+    contact_sensors = [
+        ContactSensor(
+            ContactSensorCfg(
+                prim_path=f"/World/G1/{body_names[index]}",
+                update_period=0.0,
+                history_length=1,
+                filter_prim_paths_expr=["/World/BunnyProxy"],
+            )
+        )
+        for index in hand_candidates
+    ]
     prepare_windows_physics_reload()
     sim.reset()
-    rebind_windows_physics_views(robot, bunny)
+    rebind_windows_physics_views(robot, bunny, *contact_sensors)
     robot.reset()
     bunny.reset()
+    for sensor in contact_sensors:
+        sensor.reset()
     restore_body_state()
 
     clock = IsaacClock()
@@ -754,6 +841,8 @@ def main() -> int:
         clock.advance(dt)
         robot.update(dt)
         bunny.update(dt)
+        for sensor in contact_sensors:
+            sensor.update(dt)
         if clock.monotonic > 12.0:
             raise RuntimeError(f"sim controller did not arm: {controller.state_report()}")
 
@@ -772,6 +861,7 @@ def main() -> int:
     started_wall = time.perf_counter()
     next_progress_at = 0.0
     initial_bunny = tensor(bunny.data.root_pos_w)[0].clone()
+    initial_bunny_velocity = tensor(bunny.data.root_lin_vel_w)[0].clone()
     bunny_orientation = tensor(bunny.data.root_quat_w)[0].clone()
     planned_target_index = 1
     planned_approach_complete_at_s: float | None = None
@@ -796,6 +886,11 @@ def main() -> int:
         )
     )
     pending_object_observation: ObjectObservation | None = None
+    contact_steps = 0
+    maximum_contact_force_n = 0.0
+    first_contact_at_s: float | None = None
+    last_contact_at_s: float | None = None
+    contact_measurement_available = False
     if args.command_source == "closed_loop_ipc":
         planner_root = str(args.planner_project_root)
         planner_command = [
@@ -864,6 +959,28 @@ def main() -> int:
             if isinstance(frame.get("object_velocity_m_s"), list):
                 current_bunny_velocity = tuple(
                     float(value) for value in frame["object_velocity_m_s"]
+                )
+            if args.bunny_motion == "ballistic":
+                current_bunny_local = tuple(
+                    float(value)
+                    for value in world_to_local(
+                        torso_position,
+                        torso_quaternion,
+                        tensor(bunny.data.root_pos_w)[0],
+                    )
+                    .detach()
+                    .cpu()
+                    .tolist()
+                )
+                current_bunny_velocity = tuple(
+                    float(value)
+                    for value in world_vector_to_local(
+                        torso_quaternion,
+                        tensor(bunny.data.root_lin_vel_w)[0],
+                    )
+                    .detach()
+                    .cpu()
+                    .tolist()
                 )
             if isinstance(frame.get("object_xyz_m"), list):
                 pending_object_observation = ObjectObservation(
@@ -1067,6 +1184,22 @@ def main() -> int:
         clock.advance(dt)
         robot.update(dt)
         bunny.update(dt)
+        contact_force_n = 0.0
+        for sensor in contact_sensors:
+            sensor.update(dt)
+            force_matrix = sensor.data.force_matrix_w
+            if force_matrix is not None:
+                contact_measurement_available = True
+                contact_force_n = max(
+                    contact_force_n,
+                    float(torch.linalg.vector_norm(tensor(force_matrix), dim=-1).max()),
+                )
+        maximum_contact_force_n = max(maximum_contact_force_n, contact_force_n)
+        if contact_force_n > 1.0:
+            contact_steps += 1
+            if first_contact_at_s is None:
+                first_contact_at_s = elapsed
+            last_contact_at_s = elapsed
         hand_positions = tensor(robot.data.body_pos_w)[0, hand_ids]
         bunny_position = tensor(bunny.data.root_pos_w)[0]
         distance = float(torch.linalg.vector_norm(hand_positions - bunny_position, dim=1).min())
@@ -1086,6 +1219,15 @@ def main() -> int:
     if planner_client is not None:
         planner_client.close()
     final_bunny = tensor(bunny.data.root_pos_w)[0]
+    final_bunny_velocity = tensor(bunny.data.root_lin_vel_w)[0]
+    initial_bunny_velocity_local = world_vector_to_local(
+        torso_quaternion,
+        initial_bunny_velocity,
+    )
+    final_bunny_velocity_local = world_vector_to_local(
+        torso_quaternion,
+        final_bunny_velocity,
+    )
     wall_elapsed = time.perf_counter() - started_wall
     ordered_errors = sorted(tracking_errors)
     p95_error = (
@@ -1115,6 +1257,7 @@ def main() -> int:
         "calibrated_frame": args.calibrated_frame,
         "command_source": args.command_source,
         "bunny_motion": args.bunny_motion,
+        "object_proxy": proxy,
         "freshness_mode": args.freshness_mode,
         "actuator_profile": args.actuator_profile,
         "planned_approach": (
@@ -1164,9 +1307,32 @@ def main() -> int:
         "minimum_hand_to_bunny_m": round(minimum_hand_distance, 5),
         "proximity_threshold_m": 0.09,
         "proximity_duration_s": round(proximity_steps * dt, 4),
-        "physx_contact_measurement_available": False,
+        "physx_contact_measurement_available": contact_measurement_available,
+        "contact": {
+            "threshold_n": 1.0,
+            "maximum_force_n": round(maximum_contact_force_n, 5),
+            "duration_s": round(contact_steps * dt, 4),
+            "first_at_s": None if first_contact_at_s is None else round(first_contact_at_s, 4),
+            "last_at_s": None if last_contact_at_s is None else round(last_contact_at_s, 4),
+        },
         "bunny_displacement_m": round(
             float(torch.linalg.vector_norm(final_bunny - initial_bunny)), 5
+        ),
+        "bunny_initial_speed_m_s": round(
+            float(torch.linalg.vector_norm(initial_bunny_velocity)), 5
+        ),
+        "bunny_initial_velocity_local_m_s": [
+            round(float(value), 6) for value in initial_bunny_velocity_local
+        ],
+        "bunny_final_speed_m_s": round(
+            float(torch.linalg.vector_norm(final_bunny_velocity)), 5
+        ),
+        "bunny_final_velocity_local_m_s": [
+            round(float(value), 6) for value in final_bunny_velocity_local
+        ],
+        "bunny_velocity_change_m_s": round(
+            float(torch.linalg.vector_norm(final_bunny_velocity - initial_bunny_velocity)),
+            5,
         ),
         "joint_tracking_error_rad_p95": None if p95_error is None else round(p95_error, 6),
         "simulated_duration_s": round(final_time, 4),
