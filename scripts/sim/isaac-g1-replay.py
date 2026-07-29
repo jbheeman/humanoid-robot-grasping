@@ -1152,16 +1152,17 @@ def main() -> int:
                     .cpu()
                     .tolist()
                 )
-                current_bunny_velocity = tuple(
-                    float(value)
-                    for value in world_vector_to_local(
-                        torso_quaternion,
-                        tensor(bunny.data.root_lin_vel_w)[0],
+                if contact_steps > 0:
+                    current_bunny_velocity = tuple(
+                        float(value)
+                        for value in world_vector_to_local(
+                            torso_quaternion,
+                            tensor(bunny.data.root_lin_vel_w)[0],
+                        )
+                        .detach()
+                        .cpu()
+                        .tolist()
                     )
-                    .detach()
-                    .cpu()
-                    .tolist()
-                )
             if isinstance(frame.get("object_xyz_m"), list):
                 pending_object_observation = ObjectObservation(
                     track_id=int(frame.get("track_id") or 1),
@@ -1362,6 +1363,11 @@ def main() -> int:
             # Model an externally driven plush/conveyor until interception.
             # Release it immediately after the first measured impact so the
             # post-contact velocity change remains a real PhysX outcome.
+            write_root_pose(
+                bunny,
+                bunny_world + elapsed * initial_bunny_velocity_world,
+                bunny_orientation,
+            )
             bunny.write_root_velocity_to_sim(
                 torch.cat(
                     (
