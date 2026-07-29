@@ -880,6 +880,14 @@ def main() -> int:
         device=tensor(robot.data.joint_pos).device,
     )
     startup_arm_velocity = torch.zeros_like(startup_arm_position)
+    startup_right_tau = G1RightArmIK(
+        default_urdf_path(project_root)
+    ).gravity_compensation_torque(initial_body[22:29])
+    startup_arm_effort = torch.tensor(
+        [[0.0] * 7 + list(startup_right_tau)],
+        dtype=torch.float32,
+        device=startup_arm_position.device,
+    )
     while controller.state is not ArmState.ARMED:
         controller.tick(clock.monotonic)
         hardware.apply()
@@ -890,6 +898,7 @@ def main() -> int:
             # until ArmBridge completes its measured-pose takeover.
             set_position_target(robot, startup_arm_position, hardware.arm_ids)
             set_velocity_target(robot, startup_arm_velocity, hardware.arm_ids)
+            set_effort_target(robot, startup_arm_effort, hardware.arm_ids)
         robot.write_data_to_sim()
         bunny.write_data_to_sim()
         sim.step(render=False)
