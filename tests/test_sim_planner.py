@@ -8,7 +8,10 @@ from object_tracking.arm_tracking.geometry import Plane, SupportRegion
 from object_tracking.arm_tracking.ik_solver import IKResult
 from object_tracking.arm_tracking.interception import LiveInterceptConfig
 from object_tracking.arm_tracking.joints import joint_contract_id
-from object_tracking.arm_tracking.runtime import RuntimeConfig
+from object_tracking.arm_tracking.runtime import (
+    RuntimeConfig,
+    select_start_escape_waypoint,
+)
 from object_tracking.arm_tracking.sim_closed_loop import ObjectObservation, SimState
 from object_tracking.arm_tracking.sim_planner import (
     ClosedLoopInterceptionPlanner,
@@ -189,6 +192,23 @@ def test_prediction_hold_finishes_active_table_staging_path() -> None:
     assert command.right_arm_q_rad == (0.1,) * 7
     assert command.right_arm_tau_ff_nm == (0.2,) * 7
     assert command.remaining_ruckig_duration_s > 0.0
+
+
+def test_loaded_final_waypoint_accepts_bounded_servo_residual() -> None:
+    path = ((0.0,) * 7, (0.4,) + (0.0,) * 6)
+
+    waypoint, index, error = select_start_escape_waypoint(
+        (0.332,) + (0.0,) * 6,
+        path,
+        1,
+        reached_tolerance_rad=0.018,
+        final_reached_tolerance_rad=0.08,
+        measured_velocity_rad_s=(0.0,) * 7,
+    )
+
+    assert waypoint is None
+    assert index == 2
+    assert error is None
 
 
 def test_unreachable_ruckig_deadline_immediately_refreshes_measured_hold() -> None:

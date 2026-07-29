@@ -392,6 +392,7 @@ def select_start_escape_waypoint(
     minimum_progress_rad: float = 0.004,
     measured_velocity_rad_s: Sequence[float] | None = None,
     maximum_waypoint_velocity_rad_s: float = 0.02,
+    final_reached_tolerance_rad: float | None = None,
 ) -> tuple[tuple[float, ...] | None, int, str | None]:
     """Select one bounded escape waypoint using measured, not commanded, pose."""
 
@@ -417,15 +418,28 @@ def select_start_escape_waypoint(
         )
         or not np.isfinite(maximum_waypoint_velocity_rad_s)
         or maximum_waypoint_velocity_rad_s <= 0.0
+        or (
+            final_reached_tolerance_rad is not None
+            and (
+                not np.isfinite(final_reached_tolerance_rad)
+                or final_reached_tolerance_rad < reached_tolerance_rad
+            )
+        )
     ):
         return None, target_index, "invalid_escape_path"
     index = target_index
+    active_reached_tolerance = (
+        final_reached_tolerance_rad
+        if final_reached_tolerance_rad is not None and index == len(knots) - 1
+        else reached_tolerance_rad
+    )
     velocity_settled = measured_velocity is None or float(
         np.max(np.abs(measured_velocity))
     ) <= maximum_waypoint_velocity_rad_s
     if (
         index < len(knots)
-        and float(np.max(np.abs(measured - knots[index]))) <= reached_tolerance_rad
+        and float(np.max(np.abs(measured - knots[index])))
+        <= active_reached_tolerance
         and velocity_settled
     ):
         index += 1
@@ -1373,6 +1387,7 @@ class ArmTrackingRuntime:
                 last_advance_q_rad=self._approach_last_advance_q,
                 measured_velocity_rad_s=measured_right_arm_velocity(arm_state),
                 maximum_waypoint_velocity_rad_s=0.02,
+                final_reached_tolerance_rad=0.08,
             )
             self._approach_target_index = waypoint_index
             if waypoint_index > previous_waypoint_index:

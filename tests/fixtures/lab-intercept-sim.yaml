@@ -28,5 +28,5 @@ planner:
   bunny_contact_radius_m: 0.055
   palm_half_thickness_m: 0.012
   minimum_object_speed_m_s: 0.025
-  maximum_crossing_horizon_s: 10.0
+  maximum_crossing_horizon_s: 12.0
   maximum_orientation_error_rad: 0.436332
