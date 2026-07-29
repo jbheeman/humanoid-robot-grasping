@@ -25,10 +25,14 @@ def test_sim_and_live_planners_share_demo_ruckig_limits(tmp_path: Path) -> None:
         sim.maximum_velocity_rad_s,
         sim.maximum_acceleration_rad_s2,
         sim.maximum_jerk_rad_s3,
+        sim.path_compression_span_rad,
+        sim.path_compression_skip_knots,
     ) == (
         live.maximum_velocity_rad_s,
         live.maximum_acceleration_rad_s2,
         live.maximum_jerk_rad_s3,
+        live.approach_compression_span_rad,
+        live.approach_compression_skip_knots,
     )
 
 

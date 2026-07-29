@@ -125,6 +125,8 @@ class RuntimeConfig:
     maximum_velocity_rad_s: float = 1.0
     maximum_acceleration_rad_s2: float = 4.0
     maximum_jerk_rad_s3: float = 30.0
+    approach_compression_span_rad: float = 0.70
+    approach_compression_skip_knots: int = 32
 
     def __post_init__(self) -> None:
         if not 10.0 <= self.target_hz <= 30.0:
@@ -142,6 +144,12 @@ class RuntimeConfig:
             )
         ):
             raise ValueError("arm trajectory limits must be finite and positive")
+        if (
+            not np.isfinite(self.approach_compression_span_rad)
+            or self.approach_compression_span_rad <= 0.0
+            or self.approach_compression_skip_knots < 1
+        ):
+            raise ValueError("approach compression settings are invalid")
 
 
 def register_depth_in_rgb(
@@ -1211,6 +1219,21 @@ class ArmTrackingRuntime:
             or (not self._approach_completed and start_topology != "above_clearance")
         )
         if approach_needed:
+            if (
+                self._approach_path is not None
+                and self._approach_target_xyz is not None
+                and float(
+                    np.linalg.norm(
+                        target.position - np.asarray(self._approach_target_xyz, dtype=float)
+                    )
+                )
+                > 0.03
+            ):
+                self._approach_path = None
+                self._approach_target_xyz = None
+                self._approach_last_advance_q = None
+                self._approach_raw_waypoint_count = None
+                self._approach_completed = False
             ik_step_type = "adaptive_table_approach"
             if self._approach_path is None:
                 transform = current_transform.copy()
@@ -1283,8 +1306,8 @@ class ArmTrackingRuntime:
                     # gross table-clearance motion. Every candidate shortcut
                     # still passes the complete production collision/support
                     # validator before it can enter the executable route.
-                    maximum_span_rad=0.40,
-                    maximum_skip_knots=16,
+                    maximum_span_rad=self.config.approach_compression_span_rad,
+                    maximum_skip_knots=self.config.approach_compression_skip_knots,
                 )
                 if compressed_path is None:
                     self._reject(base_status, "ik_approach_path_compression", colormap)
@@ -1498,6 +1521,16 @@ class ArmTrackingRuntime:
                 0.0,
                 (time.monotonic() - min(frame.receipt_time_s, rgb_time)) * 1000.0,
             )
+            if pipeline_age_ms > 450.0:
+                base_status.update(
+                    {
+                        "status": "waiting_for_fresh_perception",
+                        "reason": "approach_planned_waiting_for_fresh_perception",
+                        "pipeline_age_ms": round(pipeline_age_ms, 3),
+                    }
+                )
+                self.update_status(base_status, colormap)
+                return
             try:
                 publish_started = time.monotonic()
                 self.transport.publish_target(

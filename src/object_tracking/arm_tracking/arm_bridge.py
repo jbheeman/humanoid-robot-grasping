@@ -145,7 +145,6 @@ class ArmBridgeConfig:
     startup_max_pose_error_rad: float = 0.02
     weight_ramp_s: float = 0.250
     joint_limit_margin_rad: float = 0.05
-    max_target_delta_rad: float = 0.05
     max_velocity_rad_s: float = 0.50
     max_acceleration_rad_s2: float = 2.0
     max_jerk_rad_s3: float = 20.0
@@ -171,7 +170,6 @@ class ArmBridgeConfig:
             "startup_max_velocity_rad_s": self.startup_max_velocity_rad_s,
             "startup_max_pose_error_rad": self.startup_max_pose_error_rad,
             "weight_ramp_s": self.weight_ramp_s,
-            "max_target_delta_rad": self.max_target_delta_rad,
             "max_velocity_rad_s": self.max_velocity_rad_s,
             "max_acceleration_rad_s2": self.max_acceleration_rad_s2,
             "max_jerk_rad_s3": self.max_jerk_rad_s3,
@@ -541,14 +539,6 @@ class ArmBridgeController:
                 raise ArmBridgeError("sequence must increase strictly", code="stale_sequence")
             target = self._validate_target(right_arm_q)
             assert self.commanded_right is not None
-            if any(
-                abs(target[index] - self.commanded_right[index]) > self.config.max_target_delta_rad
-                for index in range(7)
-            ):
-                raise ArmBridgeError(
-                    f"Target exceeds the {self.config.max_target_delta_rad:.3f} rad maximum command delta",
-                    code="discontinuous_target",
-                )
             self._require_safe_robot_state(
                 now, require_stable=False, require_commissioning_verification=True
             )

@@ -319,8 +319,8 @@ def main() -> int:
     parser.add_argument("--max-velocity", type=float, default=1.0)
     parser.add_argument("--max-acceleration", type=float, default=4.0)
     parser.add_argument("--max-jerk", type=float, default=30.0)
-    parser.add_argument("--compression-span-rad", type=float, default=0.40)
-    parser.add_argument("--compression-skip-knots", type=int, default=16)
+    parser.add_argument("--compression-span-rad", type=float, default=0.70)
+    parser.add_argument("--compression-skip-knots", type=int, default=32)
     parser.add_argument("--output", type=Path)
     args = parser.parse_args()
     limits = (

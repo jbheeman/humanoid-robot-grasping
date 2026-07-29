@@ -31,7 +31,8 @@ class SimPlannerConfig:
     maximum_acceleration_rad_s2: float = 4.0
     maximum_jerk_rad_s3: float = 30.0
     top_clearance_m: float = 0.11
-    path_compression_span_rad: float = 0.40
+    path_compression_span_rad: float = 0.70
+    path_compression_skip_knots: int = 32
 
 
 class ClosedLoopInterceptionPlanner:
@@ -237,7 +238,7 @@ class ClosedLoopInterceptionPlanner:
                         maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
                     ),
                     maximum_span_rad=self.config.path_compression_span_rad,
-                    maximum_skip_knots=16,
+                    maximum_skip_knots=self.config.path_compression_skip_knots,
                 )
                 if self._path is None:
                     return None, "ik_approach_path_compression", ()

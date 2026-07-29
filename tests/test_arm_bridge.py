@@ -293,7 +293,9 @@ def test_ruckig_limits_velocity_acceleration_and_jerk_during_replanning() -> Non
         session_id="session-a",
         sequence=0,
         calibration_id="cal-1",
-        right_arm_q=[0.04] * 7,
+        # A distant collision-validated waypoint is legal; Ruckig, rather
+        # than an arbitrary target-distance gate, bounds its execution.
+        right_arm_q=[0.4] + [0.0] * 6,
         source_timestamp=clock.wall,
     )
 

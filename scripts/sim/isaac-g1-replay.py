@@ -584,8 +584,8 @@ def main() -> int:
                 maximum_acceleration_rad_s2=args.max_acceleration,
                 maximum_jerk_rad_s3=args.max_jerk,
             ),
-            maximum_span_rad=0.40,
-            maximum_skip_knots=16,
+            maximum_span_rad=0.70,
+            maximum_skip_knots=32,
         )
         if planned_path is None:
             raise RuntimeError("production table approach compression failed")
