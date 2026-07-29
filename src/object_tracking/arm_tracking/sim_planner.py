@@ -374,7 +374,7 @@ class ClosedLoopInterceptionPlanner:
                 reached_tolerance_rad=0.018,
                 last_advance_q_rad=self._path_last_advance_q,
                 measured_velocity_rad_s=state.right_arm_dq_rad_s,
-                maximum_waypoint_velocity_rad_s=0.02,
+                maximum_waypoint_velocity_rad_s=0.10,
                 final_reached_tolerance_rad=0.08,
             )
             if self._path_index > previous_path_index:

@@ -1386,7 +1386,7 @@ class ArmTrackingRuntime:
                 reached_tolerance_rad=0.018,
                 last_advance_q_rad=self._approach_last_advance_q,
                 measured_velocity_rad_s=measured_right_arm_velocity(arm_state),
-                maximum_waypoint_velocity_rad_s=0.02,
+                maximum_waypoint_velocity_rad_s=0.10,
                 final_reached_tolerance_rad=0.08,
             )
             self._approach_target_index = waypoint_index

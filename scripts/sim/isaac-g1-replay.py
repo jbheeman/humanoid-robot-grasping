@@ -773,7 +773,8 @@ def main() -> int:
             axis="Z",
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                kinematic_enabled=args.bunny_motion == "recorded"
+                kinematic_enabled=args.bunny_motion == "recorded",
+                disable_gravity=args.bunny_motion == "ballistic",
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.12),
             collision_props=sim_utils.CollisionPropertiesCfg(),
@@ -791,7 +792,8 @@ def main() -> int:
             radius=proxy_radius_m,
             activate_contact_sensors=True,
             rigid_props=sim_utils.RigidBodyPropertiesCfg(
-                kinematic_enabled=args.bunny_motion == "recorded"
+                kinematic_enabled=args.bunny_motion == "recorded",
+                disable_gravity=args.bunny_motion == "ballistic",
             ),
             mass_props=sim_utils.MassPropertiesCfg(mass=0.12),
             collision_props=sim_utils.CollisionPropertiesCfg(),
