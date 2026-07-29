@@ -1037,6 +1037,29 @@ def main() -> int:
                 )
             ),
         )
+    if args.bunny_motion == "ballistic":
+        # Controller takeover advances physics before episode time starts.
+        # Relaunch the object here so the planner observes the scenario's
+        # intended crossing velocity instead of a plush already slowed by its
+        # initial table contact.
+        write_root_pose(
+            bunny,
+            bunny_world,
+            tensor(bunny.data.root_quat_w)[0].clone(),
+        )
+        bunny.write_root_velocity_to_sim(
+            torch.cat(
+                (
+                    initial_bunny_velocity_world.reshape(3),
+                    torch.zeros(
+                        3,
+                        dtype=initial_bunny_velocity_world.dtype,
+                        device=initial_bunny_velocity_world.device,
+                    ),
+                )
+            ).reshape(1, 6)
+        )
+        bunny.update(0.0)
 
     playback_start = clock.monotonic
     frame_index = 0
