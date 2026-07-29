@@ -103,8 +103,11 @@ parser.add_argument(
     "--gravity-feedforward-scale",
     type=float,
     choices=(-1.0, 0.0, 1.0),
-    default=1.0,
-    help="simulation-only scale applied to streamed arm gravity feed-forward",
+    default=0.0,
+    help=(
+        "simulation-only scale applied to streamed arm gravity feed-forward; "
+        "the official implicit Isaac actuators already compensate gravity"
+    ),
 )
 parser.add_argument(
     "--freshness-mode",
@@ -1277,18 +1280,26 @@ def main() -> int:
                             calibration_id=calibration_id,
                             right_arm_q=latest.right_arm_q_rad,
                             right_arm_tau_ff=latest.right_arm_tau_ff_nm,
-                            pipeline_age_ms=int(
-                                round(
-                                    max(
-                                        0.0,
-                                        elapsed
-                                        - (
+                            # A measured hold is generated from the newest
+                            # joint state, not from the last camera sample.
+                            # Aging it as perception causes a false stale
+                            # rejection, then a deadman release after impact.
+                            pipeline_age_ms=(
+                                0
+                                if latest.reason.startswith("measured_hold:")
+                                else int(
+                                    round(
+                                        max(
+                                            0.0,
                                             elapsed
-                                            if latest.source_observation_time_s is None
-                                            else latest.source_observation_time_s
-                                        ),
+                                            - (
+                                                elapsed
+                                                if latest.source_observation_time_s is None
+                                                else latest.source_observation_time_s
+                                            ),
+                                        )
+                                        * 1000.0
                                     )
-                                    * 1000.0
                                 )
                             ),
                         )
@@ -1484,6 +1495,7 @@ def main() -> int:
         },
         "calibrated_frame": args.calibrated_frame,
         "command_source": args.command_source,
+        "gravity_feedforward_scale": args.gravity_feedforward_scale,
         "bunny_motion": args.bunny_motion,
         "object_proxy": proxy,
         "freshness_mode": args.freshness_mode,
