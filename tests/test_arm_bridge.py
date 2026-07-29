@@ -125,6 +125,43 @@ def test_enable_requires_safe_stable_low_state(changes: dict[str, object], code:
     assert controller.state is ArmState.DISARMED
 
 
+@pytest.mark.parametrize(
+    ("changes", "blocker"),
+    [
+        ({"standing": False, "standing_since": None}, "not_standing"),
+        ({"standing_since": 9.5}, "standing_not_stable"),
+        ({"compatible_motion_mode": False}, "incompatible_motion_mode"),
+        ({"controller_available": False}, "competing_arm_controller"),
+        ({"arm_q": (math.nan,) + (0.0,) * 13}, "robot_state_non_finite"),
+    ],
+)
+def test_state_report_exposes_enable_blockers(
+    changes: dict[str, object], blocker: str
+) -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock)
+    hardware.state = robot_state(clock, **changes)
+
+    report = controller.state_report()
+
+    assert report["enable_ready"] is False
+    assert blocker in report["enable_blockers"]  # type: ignore[operator]
+
+
+def test_state_report_is_enable_ready_only_after_stable_standing() -> None:
+    clock = FakeClock()
+    controller, hardware = bridge(clock)
+    hardware.state = robot_state(clock, standing_since=clock.monotonic)
+
+    assert controller.state_report()["enable_ready"] is False
+    clock.advance(controller.config.stable_standing_s)
+    hardware.state = robot_state(clock, standing_since=10.0)
+
+    report = controller.state_report()
+    assert report["enable_ready"] is True
+    assert report["enable_blockers"] == []
+
+
 def test_enable_requires_configured_matching_calibration() -> None:
     clock = FakeClock()
     controller, _ = bridge(clock, calibration_id=None)

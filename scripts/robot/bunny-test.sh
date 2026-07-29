@@ -197,14 +197,25 @@ while time.monotonic() < deadline:
         with urllib.request.urlopen(url, timeout=2) as response:
             health = json.load(response)
         tracking = health.get("arm_tracking") or {}
+        with urllib.request.urlopen(
+            f"http://{host}:8000/api/v1/arm/state", timeout=2
+        ) as response:
+            robot_arm = json.load(response)
         visualization = tracking.get("visualization") or {}
         support_status = visualization.get("support_plane_status") or {}
+        support_source = str(support_status.get("source") or "")
+        support_source_ready = (
+            support_source.startswith("automatic_rgbd_")
+            or support_source == "live_plane_calibrated_near_edge_dimension_prior"
+        )
         command = tracking.get("predicted_bounded_arm_command_rad")
         structurally_ready = (
             tracking.get("mode") == "execute"
             and tracking.get("arm_state") == "DISARMED"
+            and robot_arm.get("enable_ready") is True
             and tracking.get("ik_status") == "ok"
-            and str(support_status.get("source") or "").startswith("automatic_rgbd_")
+            and support_status.get("available") is True
+            and support_source_ready
             and isinstance(command, list)
             and len(command) == 7
             and tracking.get("reason") == "arm_not_explicitly_enabled"
@@ -234,11 +245,15 @@ while time.monotonic() < deadline:
                 flush=True,
             )
             break
-        last_reason = (
-            str(tracking.get("reason") or tracking.get("status") or "not ready")
-            if not ready
-            else f"stability_check_{ready_samples}/{stable_samples}"
-        )
+        if not ready and robot_arm.get("enable_ready") is not True:
+            blockers = robot_arm.get("enable_blockers") or ["unknown"]
+            last_reason = "robot_enable_blocked:" + ",".join(
+                str(item) for item in blockers
+            )
+        elif not ready:
+            last_reason = str(tracking.get("reason") or tracking.get("status") or "not ready")
+        else:
+            last_reason = f"stability_check_{ready_samples}/{stable_samples}"
     except Exception as exc:
         last_reason = f"{type(exc).__name__}: {exc}"
     now = time.monotonic()
@@ -261,6 +276,7 @@ session_id="operator-bunny-test-$(date +%s)"
 python3 - "${CLIENT_IP}" "${session_id}" <<'PY'
 import json
 import sys
+import urllib.error
 import urllib.request
 
 host, session_id = sys.argv[1:3]
@@ -278,8 +294,16 @@ request = urllib.request.Request(
     headers={"Content-Type": "application/json"},
     method="POST",
 )
-with urllib.request.urlopen(request, timeout=5) as response:
-    report = json.load(response)
+try:
+    with urllib.request.urlopen(request, timeout=5) as response:
+        report = json.load(response)
+except urllib.error.HTTPError as exc:
+    raw = exc.read().decode("utf-8", errors="replace")
+    try:
+        detail = json.loads(raw).get("detail", raw)
+    except json.JSONDecodeError:
+        detail = raw
+    raise SystemExit(f"GB10 arm enable failed (HTTP {exc.code}): {detail}") from exc
 print(
     "LIVE TEST ENABLED: "
     f"state={report.get('state')} standing={report.get('standing')} "

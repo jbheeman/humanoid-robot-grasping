@@ -107,6 +107,48 @@ class RobustDepthTests(unittest.TestCase):
         self.assertTrue(estimate.is_certain)
         self.assertAlmostEqual(estimate.depth_m, 0.8, places=3)
 
+    def test_adaptive_roi_recovers_from_fluffy_object_center_hole(self) -> None:
+        depth = np.full((100, 100), 1100, dtype=np.uint16)
+        depth[20:80, 20:80] = 0
+        depth[28:45, 28:45] = 720
+
+        estimate = estimate_adaptive_roi_depth(
+            depth,
+            [20, 20, 80, 80],
+            depth_scale=0.001,
+        )
+
+        self.assertIsNotNone(estimate)
+        assert estimate is not None
+        self.assertTrue(estimate.is_certain)
+        self.assertAlmostEqual(estimate.depth_m, 0.72, places=3)
+        self.assertGreaterEqual(estimate.sample_count, 8)
+        self.assertGreaterEqual(estimate.pixel_xy[0], 28)
+        self.assertLess(estimate.pixel_xy[0], 45)
+
+    def test_adaptive_roi_fallback_stays_inside_detection(self) -> None:
+        depth = np.zeros((100, 100), dtype=np.uint16)
+        depth[10:20, 10:20] = 600
+        depth[80:90, 80:90] = 600
+
+        self.assertIsNone(
+            estimate_adaptive_roi_depth(
+                depth,
+                [20, 20, 80, 80],
+                depth_scale=0.001,
+            )
+        )
+
+    def test_adaptive_roi_rejects_fallback_patch_outside_detection(self) -> None:
+        depth = np.ones((20, 20), dtype=np.uint16)
+        with self.assertRaisesRegex(ValueError, "inside the detection box"):
+            estimate_adaptive_roi_depth(
+                depth,
+                [0, 0, 20, 20],
+                depth_scale=0.001,
+                fallback_offsets=(-0.5, 0.0, 0.5),
+            )
+
 
 class GeometryTests(unittest.TestCase):
     def test_deprojects_and_transforms(self) -> None:
@@ -289,7 +331,7 @@ class GeometryTests(unittest.TestCase):
         self.assertEqual(support.edge_source("u_min"), "calibrated_pixel_near_edge")
         self.assertEqual(support.edge_source("u_max"), "dimension_prior")
         np.testing.assert_allclose(support.axis_u, (1.0, 0.0, 0.0), atol=1e-9)
-        np.testing.assert_allclose(support.axis_v, (0.0, 1.0, 0.0), atol=1e-9)
+        np.testing.assert_allclose(support.axis_v, (0.0, -1.0, 0.0), atol=1e-9)
 
     def test_support_region_rejects_non_table_plane(self) -> None:
         with self.assertRaisesRegex(ValueError, "tabletop-like"):
@@ -350,12 +392,43 @@ class GeometryTests(unittest.TestCase):
 
 class TrackingTests(unittest.TestCase):
     def test_filter_estimates_velocity_and_predicts(self) -> None:
-        tracker = PositionVelocityFilter(position_gain=1.0, velocity_gain=1.0)
+        tracker = PositionVelocityFilter(
+            position_gain=1.0,
+            velocity_gain=1.0,
+            velocity_damping=1.0,
+            max_speed_mps=2.0,
+            max_acceleration_mps2=20.0,
+            max_innovation_m=1.0,
+            max_prediction_displacement_m=1.0,
+        )
         tracker.update([0, 0, 1], 1.0)
         tracker.update([0.1, 0, 1], 1.1)
         prediction = tracker.predict(0.15)
         assert prediction is not None
         np.testing.assert_allclose(prediction, [0.25, 0, 1], atol=1e-9)
+
+    def test_filter_bounds_single_frame_jitter_and_prediction(self) -> None:
+        tracker = PositionVelocityFilter()
+        tracker.update([0.5, 0.0, 0.0], 1.0)
+        state = tracker.update([0.7, 0.0, 0.0], 1.02)
+        prediction = tracker.predict(0.15)
+        assert prediction is not None
+        self.assertLessEqual(state.position_m[0] - 0.5, 0.014)
+        self.assertLessEqual(np.linalg.norm(state.velocity_mps), 0.041)
+        self.assertLessEqual(np.linalg.norm(prediction - state.position_m), 0.06)
+        self.assertAlmostEqual(tracker.last_residual_m, 0.2)
+
+    def test_filter_damps_alternating_measurement_jitter(self) -> None:
+        tracker = PositionVelocityFilter()
+        tracker.update([0.5, 0.0, 0.0], 1.0)
+        predictions = []
+        for index in range(1, 21):
+            jitter = 0.02 if index % 2 else -0.02
+            tracker.update([0.5 + jitter, 0.0, 0.0], 1.0 + index * 0.02)
+            prediction = tracker.predict(0.15)
+            assert prediction is not None
+            predictions.append(prediction[0])
+        self.assertLess(max(predictions[-10:]) - min(predictions[-10:]), 0.025)
 
     def test_filter_resets_after_gap(self) -> None:
         tracker = PositionVelocityFilter(reset_gap_s=0.2)

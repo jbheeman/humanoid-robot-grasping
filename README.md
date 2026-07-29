@@ -1,5 +1,23 @@
 # Humanoid Robot Grasping
 
+This project develops perception-guided Unitree G1 arm control for tracking and intercepting a moving plush bunny. It combines live RGB and depth perception, YOLO detection, tabletop calibration, guarded ROS 2 control, collision-aware inverse kinematics, Isaac Sim data generation, and UniFoLM-VLA training.
+
+The robot has demonstrated physical IK tracking of the bunny, but the first working controller was too slow for reliable interception. The current `demo-realtime-intercept-minimal` branch isolates the faster analytic IK, plane-crossing interception, Ruckig trajectory shaping, and robot safety path for the final physical retest.
+
+## Start with the project story
+
+- [Presentation documentation](docs/presentation/README.md)
+- [Project journey](docs/presentation/PROJECT_JOURNEY.md)
+- [Implementation and branch history](docs/presentation/IMPLEMENTATION_HISTORY.md)
+- [Technical system explainer](docs/presentation/TECHNICAL_EXPLAINER.md)
+- [VLA experiment history](docs/presentation/VLA_EXPERIMENT_HISTORY.md)
+- [Experiments and results](docs/presentation/EXPERIMENTS_AND_RESULTS.md)
+- [Current status](docs/presentation/CURRENT_STATUS.md)
+- [Slide outline](docs/presentation/SLIDE_OUTLINE.md)
+- [Evidence index](docs/presentation/EVIDENCE_INDEX.md)
+
+## Technical documentation
+
 Perception-guided Unitree G1 arm control with ROS 2 between the robot and the
 GB10. The robot no longer runs project HTTP/WebSocket control servers. The
 only web server is the GB10 browser UI on port `8000`; RGB remains an H264 RTP
@@ -12,7 +30,7 @@ G1 robot (Ubuntu 20.04, ROS 2 Foxy, Python 3.8)
   /lowstate + Unitree API topics
   guarded arm/depth ROS node
   H264 RGB relay ────────────────────────────────┐
-        │ ROS 2 / Fast DDS                       │ UDP 5600
+        │ ROS 2 / CycloneDDS                     │ UDP 5600
         ▼                                        ▼
 GB10 (Ubuntu 24.04, ROS 2 Jazzy, Python 3.12)
   depth fusion + YOLO + IK + research + browser UI :8000
@@ -64,8 +82,9 @@ the launchers automatically.
 ## Normal startup
 
 Use the real IP reachable from the other machine. ROS 2 works over the Wi-Fi
-LAN; Ethernet is not required. Both launchers use Fast DDS, explicit peers,
-and ROS domain `42` by default.
+LAN; Ethernet is not required. Normal split-process tracking uses CycloneDDS,
+explicit peers, and ROS domain `42` by default. Commissioning and isolated
+legacy/depth paths can use Fast DDS on their documented domains.
 
 On the robot:
 
@@ -277,6 +296,7 @@ runtime.
 
 ## Source and operator references
 
+- [Documentation index](docs/README.md)
 - [Architecture](docs/ARCHITECTURE.md)
 - [Command reference](docs/COMMANDS.md)
 - [Lab launchers](docs/LAB_LAUNCHERS.md)

@@ -153,6 +153,8 @@ class ArmBridgeConfig:
     max_left_drift_rad: float = 0.01
     kp: float = 80.0
     kd: float = 3.0
+    wrist_kp: float = 40.0
+    wrist_kd: float = 1.5
     right_joint_limits: tuple[tuple[float, float], ...] = DEFAULT_RIGHT_JOINT_LIMITS
     right_tau_ff_limits_nm: tuple[float, ...] = RIGHT_ARM_GRAVITY_FF_LIMITS_NM
     waist_reference_rad: tuple[float, float, float] | None = None
@@ -195,6 +197,14 @@ class ArmBridgeConfig:
             raise ValueError("right_tau_ff_limits_nm must contain seven positive limits")
         if self.joint_limit_margin_rad < 0.0:
             raise ValueError("joint_limit_margin_rad must be >= 0")
+        for name, value in (
+            ("kp", self.kp),
+            ("kd", self.kd),
+            ("wrist_kp", self.wrist_kp),
+            ("wrist_kd", self.wrist_kd),
+        ):
+            if not math.isfinite(value) or value <= 0.0:
+                raise ValueError(f"{name} must be finite and > 0")
         if self.waist_reference_rad is not None and len(self.waist_reference_rad) != 3:
             raise ValueError("waist_reference_rad must contain yaw, roll, and pitch")
 
@@ -729,6 +739,42 @@ class ArmBridgeController:
             now = self._monotonic()
         with self._lock:
             robot = self.hardware.latest_state()
+            enable_blockers: list[str] = []
+            if self.state is not ArmState.DISARMED:
+                enable_blockers.append("invalid_state")
+            if not self.config.allow_movement:
+                enable_blockers.append("movement_disabled")
+            if not self.config.calibration_id:
+                enable_blockers.append("calibration_required")
+            robot_state_fresh = (
+                robot is not None and now - robot.received_at <= self.config.state_ttl_s
+            )
+            if not robot_state_fresh:
+                enable_blockers.append("robot_state_stale")
+            elif robot is not None:
+                if not self._finite(robot.arm_q):
+                    enable_blockers.append("robot_state_non_finite")
+                if not robot.standing:
+                    enable_blockers.append("not_standing")
+                elif (
+                    robot.standing_since is None
+                    or now - robot.standing_since < self.config.stable_standing_s
+                ):
+                    enable_blockers.append("standing_not_stable")
+                if not robot.compatible_motion_mode:
+                    enable_blockers.append("incompatible_motion_mode")
+                if not robot.controller_available:
+                    enable_blockers.append("competing_arm_controller")
+                if self.config.waist_reference_rad is not None:
+                    if not self._finite(robot.waist_q):
+                        enable_blockers.append("waist_state_non_finite")
+                    elif any(
+                        abs(actual - expected) > self.config.max_waist_deviation_rad
+                        for actual, expected in zip(
+                            robot.waist_q, self.config.waist_reference_rad
+                        )
+                    ):
+                        enable_blockers.append("waist_calibration_mismatch")
             commanded_arm = (
                 None
                 if self.left_latch is None or self.commanded_right is None
@@ -754,6 +800,8 @@ class ArmBridgeController:
             return {
                 "ok": self.state is not ArmState.FAULT,
                 "state": self.state.value,
+                "enable_ready": not enable_blockers,
+                "enable_blockers": enable_blockers,
                 "session_id": self.session_id,
                 "control_mode": self.control_mode.value,
                 "calibration_id": self.calibration_id,
@@ -766,6 +814,7 @@ class ArmBridgeController:
                 "robot_state_age_ms": (
                     None if robot is None else round(max(0.0, now - robot.received_at) * 1000.0, 3)
                 ),
+                "robot_state_fresh": robot_state_fresh,
                 "standing": None if robot is None else robot.standing,
                 "compatible_motion_mode": None if robot is None else robot.compatible_motion_mode,
                 "controller_available": None if robot is None else robot.controller_available,
@@ -1059,14 +1108,15 @@ class ArmBridgeController:
             return
         mode_machine = 0 if robot is None else robot.mode_machine
         q = (*self.left_latch, *self.commanded_right)
-        # Match the gains used by the installed Unitree XR arm controller:
-        # shoulder/elbow motors use 80/3 and wrists use 40/1.5.
+        # Defaults match the installed Unitree XR controller.  A separately
+        # selected low-stiffness profile may reduce both pairs without
+        # changing the bridge's velocity, torque, deadman, or state gates.
         kp = tuple(
-            40.0 if offset in _WRIST_ARM_OFFSETS else self.config.kp
+            self.config.wrist_kp if offset in _WRIST_ARM_OFFSETS else self.config.kp
             for offset in range(14)
         )
         kd = tuple(
-            1.5 if offset in _WRIST_ARM_OFFSETS else self.config.kd
+            self.config.wrist_kd if offset in _WRIST_ARM_OFFSETS else self.config.kd
             for offset in range(14)
         )
         command = ArmCommand(

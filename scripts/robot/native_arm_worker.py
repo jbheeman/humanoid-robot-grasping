@@ -150,6 +150,10 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--max-velocity-rad-s", type=float, default=0.15)
     parser.add_argument("--max-acceleration-rad-s2", type=float, default=0.5)
     parser.add_argument("--max-jerk-rad-s3", type=float, default=2.0)
+    parser.add_argument("--arm-kp", type=float, default=80.0)
+    parser.add_argument("--arm-kd", type=float, default=3.0)
+    parser.add_argument("--wrist-kp", type=float, default=40.0)
+    parser.add_argument("--wrist-kd", type=float, default=1.5)
     parser.add_argument(
         "--max-tilt-deg",
         type=float,
@@ -178,6 +182,14 @@ def main() -> int:
         or not 3.0 <= args.max_waist_deviation_deg <= 15.0
     ):
         raise SystemExit("--max-waist-deviation-deg must be between 3 and 15 degrees")
+    for name, value, lower, upper in (
+        ("--arm-kp", args.arm_kp, 5.0, 80.0),
+        ("--arm-kd", args.arm_kd, 0.2, 3.0),
+        ("--wrist-kp", args.wrist_kp, 5.0, 40.0),
+        ("--wrist-kd", args.wrist_kd, 0.2, 1.5),
+    ):
+        if not math.isfinite(value) or not lower <= value <= upper:
+            raise SystemExit(f"{name} must be between {lower:g} and {upper:g}")
     calibration = None if args.calibration is None else load_calibration(args.calibration)
     hardware = UnitreeArmHardware(
         interface=args.hardware_interface,
@@ -195,6 +207,10 @@ def main() -> int:
             max_velocity_rad_s=args.max_velocity_rad_s,
             max_acceleration_rad_s2=args.max_acceleration_rad_s2,
             max_jerk_rad_s3=args.max_jerk_rad_s3,
+            kp=args.arm_kp,
+            kd=args.arm_kd,
+            wrist_kp=args.wrist_kp,
+            wrist_kd=args.wrist_kd,
             calibration_id=None if calibration is None else calibration.calibration_id,
             waist_reference_rad=(
                 None if calibration is None else calibration.waist_reference_rad

@@ -78,15 +78,24 @@ class NativeArmClient:
 
 
 class ArmRosRelay:
-    def __init__(self, socket_path: str) -> None:
+    def __init__(
+        self,
+        socket_path: str,
+        *,
+        runner: Ros2NodeRunner | None = None,
+        client: NativeArmClient | None = None,
+    ) -> None:
         from rclpy.qos import DurabilityPolicy, HistoryPolicy, QoSProfile, ReliabilityPolicy
         from std_msgs.msg import String
 
         self.String = String
-        self.client = NativeArmClient(socket_path)
+        self.client = client or NativeArmClient(socket_path)
         self._last_reported_state: str | None = None
-        self.runner = Ros2NodeRunner("g1_arm_ros_relay")
-        self.node = self.runner.start()
+        self.runner = runner or Ros2NodeRunner("g1_arm_ros_relay")
+        # Foxy executors may never add entities created after spin() begins to
+        # their wait set. Build the complete relay graph before starting the
+        # executor, matching the GB10 transport's proven initialization order.
+        self.node = self.runner.prepare()
         qos = QoSProfile(
             history=HistoryPolicy.KEEP_LAST,
             depth=5,
@@ -102,6 +111,7 @@ class ArmRosRelay:
             String, ARM_CONTROL_REQUEST_TOPIC, self._on_control_request, qos
         )
         self.node.create_timer(0.05, self._publish_state)
+        self.runner.start()
 
     def _call(self, operation: str, payload: dict[str, Any]) -> dict[str, Any]:
         return self.client.call(operation, payload)

@@ -19,7 +19,6 @@ from .geometry import (
     deproject_depth_samples,
     deproject_pixel,
     extract_support_plane,
-    generate_pregrasp_target,
     has_support_clearance,
     Plane,
     SupportRegion,
@@ -53,7 +52,15 @@ _SUPPORT_PLANE_ARMED_TTL_S = 300.000
 # Keep the palm center above the plush's upper body instead of descending to
 # the generic near-surface pregrasp height. Swept-link validation still checks
 # every incremental IK edge against the complete table support region.
-_TRACKING_PALM_CLEARANCE_M = 0.085
+# The G1 hand frame is near the palm, while the collision envelope includes
+# the long fingers and wrist meshes below it.  An 85 mm palm target left those
+# meshes only ~19 mm above the captured tabletop during the near-edge crossing.
+# The full staged route was revalidated down to 110 mm of palm clearance with
+# the complete 55 mm link reserve.  This is close enough for a clear handoff
+# pose without pretending the hand can make tabletop contact.
+_TRACKING_PALM_CLEARANCE_M = 0.110
+_TRACKING_SIDE_OFFSET_M = 0.060
+_TRACKING_OBJECT_CLEARANCE_M = 0.025
 _TABLETOP_SIZE_RATIO_MIN = 0.60
 _TABLETOP_SIZE_RATIO_MAX = 1.50
 _SOFT_PERCEPTION_REJECTIONS = frozenset(
@@ -125,7 +132,7 @@ class RuntimeConfig:
     maximum_velocity_rad_s: float = 1.0
     maximum_acceleration_rad_s2: float = 4.0
     maximum_jerk_rad_s3: float = 30.0
-    minimum_link_support_clearance_m: float = 0.055
+    minimum_link_support_clearance_m: float = 0.025
     approach_compression_span_rad: float = 0.70
     approach_compression_skip_knots: int = 32
 
@@ -235,6 +242,34 @@ def enforce_tracking_palm_clearance(
             minimum_clearance_m=minimum_clearance_m,
         ),
         target.orientation_xyzw,
+    )
+
+
+def tabletop_tracking_target(
+    object_position: Sequence[float], support: SupportRegion
+) -> TargetPose:
+    """Place the palm beside the bunny, four centimetres above its top.
+
+    ``-Y`` is the G1's right side in the torso frame. Project that direction
+    into the calibrated tabletop so the side offset remains valid on a tilt.
+    """
+
+    object_xyz = np.asarray(object_position, dtype=float)
+    normal = np.asarray(support.plane.normal, dtype=float)
+    right_on_table = np.asarray((0.0, -1.0, 0.0), dtype=float)
+    right_on_table -= float(right_on_table @ normal) * normal
+    right_norm = float(np.linalg.norm(right_on_table))
+    if right_norm <= 1e-9:
+        raise ValueError("table normal leaves no right-side tracking direction")
+    side_position = object_xyz + _TRACKING_SIDE_OFFSET_M * right_on_table / right_norm
+    object_height = float(support.signed_distance(object_xyz))
+    clearance = max(
+        _TRACKING_PALM_CLEARANCE_M,
+        object_height + _TRACKING_OBJECT_CLEARANCE_M,
+    )
+    return TargetPose(
+        support.project_to_clearance(side_position, minimum_clearance_m=clearance),
+        np.asarray((0.0, 0.0, 0.0, 1.0), dtype=float),
     )
 
 
@@ -583,6 +618,41 @@ def compress_validated_joint_path(
         compressed.append(knots[best_index])
         source_index = best_index
     return tuple(compressed)
+
+
+def arm_motion_is_active(arm_state: dict[str, Any]) -> bool:
+    """Return whether target publication is currently safety-critical."""
+
+    return arm_state.get("state") in ("ARMING", "ARMED")
+
+
+def cached_approach_should_be_invalidated(
+    cached_target_xyz: Sequence[float] | None,
+    latest_target_xyz: Sequence[float],
+    arm_state: dict[str, Any],
+    *,
+    maximum_target_shift_m: float = 0.03,
+) -> bool:
+    """Refresh a gross approach only before the operator enables movement.
+
+    The gross route exists to escape the hip and clear the table. Once the arm
+    is moving, bunny motion must not discard that validated route and invoke a
+    multi-second mesh planner in the realtime target-publishing thread. The
+    latest target is picked up by incremental Cartesian IK after the route is
+    complete.
+    """
+
+    if cached_target_xyz is None or arm_motion_is_active(arm_state):
+        return False
+    cached = np.asarray(cached_target_xyz, dtype=float)
+    latest = np.asarray(latest_target_xyz, dtype=float)
+    return bool(
+        cached.shape == (3,)
+        and latest.shape == (3,)
+        and np.all(np.isfinite(cached))
+        and np.all(np.isfinite(latest))
+        and float(np.linalg.norm(latest - cached)) > maximum_target_shift_m
+    )
 
 
 def depth_colormap_jpeg(z16: np.ndarray, depth_scale: float) -> bytes | None:
@@ -1166,32 +1236,25 @@ class ArmTrackingRuntime:
                 and intercept_decision.may_stage
             )
         else:
-            # Stop at the bunny's near surface rather than applying the generic
-            # 20 cm manipulation stand-off.  The measured plush radius (~5.5 cm)
-            # plus half the palm thickness (~1.2 cm) calls for a 7 cm preview
-            # offset, which remains non-contacting and inside the certified G1
-            # workspace. Swept-link/table checks still gate the resulting IK path.
-            target = generate_pregrasp_target(
-                predicted,
-                shoulder_position=(0.0, -0.18, 0.35),
-                stand_off_m=0.07,
-            )
-            target = enforce_tracking_palm_clearance(target, plane)
+            target = tabletop_tracking_target(predicted, plane)
         raw_target_position = target.position.copy()
-        projected_target, workspace_correction_m = project_target_into_workspace(
-            target,
-            self.calibration.workspace,
-        )
-        if projected_target is None:
-            base_status.update(
-                {
-                    "raw_target_xyz_m": raw_target_position.round(5).tolist(),
-                    "workspace_correction_m": round(workspace_correction_m, 5),
-                }
+        workspace_correction_m = 0.0
+        if self.intercept_profile is not None:
+            projected_target, workspace_correction_m = project_target_into_workspace(
+                target,
+                self.calibration.workspace,
+                maximum_correction_m=0.08,
             )
-            self._reject(base_status, "workspace_violation", colormap)
-            return
-        target = projected_target
+            if projected_target is None:
+                base_status.update(
+                    {
+                        "raw_target_xyz_m": raw_target_position.round(5).tolist(),
+                        "workspace_correction_m": round(workspace_correction_m, 5),
+                    }
+                )
+                self._reject(base_status, "workspace_violation", colormap)
+                return
+            target = projected_target
         base_status.update(
             {
                 "status": "tracking",
@@ -1269,13 +1332,11 @@ class ArmTrackingRuntime:
         if approach_needed:
             if (
                 self._approach_path is not None
-                and self._approach_target_xyz is not None
-                and float(
-                    np.linalg.norm(
-                        target.position - np.asarray(self._approach_target_xyz, dtype=float)
-                    )
+                and cached_approach_should_be_invalidated(
+                    self._approach_target_xyz,
+                    target.position,
+                    arm_state,
                 )
-                > 0.03
             ):
                 self._approach_path = None
                 self._approach_validated_target_index = None
@@ -1285,13 +1346,26 @@ class ArmTrackingRuntime:
                 self._approach_completed = False
             ik_step_type = "adaptive_table_approach"
             if self._approach_path is None:
+                if arm_motion_is_active(arm_state):
+                    base_status.update(
+                        {
+                            "ik_status": "approach_not_precomputed",
+                            "ik_step_type": "precomputed_approach_required",
+                            "ik_collision_labels": list(collision_labels),
+                            "ik_global_backend": self.ik.global_backend,
+                            "ik_local_backend": self.ik.local_backend,
+                            "arm_state": arm_state.get("state"),
+                        }
+                    )
+                    self._reject(base_status, "ik_approach_not_precomputed", colormap)
+                    return
                 transform = current_transform.copy()
                 transform[:3, 3] = target.position
                 approach = self.ik.plan_adaptive_table_approach(
                     transform,
                     last_q,
                     support_plane=plane,
-                    top_clearance_m=0.11,
+                    top_clearance_m=0.13,
                     # The compression gate below validates every retained
                     # edge against the same collision/support model. Avoid a
                     # duplicate full-path sweep before that mandatory pass.
@@ -1308,35 +1382,27 @@ class ArmTrackingRuntime:
                     ),
                 )
                 if not approach.ok or approach.q_path is None:
-                    # The new topology route is deliberately conservative.
-                    # Retain the previously validated lift/retract route as a
-                    # demo-safe fallback when the observed table footprint is
-                    # incomplete or its link envelope rejects an adaptive
-                    # edge. It still performs full collision/support checks.
-                    approach = self.ik.plan_guided_clearance(
-                        last_q,
-                        support_plane=plane,
-                        lift_m=0.12,
-                        forward_m=0.04,
+                    # A guided clearance route only exits the hip and lifts
+                    # outside the table.  It does not reach the requested
+                    # interaction pose and must never be reported as a
+                    # complete approach.  Readiness remains disarmed until a
+                    # complete adaptive route passes validation.
+                    base_status.update(
+                        {
+                            "ik_status": approach.reason,
+                            "ik_step_type": ik_step_type,
+                            "ik_collision_labels": list(collision_labels),
+                            "ik_global_backend": self.ik.global_backend,
+                            "ik_local_backend": self.ik.local_backend,
+                            "arm_state": arm_state.get("state", "dry-run"),
+                        }
                     )
-                    ik_step_type = "guided_table_clearance_fallback"
-                    if not approach.ok or approach.q_path is None:
-                        base_status.update(
-                            {
-                                "ik_status": approach.reason,
-                                "ik_step_type": ik_step_type,
-                                "ik_collision_labels": list(collision_labels),
-                                "ik_global_backend": self.ik.global_backend,
-                                "ik_local_backend": self.ik.local_backend,
-                                "arm_state": arm_state.get("state", "dry-run"),
-                            }
-                        )
-                        self._reject(
-                            base_status,
-                            f"ik_{approach.reason or 'guided_approach_failed'}",
-                            colormap,
-                        )
-                        return
+                    self._reject(
+                        base_status,
+                        f"ik_{approach.reason or 'adaptive_approach_failed'}",
+                        colormap,
+                    )
+                    return
                 raw_approach_path = approach.q_path
                 compressed_path = compress_validated_joint_path(
                     raw_approach_path,
@@ -1400,10 +1466,14 @@ class ArmTrackingRuntime:
                 self._approach_target_index,
                 reached_tolerance_rad=0.018,
                 last_advance_q_rad=self._approach_last_advance_q,
+                residual_lookahead_rad=0.035,
                 measured_velocity_rad_s=measured_right_arm_velocity(arm_state),
+                # Do not require a full stop at every prevalidated knot.  The
+                # next edge is still selected only after measured arrival, so
+                # this relaxes a servo-settle artifact without corner cutting.
                 maximum_waypoint_velocity_rad_s=0.10,
-                final_reached_tolerance_rad=0.08,
-                final_maximum_waypoint_velocity_rad_s=1.0,
+                final_reached_tolerance_rad=0.025,
+                final_maximum_waypoint_velocity_rad_s=0.10,
             )
             self._approach_target_index = waypoint_index
             if waypoint_index > previous_waypoint_index:

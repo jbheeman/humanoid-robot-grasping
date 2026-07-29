@@ -40,7 +40,7 @@
   const rgb = document.querySelector("#rgb");
   const overlay = document.querySelector("#overlay");
   const context = overlay.getContext("2d");
-  let dashboard = null;
+  let dashboard = null, calibratedFootprint = [];
 
   function project(point, camera) {
     const intrinsics = camera?.intrinsics, transform = camera?.optical_to_torso;
@@ -93,13 +93,24 @@
       return pixel && [offsetX+pixel[0]*scale,offsetY+pixel[1]*scale];
     };
 
+    const baseline = calibratedFootprint.map(point => [
+      offsetX+point[0]*scale, offsetY+point[1]*scale
+    ]);
+    if (baseline.length === 4) {
+      context.beginPath(); context.moveTo(...baseline[0]);
+      baseline.slice(1).forEach(point => context.lineTo(...point));
+      context.closePath();
+      context.fillStyle="rgba(30,200,255,.16)"; context.fill();
+      context.strokeStyle="#1ed7ff"; context.lineWidth=2; context.stroke();
+    }
     const footprint = footprintPoints(dashboard.visualization?.support_plane).map(screen);
     if (footprint.length === 4 && footprint.every(Boolean)) {
       context.beginPath(); context.moveTo(...footprint[0]);
       footprint.slice(1).forEach(point => context.lineTo(...point));
       context.closePath();
-      context.fillStyle="rgba(30,200,255,.16)"; context.fill();
-      context.strokeStyle="#1ed7ff"; context.lineWidth=2; context.stroke();
+      context.setLineDash([7,5]);
+      context.strokeStyle="rgba(117,255,120,.9)"; context.lineWidth=2; context.stroke();
+      context.setLineDash([]);
     }
     const trajectory = (dashboard.visualization?.predicted_trajectory_xyz_m || []).map(screen).filter(Boolean);
     if (trajectory.length > 1) {
@@ -123,12 +134,24 @@
       `arm ${t.arm_state || "—"} | ${t.status || t.reason || "—"}`,
       `pipeline ${t.pipeline_age_ms ?? "—"} ms | IK ${t.ik_latency_ms ?? "—"} ms`,
       `depth ${t.depth_age_ms ?? "—"} ms | skew ${t.pair_skew_ms ?? "—"} ms`,
-      `plane ${s?.available ? "ready" : "missing"} | ${s?.source || "—"}`
+      `plane ${s?.available ? "ready" : "missing"} | ${s?.source || "—"}`,
+      "plane key: solid = hand calibration | dashed = live depth"
     ];
     context.font="13px ui-monospace,monospace";
     const boxWidth=Math.max(...lines.map(line=>context.measureText(line).width))+16;
     context.fillStyle="rgba(0,0,0,.68)"; context.fillRect(8,36,boxWidth,lines.length*19+10);
     lines.forEach((line,index)=>{context.fillStyle=index===3&&s?.available?"#75ff78":"#fff";context.fillText(line,16,55+index*19)});
+  }
+
+  async function loadCalibratedFootprint() {
+    try {
+      const result=await fetch("/api/v1/tabletop-calibration",{cache:"no-store"}).then(r=>r.json());
+      const corners=result?.calibration?.corners_px;
+      calibratedFootprint=Array.isArray(corners)&&corners.length===4
+        ? corners.map(corner=>[Number(corner.x),Number(corner.y)]) : [];
+    } catch (_) {
+      calibratedFootprint=[];
+    }
   }
 
   async function refresh() {
@@ -146,6 +169,8 @@
   }
   setInterval(()=>document.querySelector("#depth").src=`/depth.jpg?t=${Date.now()}`,500);
   window.addEventListener("resize",drawOverlay);
+  loadCalibratedFootprint();
+  setInterval(loadCalibratedFootprint,2000);
   refresh();
   setInterval(refresh, 200);
 </script>

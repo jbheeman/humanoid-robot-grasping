@@ -28,24 +28,43 @@ class TrackedPosition:
 
 
 class PositionVelocityFilter:
-    """Alpha-beta filter that resets after long gaps instead of extrapolating."""
+    """Robust alpha-beta filter with bounded innovation and acceleration."""
 
     def __init__(
         self,
         *,
-        position_gain: float = 0.65,
-        velocity_gain: float = 0.18,
+        position_gain: float = 0.45,
+        velocity_gain: float = 0.12,
         reset_gap_s: float = 0.5,
-        max_speed_mps: float = 2.0,
+        max_speed_mps: float = 0.75,
+        max_acceleration_mps2: float = 2.0,
+        max_innovation_m: float = 0.03,
+        velocity_damping: float = 0.90,
+        max_prediction_displacement_m: float = 0.06,
     ) -> None:
         if not 0 < position_gain <= 1 or not 0 <= velocity_gain <= 1:
             raise ValueError("filter gains must be within [0, 1]")
-        if reset_gap_s <= 0 or max_speed_mps <= 0:
-            raise ValueError("reset gap and maximum speed must be positive")
+        if not 0 < velocity_damping <= 1:
+            raise ValueError("velocity damping must be within (0, 1]")
+        if any(
+            value <= 0
+            for value in (
+                reset_gap_s,
+                max_speed_mps,
+                max_acceleration_mps2,
+                max_innovation_m,
+                max_prediction_displacement_m,
+            )
+        ):
+            raise ValueError("filter limits must be positive")
         self.position_gain = position_gain
         self.velocity_gain = velocity_gain
         self.reset_gap_s = reset_gap_s
         self.max_speed_mps = max_speed_mps
+        self.max_acceleration_mps2 = max_acceleration_mps2
+        self.max_innovation_m = max_innovation_m
+        self.velocity_damping = velocity_damping
+        self.max_prediction_displacement_m = max_prediction_displacement_m
         self._state: TrackedPosition | None = None
         self._consecutive_observations = 0
         self._last_residual_m = 0.0
@@ -82,9 +101,23 @@ class PositionVelocityFilter:
             raise ValueError("filter timestamps must be strictly increasing")
         predicted = previous.position_m + previous.velocity_mps * dt
         residual = measurement - predicted
-        self._last_residual_m = float(np.linalg.norm(residual))
+        residual_norm = float(np.linalg.norm(residual))
+        self._last_residual_m = residual_norm
+        if residual_norm > self.max_innovation_m:
+            residual = residual * (self.max_innovation_m / residual_norm)
         position = predicted + self.position_gain * residual
-        velocity = previous.velocity_mps + self.velocity_gain * residual / dt
+        candidate_velocity = (
+            previous.velocity_mps * self.velocity_damping
+            + self.velocity_gain * residual / dt
+        )
+        velocity_delta = candidate_velocity - previous.velocity_mps
+        velocity_delta_norm = float(np.linalg.norm(velocity_delta))
+        maximum_velocity_delta = self.max_acceleration_mps2 * dt
+        if velocity_delta_norm > maximum_velocity_delta:
+            velocity_delta = velocity_delta * (
+                maximum_velocity_delta / velocity_delta_norm
+            )
+        velocity = previous.velocity_mps + velocity_delta
         speed = float(np.linalg.norm(velocity))
         if speed > self.max_speed_mps:
             velocity = velocity * (self.max_speed_mps / speed)
@@ -93,7 +126,17 @@ class PositionVelocityFilter:
         return self._state
 
     def predict(self, horizon_s: float = 0.150) -> np.ndarray | None:
-        return None if self._state is None else self._state.predict(horizon_s)
+        if horizon_s < 0:
+            raise ValueError("horizon_s must be non-negative")
+        if self._state is None:
+            return None
+        displacement = self._state.velocity_mps * horizon_s
+        displacement_norm = float(np.linalg.norm(displacement))
+        if displacement_norm > self.max_prediction_displacement_m:
+            displacement = displacement * (
+                self.max_prediction_displacement_m / displacement_norm
+            )
+        return self._state.position_m + displacement
 
 
 @dataclass(frozen=True)

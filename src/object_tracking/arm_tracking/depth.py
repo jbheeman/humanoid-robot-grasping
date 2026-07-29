@@ -206,18 +206,31 @@ def estimate_adaptive_roi_depth(
     *,
     depth_scale: float,
     roi_fractions: tuple[float, ...] = (0.1, 0.15, 0.2, 0.3, 0.4, 0.6),
+    fallback_offsets: tuple[float, ...] = (-0.2, 0.0, 0.2),
+    fallback_fraction: float = 0.2,
 ) -> DepthEstimate | None:
     """Return the largest central ROI that passes the strict depth gate.
 
     A detection box around a three-dimensional plush often includes its curved
     silhouette and the tabletop behind it.  A fixed large ROI merges those
     surfaces and inflates depth dispersion.  Trying bounded central ROIs keeps
-    the existing sample-count and MAD requirements intact while preferring the
-    largest coherent surface available.
+    the existing sample-count and MAD requirements intact.  Fluffy objects can
+    also produce a depth hole at the exact box center, so a bounded 3x3 search
+    inside the middle 60% of the detection is used only when every centered ROI
+    fails.  The fallback never samples outside the detection box.
     """
 
     if not roi_fractions:
         raise ValueError("roi_fractions must not be empty")
+    if (
+        not fallback_offsets
+        or not 0.0 < fallback_fraction <= 1.0
+        or any(
+            abs(offset) + fallback_fraction / 2.0 > 0.5
+            for offset in fallback_offsets
+        )
+    ):
+        raise ValueError("fallback depth patches must remain inside the detection box")
     candidates = []
     for fraction in roi_fractions:
         estimate = estimate_roi_depth(
@@ -228,6 +241,33 @@ def estimate_adaptive_roi_depth(
         )
         if estimate is not None and estimate.is_certain:
             candidates.append(estimate)
-    if not candidates:
+    if candidates:
+        return max(candidates, key=lambda item: (item.sample_count, item.valid_fraction))
+
+    x1, y1, x2, y2 = (float(item) for item in bbox_xyxy)
+    width, height = x2 - x1, y2 - y1
+    fallback_candidates = []
+    for offset_y in fallback_offsets:
+        for offset_x in fallback_offsets:
+            if offset_x == 0.0 and offset_y == 0.0:
+                continue
+            shifted_bbox = (
+                x1 + offset_x * width,
+                y1 + offset_y * height,
+                x2 + offset_x * width,
+                y2 + offset_y * height,
+            )
+            estimate = estimate_roi_depth(
+                z16,
+                shifted_bbox,
+                depth_scale=depth_scale,
+                roi_fraction=fallback_fraction,
+            )
+            if estimate is not None and estimate.is_certain:
+                fallback_candidates.append(estimate)
+    if not fallback_candidates:
         return None
-    return max(candidates, key=lambda item: (item.sample_count, item.valid_fraction))
+    return max(
+        fallback_candidates,
+        key=lambda item: (item.sample_count, item.valid_fraction, -item.depth_m),
+    )

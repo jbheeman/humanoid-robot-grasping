@@ -29,11 +29,14 @@ from object_tracking.arm_tracking.geometry import (
 from object_tracking.arm_tracking.runtime import (
     ArmTrackingRuntime,
     RuntimeConfig,
+    arm_motion_is_active,
+    cached_approach_should_be_invalidated,
     clamp_point_height_to_support,
     compress_validated_joint_path,
     enforce_tracking_palm_clearance,
     measured_right_arm_for_intercept,
     project_target_into_workspace,
+    tabletop_tracking_target,
     register_depth_in_rgb,
     right_arm_ik_seed,
     ruckig_edge_is_valid,
@@ -223,7 +226,7 @@ class FakeInterceptIK:
         minimum_support_clearance_m: float = 0.05,
     ) -> Any:
         del target_transform, support_plane
-        assert minimum_support_clearance_m == 0.055
+        assert minimum_support_clearance_m == 0.065
         from object_tracking.arm_tracking.ik_solver import IKResult
 
         return IKResult(True, tuple(float(value) for value in initial_q), 0.0, 0.0)
@@ -707,8 +710,21 @@ def test_tracking_target_stays_in_high_tabletop_interaction_corridor() -> None:
 
     elevated = enforce_tracking_palm_clearance(target, support)
 
-    assert support.signed_distance(elevated.position) == pytest.approx(0.085)
+    assert support.signed_distance(elevated.position) == pytest.approx(0.110)
     np.testing.assert_allclose(elevated.position[:2], target.position[:2], atol=1e-9)
+
+
+def test_tabletop_tracking_target_is_right_of_object_and_above_its_top() -> None:
+    support = SupportRegion.from_xy_bounds(
+        Plane((0.0, 0.0, 1.0), -0.005),
+        (0.35, -0.35),
+        (0.80, 0.35),
+    )
+    target = tabletop_tracking_target((0.516, 0.001, 0.084), support)
+
+    assert target.position[0] == pytest.approx(0.516)
+    assert target.position[1] == pytest.approx(-0.059)
+    assert support.signed_distance(target.position) == pytest.approx(0.110)
 
 
 def test_close_pregrasp_target_projects_into_reachable_workspace() -> None:
@@ -745,7 +761,7 @@ def test_close_table_footprint_drift_remains_a_valid_plane_candidate() -> None:
     )
 
 
-def test_live_plane_uses_calibrated_anchor_but_not_stale_corner_yaw() -> None:
+def test_live_plane_preserves_hand_calibrated_yaw_and_dimensions() -> None:
     support, measured = support_region_from_pixel_prior(
         Plane((0.0, 0.0, 1.0), -1.0),
         ((20.0, 80.0), (80.0, 80.0), (80.0, 20.0), (20.0, 20.0)),
@@ -756,8 +772,8 @@ def test_live_plane_uses_calibrated_anchor_but_not_stale_corner_yaw() -> None:
     )
 
     assert measured.shape == (2,)
-    np.testing.assert_allclose(support.axis_u, (1.0, 0.0, 0.0), atol=1e-9)
-    np.testing.assert_allclose(support.axis_v, (0.0, 1.0, 0.0), atol=1e-9)
+    np.testing.assert_allclose(support.axis_u, (0.0, -1.0, 0.0), atol=1e-9)
+    np.testing.assert_allclose(support.axis_v, (1.0, 0.0, 0.0), atol=1e-9)
     np.testing.assert_allclose(
         support.maximum_uv - support.minimum_uv,
         (0.34, 0.68),
@@ -830,6 +846,18 @@ def test_transient_perception_rejection_leaves_session_for_deadman(tmp_path: Pat
     assert runtime.last_target_track == 3
     assert runtime._approach_path is not None
     assert statuses[-1]["reason"] == "rgb_depth_pair_stale"
+
+
+def test_cached_approach_tracks_target_drift_only_while_disarmed() -> None:
+    cached = (0.40, 0.00, 0.20)
+    moved = (0.48, 0.00, 0.20)
+
+    assert cached_approach_should_be_invalidated(cached, moved, {"state": "DISARMED"})
+    assert not cached_approach_should_be_invalidated(cached, moved, {"state": "ARMING"})
+    assert not cached_approach_should_be_invalidated(cached, moved, {"state": "ARMED"})
+    assert arm_motion_is_active({"state": "ARMING"})
+    assert arm_motion_is_active({"state": "ARMED"})
+    assert not arm_motion_is_active({"state": "HOLDING"})
 
 
 def test_runtime_config_has_no_http_or_token_requirement(tmp_path: Path) -> None:

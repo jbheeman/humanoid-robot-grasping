@@ -20,6 +20,13 @@ ARM_WEIGHT_RAMP_S="${ARM_WEIGHT_RAMP_S:-1.5}"
 ARM_MAX_VELOCITY_RAD_S="${ARM_MAX_VELOCITY_RAD_S:-0.15}"
 ARM_MAX_ACCELERATION_RAD_S2="${ARM_MAX_ACCELERATION_RAD_S2:-0.5}"
 ARM_MAX_JERK_RAD_S3="${ARM_MAX_JERK_RAD_S3:-2.0}"
+# Defaults reproduce the installed XR controller.  These are forwarded to
+# the native worker so a future validated compliant-contact profile can lower
+# stiffness explicitly instead of bypassing the controller's safety gates.
+ARM_KP="${ARM_KP:-80.0}"
+ARM_KD="${ARM_KD:-3.0}"
+WRIST_KP="${WRIST_KP:-40.0}"
+WRIST_KD="${WRIST_KD:-1.5}"
 CALIBRATION="${CALIBRATION:-}"
 RGB_MODE="${RGB_MODE:-unitree}"
 ALLOW_MOVEMENT="${ALLOW_MOVEMENT:-0}"
@@ -114,6 +121,10 @@ if [[ "${CONTROL_MODE}" == "tracking" ]]; then
     --max-velocity-rad-s "${ARM_MAX_VELOCITY_RAD_S}"
     --max-acceleration-rad-s2 "${ARM_MAX_ACCELERATION_RAD_S2}"
     --max-jerk-rad-s3 "${ARM_MAX_JERK_RAD_S3}"
+    --arm-kp "${ARM_KP}"
+    --arm-kd "${ARM_KD}"
+    --wrist-kp "${WRIST_KP}"
+    --wrist-kd "${WRIST_KD}"
   )
   if [[ -n "${CALIBRATION}" ]]; then
     native_args+=(--calibration "${CALIBRATION}")
