@@ -125,6 +125,7 @@ class RuntimeConfig:
     maximum_velocity_rad_s: float = 1.0
     maximum_acceleration_rad_s2: float = 4.0
     maximum_jerk_rad_s3: float = 30.0
+    minimum_link_support_clearance_m: float = 0.055
     approach_compression_span_rad: float = 0.70
     approach_compression_skip_knots: int = 32
 
@@ -141,11 +142,14 @@ class RuntimeConfig:
                 self.maximum_velocity_rad_s,
                 self.maximum_acceleration_rad_s2,
                 self.maximum_jerk_rad_s3,
+                self.minimum_link_support_clearance_m,
             )
         ):
             raise ValueError("arm trajectory limits must be finite and positive")
         if (
-            not np.isfinite(self.approach_compression_span_rad)
+            self.minimum_link_support_clearance_m < 0.05
+            or self.minimum_link_support_clearance_m > 0.10
+            or not np.isfinite(self.approach_compression_span_rad)
             or self.approach_compression_span_rad <= 0.0
             or self.approach_compression_skip_knots < 1
         ):
@@ -467,6 +471,7 @@ def ruckig_edge_is_valid(
     maximum_velocity_rad_s: float,
     maximum_acceleration_rad_s2: float,
     maximum_jerk_rad_s3: float,
+    minimum_support_clearance_m: float = 0.05,
     current_velocity_rad_s: Sequence[float] = (0.0,) * 7,
     current_acceleration_rad_s2: Sequence[float] = (0.0,) * 7,
 ) -> bool:
@@ -476,6 +481,7 @@ def ruckig_edge_is_valid(
         solver.validate_joint_path(
             (begin, end),
             support_plane=support_plane,
+            minimum_support_clearance_m=minimum_support_clearance_m,
             edge_step_rad=0.020,
             semantic_edge_step_rad=0.010,
             require_escape_cleared=False,
@@ -497,6 +503,7 @@ def ruckig_edge_is_valid(
         solver.validate_joint_path(
             samples,
             support_plane=support_plane,
+            minimum_support_clearance_m=minimum_support_clearance_m,
             edge_step_rad=0.010,
             semantic_edge_step_rad=0.005,
             require_escape_cleared=False,
@@ -1092,10 +1099,15 @@ class ArmTrackingRuntime:
             )
             base_status["intercept"] = self._intercept_status(intercept_decision)
             if intercept_decision.state in (InterceptState.HOLD, InterceptState.EXPIRED):
-                self._reject(
+                self._publish_measured_intercept_hold(
                     base_status,
-                    f"intercept_{intercept_decision.reason}",
                     colormap,
+                    plane,
+                    arm_state,
+                    pipeline_age_ms=max(
+                        0.0,
+                        (time.monotonic() - min(frame.receipt_time_s, rgb_time)) * 1000.0,
+                    ),
                 )
                 return
             if intercept_decision.target_palm_position_m is None:
@@ -1304,6 +1316,9 @@ class ArmTrackingRuntime:
                             self.config.maximum_acceleration_rad_s2
                         ),
                         maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
+                        minimum_support_clearance_m=(
+                            self.config.minimum_link_support_clearance_m
+                        ),
                     ),
                     # Longer edges let Ruckig preserve velocity through the
                     # gross table-clearance motion. Every candidate shortcut
@@ -1318,7 +1333,9 @@ class ArmTrackingRuntime:
                 self._approach_raw_waypoint_count = len(raw_approach_path)
                 self._approach_path = compressed_path
                 self._approach_target_index = 1
-                self._approach_validated_target_index = None
+                # Compression accepted every retained edge only after full
+                # chord and 4 ms Ruckig-curve validation.
+                self._approach_validated_target_index = 1
                 self._approach_target_xyz = tuple(float(value) for value in target.position)
                 self._approach_last_advance_q = tuple(float(value) for value in last_q)
                 self._approach_completed = False
@@ -1347,12 +1364,14 @@ class ArmTrackingRuntime:
                 last_q,
                 self._approach_path,
                 self._approach_target_index,
-                reached_tolerance_rad=0.004,
+                reached_tolerance_rad=0.001,
                 measured_velocity_rad_s=measured_right_arm_velocity(arm_state),
+                maximum_waypoint_velocity_rad_s=0.005,
             )
             self._approach_target_index = waypoint_index
             if waypoint_index > previous_waypoint_index:
                 self._approach_last_advance_q = tuple(float(value) for value in last_q)
+                self._approach_validated_target_index = waypoint_index
             if selection_error is not None:
                 self._approach_path = None
                 self._approach_validated_target_index = None
@@ -1372,6 +1391,9 @@ class ArmTrackingRuntime:
                         maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
                         maximum_acceleration_rad_s2=self.config.maximum_acceleration_rad_s2,
                         maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
+                        minimum_support_clearance_m=(
+                            self.config.minimum_link_support_clearance_m
+                        ),
                         current_velocity_rad_s=measured_velocity,
                     ):
                         self._approach_path = None
@@ -1413,6 +1435,9 @@ class ArmTrackingRuntime:
                     transform,
                     last_q,
                     support_plane=plane,
+                    minimum_support_clearance_m=(
+                        self.config.minimum_link_support_clearance_m
+                    ),
                 )
             else:
                 ik = IKResult(True, waypoint, 0.0, 0.0)
@@ -1425,6 +1450,9 @@ class ArmTrackingRuntime:
                 transform,
                 last_q,
                 support_plane=plane,
+                minimum_support_clearance_m=(
+                    self.config.minimum_link_support_clearance_m
+                ),
             )
         base_status.update(
             {
@@ -1637,6 +1665,9 @@ class ArmTrackingRuntime:
             transform,
             measured_q,
             support_plane=plane,
+            minimum_support_clearance_m=(
+                self.config.minimum_link_support_clearance_m
+            ),
         )
         base_status.update(
             {
@@ -1704,6 +1735,89 @@ class ArmTrackingRuntime:
             base_status["status"] = "target_sent"
             base_status["target_sequence"] = self.target_sequence
             base_status["pipeline_age_ms"] = round(pipeline_age_ms, 3)
+        self.update_status(base_status, colormap)
+
+    def _publish_measured_intercept_hold(
+        self,
+        base_status: dict[str, Any],
+        colormap: bytes | None,
+        plane: SupportRegion,
+        arm_state: dict[str, Any],
+        *,
+        pipeline_age_ms: float,
+    ) -> None:
+        """Keep a stopped intercept gravity-supported without replaying its target."""
+
+        if self.ik is None:
+            self._reject(base_status, "ik_unavailable", colormap)
+            return
+        measured_q, measured_error = measured_right_arm_for_intercept(arm_state)
+        if measured_q is None:
+            self._reject(
+                base_status,
+                measured_error or "measured_arm_unavailable",
+                colormap,
+            )
+            return
+        validation_error = self.ik.validate_joint_path(
+            (measured_q, measured_q),
+            support_plane=plane,
+            minimum_support_clearance_m=0.05,
+            edge_step_rad=0.010,
+            semantic_edge_step_rad=0.005,
+            require_escape_cleared=False,
+        )
+        if validation_error is not None:
+            self._reject(
+                base_status,
+                f"intercept_hold_{validation_error}",
+                colormap,
+            )
+            return
+        try:
+            gravity_tau_ff = self.ik.gravity_compensation_torque(measured_q)
+        except (RuntimeError, ValueError) as exc:
+            base_status["gravity_feedforward_error"] = f"{type(exc).__name__}: {exc}"
+            self._reject(base_status, "intercept_hold_gravity_feedforward", colormap)
+            return
+        base_status.update(
+            {
+                "status": "intercept_holding_measured_pose",
+                "reason": (base_status.get("intercept") or {}).get("reason"),
+                "predicted_bounded_arm_command_rad": [
+                    round(float(value), 6) for value in measured_q
+                ],
+                "gravity_feedforward_tau_nm": [
+                    round(float(value), 6) for value in gravity_tau_ff
+                ],
+                "pipeline_age_ms": round(pipeline_age_ms, 3),
+            }
+        )
+        if self.config.execute:
+            if arm_state.get("state") not in ("ARMING", "ARMED") or not arm_state.get(
+                "session_id"
+            ):
+                self._reject(base_status, "arm_not_explicitly_enabled", colormap)
+                return
+            if pipeline_age_ms > 450.0:
+                self._reject(base_status, "intercept_hold_perception_stale", colormap)
+                return
+            try:
+                self.transport.publish_target(
+                    session_id=str(arm_state["session_id"]),
+                    sequence=self.target_sequence,
+                    calibration_id=self.calibration.calibration_id,
+                    right_arm_q=measured_q,
+                    right_arm_tau_ff=gravity_tau_ff,
+                    pipeline_age_ms=pipeline_age_ms,
+                )
+            except Exception as exc:
+                base_status["transport_error"] = f"{type(exc).__name__}: {exc}"
+                self._stop_arm("arm_target_publish_failed", force=True)
+                self._reject(base_status, "arm_target_publish_failed", colormap)
+                return
+            self.target_sequence += 1
+            base_status["target_sequence"] = self.target_sequence
         self.update_status(base_status, colormap)
 
     def _queue_prediction(self, source: str, position: np.ndarray, due_time_s: float) -> None:

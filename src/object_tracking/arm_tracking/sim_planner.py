@@ -31,6 +31,7 @@ class SimPlannerConfig:
     maximum_acceleration_rad_s2: float = 4.0
     maximum_jerk_rad_s3: float = 30.0
     top_clearance_m: float = 0.11
+    minimum_link_support_clearance_m: float = 0.055
     path_compression_span_rad: float = 0.70
     path_compression_skip_knots: int = 32
 
@@ -92,13 +93,7 @@ class ClosedLoopInterceptionPlanner:
                 palm_position_m=palm_position,
             )
         if decision.state in (InterceptState.HOLD, InterceptState.EXPIRED):
-            return self._response(
-                state,
-                "hold",
-                decision.reason,
-                started,
-                decision=decision,
-            )
+            return self._measured_hold(state, measured_q, decision.reason, started, decision)
         publish_allowed = decision.may_publish or (
             self.profile.preview_staging_enabled and decision.may_stage
         )
@@ -123,13 +118,7 @@ class ClosedLoopInterceptionPlanner:
         )
         if next_q is None:
             self.intercept.invalidate(route_reason, now_s=state.simulation_time_s)
-            return self._response(
-                state,
-                "hold",
-                route_reason,
-                started,
-                decision=decision,
-            )
+            return self._measured_hold(state, measured_q, route_reason, started, decision)
 
         duration = minimum_ruckig_path_duration_s(
             current_position=measured_q,
@@ -144,13 +133,16 @@ class ClosedLoopInterceptionPlanner:
             crossing_time is not None
             and duration + self.profile.minimum_deadline_slack_s > crossing_time
         ):
-            return self._response(
+            self.intercept.invalidate(
+                "ruckig_deadline_unreachable",
+                now_s=state.simulation_time_s,
+            )
+            return self._measured_hold(
                 state,
-                "rejected",
+                measured_q,
                 "ruckig_deadline_unreachable",
                 started,
-                decision=decision,
-                duration_s=duration,
+                decision,
             )
         try:
             torque = self.solver.gravity_compensation_torque(next_q)
@@ -175,6 +167,53 @@ class ClosedLoopInterceptionPlanner:
             decision=decision,
             duration_s=duration,
             q_rad=next_q,
+            tau_nm=torque,
+        )
+
+    def _measured_hold(
+        self,
+        state: SimState,
+        measured_q: tuple[float, ...],
+        reason: str,
+        started: float,
+        decision: Any,
+    ) -> SimCommand:
+        """Refresh a stationary gravity-supported target after planning stops."""
+
+        validation_error = self.solver.validate_joint_path(
+            (measured_q, measured_q),
+            support_plane=state.support_region,
+            minimum_support_clearance_m=0.05,
+            edge_step_rad=0.010,
+            semantic_edge_step_rad=0.005,
+            require_escape_cleared=False,
+        )
+        if validation_error is not None:
+            return self._response(
+                state,
+                "hold",
+                f"measured_hold_{validation_error}",
+                started,
+                decision=decision,
+            )
+        try:
+            torque = self.solver.gravity_compensation_torque(measured_q)
+        except (RuntimeError, ValueError):
+            return self._response(
+                state,
+                "hold",
+                "gravity_compensation_failed",
+                started,
+                decision=decision,
+            )
+        return self._response(
+            state,
+            "target",
+            f"measured_hold:{reason}",
+            started,
+            decision=decision,
+            duration_s=0.0,
+            q_rad=measured_q,
             tau_nm=torque,
         )
 
@@ -237,6 +276,9 @@ class ClosedLoopInterceptionPlanner:
                             self.config.maximum_acceleration_rad_s2
                         ),
                         maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
+                        minimum_support_clearance_m=(
+                            self.config.minimum_link_support_clearance_m
+                        ),
                     ),
                     maximum_span_rad=self.config.path_compression_span_rad,
                     maximum_skip_knots=self.config.path_compression_skip_knots,
@@ -244,14 +286,23 @@ class ClosedLoopInterceptionPlanner:
                 if self._path is None:
                     return None, "ik_approach_path_compression", ()
                 self._path_index = 1
-                self._validated_path_index = None
+                # Every compressed edge has already passed the complete chord
+                # and synchronized Ruckig collision/support validator.
+                self._validated_path_index = 1
+            previous_path_index = self._path_index
             waypoint, self._path_index, error = select_start_escape_waypoint(
                 measured_q,
                 self._path,
                 self._path_index,
-                reached_tolerance_rad=0.004,
+                reached_tolerance_rad=0.001,
                 measured_velocity_rad_s=state.right_arm_dq_rad_s,
+                maximum_waypoint_velocity_rad_s=0.005,
             )
+            if self._path_index > previous_path_index:
+                # Advancement requires measured arrival within 1 mrad with
+                # velocity below 0.005 rad/s. Reuse the prevalidated next edge
+                # only after this near-zero-state handoff.
+                self._validated_path_index = self._path_index
             if error is not None:
                 self._reset_path()
                 return None, f"ik_{error}", ()
@@ -271,6 +322,9 @@ class ClosedLoopInterceptionPlanner:
                         maximum_velocity_rad_s=self.config.maximum_velocity_rad_s,
                         maximum_acceleration_rad_s2=self.config.maximum_acceleration_rad_s2,
                         maximum_jerk_rad_s3=self.config.maximum_jerk_rad_s3,
+                        minimum_support_clearance_m=(
+                            self.config.minimum_link_support_clearance_m
+                        ),
                         current_velocity_rad_s=state.right_arm_dq_rad_s,
                     ):
                         self._reset_path()
@@ -289,6 +343,9 @@ class ClosedLoopInterceptionPlanner:
             target_transform,
             measured_q,
             support_plane=state.support_region,
+            minimum_support_clearance_m=(
+                self.config.minimum_link_support_clearance_m
+            ),
         )
         if not local.ok or local.q_rad is None:
             return None, f"ik_{local.reason or 'local_translation_failed'}", ()

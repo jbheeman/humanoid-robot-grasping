@@ -1770,6 +1770,7 @@ class G1RightArmIK:
         last_q_rad: Sequence[float],
         *,
         support_plane: Any | None = None,
+        minimum_support_clearance_m: float = 0.05,
         maximum_joint_step_rad: float = 0.040,
         damping: float = 0.01,
         inverse_joint_cost_weights: Sequence[float] = (
@@ -1803,6 +1804,8 @@ class G1RightArmIK:
             or not np.all(np.isfinite(last_q))
             or not math.isfinite(maximum_joint_step_rad)
             or not 0.0 < maximum_joint_step_rad <= 0.05
+            or not math.isfinite(minimum_support_clearance_m)
+            or minimum_support_clearance_m <= 0.0
             or not math.isfinite(damping)
             or damping <= 0.0
             or jacobian_backend not in ("analytic", "finite_difference")
@@ -1821,6 +1824,7 @@ class G1RightArmIK:
                 validation_error = self.validate_joint_path(
                     (last_q, last_q),
                     support_plane=support_plane,
+                    minimum_support_clearance_m=minimum_support_clearance_m,
                     edge_step_rad=0.010,
                 )
                 if validation_error is not None:
@@ -1869,6 +1873,7 @@ class G1RightArmIK:
             validation_error = self.validate_joint_path(
                 (last_q, candidate),
                 support_plane=support_plane,
+                minimum_support_clearance_m=minimum_support_clearance_m,
                 # Four swept intervals keep every maximum 0.040-rad realtime
                 # edge collision/table checked without returning to the much
                 # slower full-route sampling cadence.
@@ -1889,6 +1894,7 @@ class G1RightArmIK:
         knots: Sequence[Sequence[float]],
         *,
         support_plane: Any | None = None,
+        minimum_support_clearance_m: float = 0.05,
         edge_step_rad: float = 0.0025,
         semantic_edge_step_rad: float = 0.0005,
         deadline_s: float | None = None,
@@ -1908,6 +1914,8 @@ class G1RightArmIK:
             or edge_step_rad <= 0.0
             or not math.isfinite(semantic_edge_step_rad)
             or semantic_edge_step_rad <= 0.0
+            or not math.isfinite(minimum_support_clearance_m)
+            or minimum_support_clearance_m <= 0.0
             or (deadline_s is not None and not math.isfinite(deadline_s))
         ):
             return "invalid_joint_path"
@@ -1959,6 +1967,18 @@ class G1RightArmIK:
                 if deadline_s is not None and time.monotonic() >= deadline_s:
                     return "validation_timeout"
                 q = (1.0 - alpha) * begin + alpha * end
+                # Support-envelope rejection is substantially cheaper than a
+                # complete HPP-FCL pair sweep. Check it first so a local IK
+                # candidate below the table reserve can be backtracked without
+                # spending another full collision pass. A candidate that
+                # clears the table still receives the unchanged collision
+                # checks below before it can be accepted.
+                if not self._arm_has_support_clearance(
+                    q,
+                    support_plane,
+                    minimum_clearance_m=minimum_support_clearance_m,
+                ):
+                    return "link_support_region_clearance"
                 collisions = self._collision_pairs(q)
                 if escaping:
                     forbidden = {
@@ -1977,8 +1997,6 @@ class G1RightArmIK:
                 hand_xyz = self.forward_kinematics(q)[:3, 3]
                 if not -0.48 <= hand_xyz[1] <= 0.15:
                     return "safe_corridor"
-                if not self._arm_has_support_clearance(q, support_plane):
-                    return "link_support_region_clearance"
             if escaping:
                 escaping = bool(self._collision_pairs(end))
         if require_escape_cleared and (

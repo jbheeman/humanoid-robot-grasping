@@ -210,14 +210,20 @@ class FakeInterceptIK:
         del right_arm_q
         return (-1.0, -0.5, 0.0, -0.25, 0.0, -0.1, 0.0)
 
+    def validate_joint_path(self, path: Sequence[Sequence[float]], **kwargs: Any) -> None:
+        del path
+        assert kwargs["minimum_support_clearance_m"] == 0.05
+
     def solve_local_translation(
         self,
         target_transform: np.ndarray,
         initial_q: Sequence[float],
         *,
         support_plane: SupportRegion,
+        minimum_support_clearance_m: float = 0.05,
     ) -> Any:
         del target_transform, support_plane
+        assert minimum_support_clearance_m == 0.055
         from object_tracking.arm_tracking.ik_solver import IKResult
 
         return IKResult(True, tuple(float(value) for value in initial_q), 0.0, 0.0)
@@ -434,9 +440,15 @@ def test_ruckig_edge_validation_checks_sampled_curve() -> None:
     class RecordingSolver:
         def __init__(self) -> None:
             self.path_lengths: list[int] = []
+            self.minimum_clearances: list[float] = []
 
-        def validate_joint_path(self, path: Sequence[Sequence[float]], **_kwargs: Any) -> None:
+        def validate_joint_path(
+            self,
+            path: Sequence[Sequence[float]],
+            **kwargs: Any,
+        ) -> None:
             self.path_lengths.append(len(path))
+            self.minimum_clearances.append(kwargs["minimum_support_clearance_m"])
 
     solver = RecordingSolver()
 
@@ -448,9 +460,11 @@ def test_ruckig_edge_validation_checks_sampled_curve() -> None:
         maximum_velocity_rad_s=1.0,
         maximum_acceleration_rad_s2=4.0,
         maximum_jerk_rad_s3=30.0,
+        minimum_support_clearance_m=0.055,
     )
     assert solver.path_lengths[0] == 2
     assert solver.path_lengths[1] > 2
+    assert solver.minimum_clearances == [0.055, 0.055]
 
 
 def test_approach_path_compression_rejects_an_invalid_adjacent_edge() -> None:
@@ -1160,6 +1174,29 @@ def test_intercept_preview_and_commit_publish_gate(
     assert (statuses[-1]["target_publish_latency_ms"] is not None) is execute
     assert statuses[-1]["estimator_consecutive_observations"] == 5
     assert statuses[-1]["estimator_residual_m"] > 0.0
+
+    published_before_hold = len(transport.published)
+    runtime._publish_measured_intercept_hold(
+        {"intercept": {"reason": "test_terminal_hold"}},
+        None,
+        support,
+        transport.state,
+        pipeline_age_ms=10.0,
+    )
+
+    assert statuses[-1]["status"] == "intercept_holding_measured_pose"
+    assert len(transport.published) == published_before_hold + int(execute)
+    if execute:
+        assert transport.published[-1]["right_arm_q"] == (0.0,) * 7
+        assert transport.published[-1]["right_arm_tau_ff"] == (
+            -1.0,
+            -0.5,
+            0.0,
+            -0.25,
+            0.0,
+            -0.1,
+            0.0,
+        )
 
     runtime.reset_intercept()
 

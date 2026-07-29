@@ -25,12 +25,14 @@ def test_sim_and_live_planners_share_demo_ruckig_limits(tmp_path: Path) -> None:
         sim.maximum_velocity_rad_s,
         sim.maximum_acceleration_rad_s2,
         sim.maximum_jerk_rad_s3,
+        sim.minimum_link_support_clearance_m,
         sim.path_compression_span_rad,
         sim.path_compression_skip_knots,
     ) == (
         live.maximum_velocity_rad_s,
         live.maximum_acceleration_rad_s2,
         live.maximum_jerk_rad_s3,
+        live.minimum_link_support_clearance_m,
         live.approach_compression_span_rad,
         live.approach_compression_skip_knots,
     )
@@ -45,12 +47,23 @@ class FakeSolver:
     def collision_labels(self, _q):
         return ()
 
-    def solve_local_translation(self, _target, _q, *, support_plane):
+    def solve_local_translation(
+        self,
+        _target,
+        _q,
+        *,
+        support_plane,
+        minimum_support_clearance_m,
+    ):
         assert support_plane.source == "test"
+        assert minimum_support_clearance_m == 0.055
         return IKResult(True, (0.01,) * 7, 0.001, 0.0)
 
     def gravity_compensation_torque(self, _q):
         return (0.2,) * 7
+
+    def validate_joint_path(self, _path, **_kwargs):
+        return None
 
 
 def profile() -> LiveInterceptConfig:
@@ -135,6 +148,38 @@ def test_planner_discards_state_rewind_without_running_ik() -> None:
 
     assert rejected.status == "rejected"
     assert rejected.reason == "stale_or_out_of_order_state"
+
+
+def test_terminal_intercept_refreshes_gravity_supported_measured_hold() -> None:
+    planner = ClosedLoopInterceptionPlanner(profile(), FakeSolver())  # type: ignore[arg-type]
+    assert planner.plan(state(1, 1.0)).status == "target"
+    planner.intercept.invalidate("test_terminal_hold", now_s=1.01)
+
+    command = planner.plan(state(2, 1.1))
+
+    assert command.status == "target"
+    assert command.reason == "measured_hold:test_terminal_hold"
+    assert command.right_arm_q_rad == (0.0,) * 7
+    assert command.right_arm_tau_ff_nm == (0.2,) * 7
+    assert command.remaining_ruckig_duration_s == 0.0
+
+
+def test_unreachable_ruckig_deadline_immediately_refreshes_measured_hold() -> None:
+    planner = ClosedLoopInterceptionPlanner(
+        profile(),
+        FakeSolver(),  # type: ignore[arg-type]
+        SimPlannerConfig(
+            maximum_velocity_rad_s=0.001,
+            maximum_acceleration_rad_s2=0.01,
+            maximum_jerk_rad_s3=0.1,
+        ),
+    )
+
+    command = planner.plan(state(1, 1.0))
+
+    assert command.status == "target"
+    assert command.reason == "measured_hold:ruckig_deadline_unreachable"
+    assert command.right_arm_q_rad == (0.0,) * 7
 
 
 def test_preview_does_not_emit_motion_before_production_commit_gate() -> None:
