@@ -100,6 +100,13 @@ parser.add_argument(
     default="unitree_official",
 )
 parser.add_argument(
+    "--gravity-feedforward-scale",
+    type=float,
+    choices=(-1.0, 0.0, 1.0),
+    default=1.0,
+    help="simulation-only scale applied to streamed arm gravity feed-forward",
+)
+parser.add_argument(
     "--freshness-mode",
     choices=("recorded", "zero"),
     default="recorded",
@@ -400,12 +407,14 @@ class IsaacArmHardware:
         left_ids: list[int],
         right_ids: list[int],
         clock: IsaacClock,
+        gravity_feedforward_scale: float,
     ) -> None:
         self.robot = robot
         self.left_ids = left_ids
         self.right_ids = right_ids
         self.arm_ids = [*left_ids, *right_ids]
         self.clock = clock
+        self.gravity_feedforward_scale = gravity_feedforward_scale
         self.command: ArmCommand | None = None
 
     def start(self) -> None:
@@ -438,9 +447,7 @@ class IsaacArmHardware:
         requested_q = torch.tensor([self.command.q], dtype=torch.float32, device=device)
         requested_dq = torch.tensor([self.command.dq], dtype=torch.float32, device=device)
         requested_tau = torch.tensor([self.command.tau], dtype=torch.float32, device=device)
-        # The official Isaac USD imports arm effort axes opposite to the
-        # canonical URDF/SDK torque convention used by the production planner.
-        requested_tau[:, 7:] *= -1.0
+        requested_tau *= self.gravity_feedforward_scale
         # The real SDK's weight blends ownership away during HOLDING. Blending
         # the position target back to the current measured pose prevents the
         # fixed Isaac actuator stiffness from secretly holding a released arm.
@@ -852,7 +859,13 @@ def main() -> int:
     robot.update(0.0)
 
     clock = IsaacClock()
-    hardware = IsaacArmHardware(robot, left_ids, right_ids, clock)
+    hardware = IsaacArmHardware(
+        robot,
+        left_ids,
+        right_ids,
+        clock,
+        args.gravity_feedforward_scale,
+    )
     controller = ArmBridgeController(
         hardware,
         ArmBridgeConfig(
