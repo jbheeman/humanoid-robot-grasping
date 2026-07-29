@@ -877,6 +877,7 @@ def main() -> int:
     planner_client: LatestPlannerProcess | None = None
     planner_state_sequence = 0
     warmup_command: SimCommand | None = None
+    warmup_observation_monotonic = clock.monotonic
     if args.command_source == "closed_loop_ipc":
         assert closed_loop_support is not None
         planner_root = str(args.planner_project_root)
@@ -932,7 +933,9 @@ def main() -> int:
             confidence=float(first_object_frame.get("confidence") or 1.0),
             position_m=first_object_position,
             velocity_m_s=first_object_velocity,
-            observation_time_s=clock.monotonic,
+            # Planner protocol time is episode-relative. IsaacClock carries a
+            # nonzero monotonic offset for controller freshness tests.
+            observation_time_s=0.0,
             consecutive_observations=int(
                 first_object_frame.get("estimator_consecutive_observations") or 2
             ),
@@ -950,7 +953,7 @@ def main() -> int:
             SimState(
                 episode_id=f"isaac-{args.replay.stem}",
                 sequence=planner_state_sequence,
-                simulation_time_s=clock.monotonic,
+                simulation_time_s=0.0,
                 calibration_id=calibration_id,
                 joint_contract_id=joint_contract_id(),
                 body_q_rad=measured_body_q,
@@ -1028,12 +1031,7 @@ def main() -> int:
                 round(
                     max(
                         0.0,
-                        clock.monotonic
-                        - (
-                            clock.monotonic
-                            if warmup_command.source_observation_time_s is None
-                            else warmup_command.source_observation_time_s
-                        ),
+                        clock.monotonic - warmup_observation_monotonic,
                     )
                     * 1000.0
                 )
