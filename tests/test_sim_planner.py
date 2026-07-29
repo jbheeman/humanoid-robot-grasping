@@ -169,6 +169,7 @@ def test_prediction_hold_finishes_active_table_staging_path() -> None:
     planner._path = ((0.0,) * 7, (0.1,) * 7)
     planner._path_index = 1
     planner._validated_path_index = 1
+    planner._path_last_advance_q = (0.0,) * 7
     planner._approach_target_position = np.asarray((0.4, -0.05, 0.16))
     current = state(1, 1.0)
     current = replace(

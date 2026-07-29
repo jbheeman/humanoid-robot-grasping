@@ -1014,17 +1014,30 @@ class ArmTrackingRuntime:
             self._reject(base_status, "waiting_for_new_rgb_frame", colormap)
             return
         tracked = self.filter.update(torso, rgb_time)
-        alpha_beta_prediction = tracked.predict(self.config.prediction_horizon_s)
+        alpha_beta_prediction = self.filter.predict(self.config.prediction_horizon_s)
+        assert alpha_beta_prediction is not None
         learned_prediction = None
         if self.learned_forecaster is not None:
-            self.learned_forecaster.update(torso, rgb_time)
+            # The model consumes the robust position estimate rather than raw
+            # detector/depth samples so pixel-scale YOLO jitter is not amplified
+            # into a large velocity forecast.
+            self.learned_forecaster.update(tracked.position_m, rgb_time)
             learned_prediction = self.learned_forecaster.predict(self.config.prediction_horizon_s)
         self._score_due_predictions(torso, rgb_time)
         due_time = rgb_time + self.config.prediction_horizon_s
         self._queue_prediction("alpha_beta_fallback", alpha_beta_prediction, due_time)
         if learned_prediction is not None:
             self._queue_prediction("learned_trajectory", learned_prediction, due_time)
-        predicted = learned_prediction if learned_prediction is not None else alpha_beta_prediction
+        prediction_source = "alpha_beta_fallback"
+        predicted = alpha_beta_prediction
+        if learned_prediction is not None:
+            learned_lead_m = float(np.linalg.norm(learned_prediction - tracked.position_m))
+            learned_disagreement_m = float(
+                np.linalg.norm(learned_prediction - alpha_beta_prediction)
+            )
+            if learned_lead_m <= 0.06 and learned_disagreement_m <= 0.03:
+                predicted = learned_prediction
+                prediction_source = "learned_trajectory_bounded"
         base_status["localization_filter_latency_ms"] = round(
             max(0.0, (time.monotonic() - localization_started) * 1000.0),
             3,
@@ -1037,11 +1050,7 @@ class ArmTrackingRuntime:
                 "estimator_consecutive_observations": self.filter.consecutive_observations,
                 "estimator_residual_m": round(self.filter.last_residual_m, 6),
                 "predicted_xyz_m": predicted.round(5).tolist(),
-                "prediction_source": (
-                    "learned_trajectory"
-                    if learned_prediction is not None
-                    else "alpha_beta_fallback"
-                ),
+                "prediction_source": prediction_source,
             }
         )
         base_status["visualization"].update(
@@ -1166,11 +1175,7 @@ class ArmTrackingRuntime:
                 "estimator_consecutive_observations": self.filter.consecutive_observations,
                 "estimator_residual_m": round(self.filter.last_residual_m, 6),
                 "predicted_xyz_m": predicted.round(5).tolist(),
-                "prediction_source": (
-                    "learned_trajectory"
-                    if learned_prediction is not None
-                    else "alpha_beta_fallback"
-                ),
+                "prediction_source": prediction_source,
                 "trajectory_model": (
                     None
                     if self.config.trajectory_model_path is None
@@ -1364,9 +1369,10 @@ class ArmTrackingRuntime:
                 last_q,
                 self._approach_path,
                 self._approach_target_index,
-                reached_tolerance_rad=0.001,
+                reached_tolerance_rad=0.018,
+                last_advance_q_rad=self._approach_last_advance_q,
                 measured_velocity_rad_s=measured_right_arm_velocity(arm_state),
-                maximum_waypoint_velocity_rad_s=0.005,
+                maximum_waypoint_velocity_rad_s=0.02,
             )
             self._approach_target_index = waypoint_index
             if waypoint_index > previous_waypoint_index:

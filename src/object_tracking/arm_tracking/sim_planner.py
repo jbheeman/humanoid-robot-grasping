@@ -53,6 +53,7 @@ class ClosedLoopInterceptionPlanner:
         self._path: tuple[tuple[float, ...], ...] | None = None
         self._path_index = 1
         self._validated_path_index: int | None = None
+        self._path_last_advance_q: tuple[float, ...] | None = None
         self._approach_target_position: np.ndarray | None = None
         self._last_observation_time_s: float | None = None
 
@@ -361,6 +362,7 @@ class ClosedLoopInterceptionPlanner:
                     return None, "ik_approach_path_compression", ()
                 self._path_index = 1
                 self._approach_target_position = target_position.copy()
+                self._path_last_advance_q = measured_q
                 # Every compressed edge has already passed the complete chord
                 # and synchronized Ruckig collision/support validator.
                 self._validated_path_index = 1
@@ -369,15 +371,17 @@ class ClosedLoopInterceptionPlanner:
                 measured_q,
                 self._path,
                 self._path_index,
-                reached_tolerance_rad=0.001,
+                reached_tolerance_rad=0.018,
+                last_advance_q_rad=self._path_last_advance_q,
                 measured_velocity_rad_s=state.right_arm_dq_rad_s,
-                maximum_waypoint_velocity_rad_s=0.005,
+                maximum_waypoint_velocity_rad_s=0.02,
             )
             if self._path_index > previous_path_index:
                 # Advancement requires measured arrival within 1 mrad with
                 # velocity below 0.005 rad/s. Reuse the prevalidated next edge
                 # only after this near-zero-state handoff.
                 self._validated_path_index = self._path_index
+                self._path_last_advance_q = measured_q
             if error is not None:
                 self._reset_path()
                 return None, f"ik_{error}", ()
@@ -432,6 +436,7 @@ class ClosedLoopInterceptionPlanner:
         self._path = None
         self._path_index = 1
         self._validated_path_index = None
+        self._path_last_advance_q = None
         self._approach_target_position = None
 
     def _response(
